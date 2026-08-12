@@ -1,0 +1,16 @@
+I want to create a voice-based story writing app for babies and kids. It's a fun way to learn (ed-tech) about
+  animals, biology, ecosystems, etc. and allows the child to be a part of the story writing alongside an LLM. Here's
+  the idea so far, but I would welcome other ideas too! First, the child chooses an animal and the system searches a
+  database, web api, etc. for facts about the animal. These will be incorporated into the story in a natural way, and
+  serve as inspiration for the story, which is generated step-by-step by an LLM and the child together. Other
+  inspiration for the story should come from the child's own environment. E.g. if there's a bookcase in the child's
+  environment, perhaps the LLM says something like, "There was a tall building, that looks kind of like that
+  bookcase!" or "A mountain, just like your couch". (The app has a local, on-device object recognition model for
+  this.) The story should include exposition, rising action, climax, falling action and resolution, but should also
+  take input from the child. For example, the story agent should ask the child what they think the animal should do
+  next, similar to a choose-your-own-adventure. The child should also be able to interrupt the agent at any time
+  (e.g. with a dialog agent, like Moshi) and change the story or ask about it. As much as possible, data should stay
+  on the device for safety reasons, since the user is a child. There should also be safety boundaries and scaffolding
+  in place for the LLM. All AI models should be free to use. The story should include visuals, ideally from real
+  artists (not generated) with attribution. Perhaps at the end, an in-app story book is created that the child can go
+  back to and flip through. Let me know what you think and how we can make this idea better!
