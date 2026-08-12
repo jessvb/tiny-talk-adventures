@@ -9,7 +9,6 @@ is the core of the barge-in behaviour.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time
 from typing import Protocol
@@ -103,6 +102,17 @@ class SessionRunner:
         await self._cancel_turn(record_spoken=False)
 
     async def _start_listening(self) -> None:
+        if self._machine.state in (State.THINKING, State.SPEAKING):
+            # A speech_start arriving mid-turn means the child started
+            # talking again before the agent finished — that is an
+            # interrupt in every way that matters (cancel in-flight work,
+            # record what was already spoken, reset STT, land in
+            # LISTENING), so handle it exactly like one instead of firing a
+            # SPEECH_START transition that only exists from IDLE. (A
+            # duplicate speech_start while already LISTENING is left as the
+            # existing no-op below — nothing is in flight to abort.)
+            await self._interrupt()
+            return
         await self._cancel_turn(record_spoken=True)
         self._transition(Event.SPEECH_START)
 
@@ -135,8 +145,18 @@ class SessionRunner:
         if task is None or task.done():
             return
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
+        try:
             await task
+        except asyncio.CancelledError:
+            # `await task` raises CancelledError both when the turn task
+            # itself finished being cancelled (expected — swallow it) and
+            # when cancellation was aimed at *this* coroutine instead (e.g.
+            # the connection handler being cancelled during shutdown while
+            # sitting at this await). Only the first case leaves the turn
+            # task actually done; in the second, re-raise so the caller's
+            # own cancellation isn't silently absorbed.
+            if not task.cancelled():
+                raise
         if record_spoken and self._spoken:
             self._conversation.add_agent(" ".join(self._spoken), interrupted=True)
         self._spoken = []
@@ -175,12 +195,15 @@ class SessionRunner:
             await self._fail_turn(f"internal error: {exc}")
 
     async def _fail_turn(self, message: str) -> None:
-        await self._transport.send_text(encode_error(message))
+        # Restore state before sending: if the transport is dead (closed
+        # socket mid-turn) send_text can raise, and the exception must not
+        # leave the state machine stuck outside IDLE.
         self._spoken = []
         if self._machine.state is State.THINKING:
             self._transition(Event.RESPONSE_READY)
         if self._machine.state is State.SPEAKING:
             self._transition(Event.TTS_DONE)
+        await self._transport.send_text(encode_error(message))
 
     def _transition(self, event: Event) -> None:
         try:
