@@ -1,6 +1,7 @@
 import asyncio
+import json
 
-from conftest import FailingLlm, FakeLlm, FakeStt, FakeTts
+from conftest import FailingLlm, FakeLlm, FakeStt, FakeTransport, FakeTts
 from storyadventure.conversation import INTERRUPTED_MARKER
 from storyadventure.engines import EngineError
 from storyadventure.safety import SAFE_FALLBACK
@@ -228,3 +229,48 @@ async def test_aclose_cancels_an_in_flight_turn(transport):
     await session.aclose()
 
     assert tts.cancelled is True
+
+
+async def test_speech_start_mid_turn_is_treated_as_an_interrupt(transport):
+    # Regression test for review finding 1: a speech_start arriving while a
+    # turn is in flight (THINKING or SPEAKING) must not wedge the session in
+    # a non-IDLE state. It should behave exactly like an interrupt.
+    stt = FakeStt()
+    tts = FakeTts(delay=0.05)
+    session = make_session(transport, stt=stt, tts=tts)
+
+    await session.handle_text(SPEECH_START)
+    await session.handle_text(SPEECH_END)
+    await asyncio.sleep(0.01)  # LLM is instant; turn is now SPEAKING, mid-TTS
+
+    await session.handle_text(SPEECH_START)
+
+    assert session.state is State.LISTENING
+    assert tts.cancelled is True
+
+    # The session must not be deaf afterwards: audio should still reach STT.
+    await session.handle_audio(b"\x09")
+    assert stt.fed == [b"\x09"]
+
+
+async def test_fail_turn_restores_state_even_if_sending_the_error_fails(transport):
+    # Regression test for review finding 3: if the transport itself is dead
+    # (closed socket) the error-send can raise. The state walk-back must
+    # already have happened by then, or the session is left wedged.
+    class ErrorSendFailsTransport(FakeTransport):
+        async def send_text(self, payload: str) -> None:
+            if json.loads(payload)["type"] == "error":
+                raise RuntimeError("socket closed")
+            await super().send_text(payload)
+
+    failing_transport = ErrorSendFailsTransport()
+    session = make_session(
+        failing_transport, llm=FailingLlm(EngineError("Ollama is not running"))
+    )
+
+    await session.handle_text(SPEECH_START)
+    await session.handle_audio(b"\x01\x02")
+    await session.handle_text(SPEECH_END)
+    await session.wait_for_turn()
+
+    assert session.state is State.IDLE
