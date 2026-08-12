@@ -6,7 +6,7 @@ from storyadventure.conversation import INTERRUPTED_MARKER
 from storyadventure.engines import EngineError
 from storyadventure.safety import SAFE_FALLBACK
 from storyadventure.session import SessionRunner
-from storyadventure.state import State
+from storyadventure.state import Event, State
 
 SPEECH_START = '{"type": "speech_start"}'
 SPEECH_END = '{"type": "speech_end"}'
@@ -351,3 +351,49 @@ async def test_fail_turn_restores_state_even_if_sending_the_error_fails(transpor
     await session.wait_for_turn()
 
     assert session.state is State.IDLE
+
+
+async def test_finish_listening_discards_stale_transcript_if_interrupted_mid_await(
+    transport,
+):
+    # Regression test for the final review finding: _finish_listening awaits
+    # stt.finish() via asyncio.to_thread, which is a genuine await point that
+    # didn't used to exist. If an interrupt is processed while that await is
+    # in flight -- moving state to LISTENING -- the resumed _finish_listening
+    # must notice and discard the now-stale transcript instead of building a
+    # reply, generating audio, and sending it all for an utterance the child
+    # has already interrupted; and it must not clobber the state the
+    # interrupt already set.
+    #
+    # This isn't reachable today (app.py's read loop awaits each message
+    # handler serially, so nothing can interleave with _finish_listening
+    # mid-flight yet) but is exercised directly here, deterministically,
+    # rather than relying on real concurrency/timing.
+    class InterruptDuringFinishStt(FakeStt):
+        """Stands in for the STT engine during the to_thread(finish) await.
+        When finish() runs, it flips the state machine straight to
+        LISTENING -- exactly what a concurrently-processed interrupt would
+        have done -- before handing back a transcript, simulating the race
+        without needing real concurrency."""
+
+        def __init__(self, session_holder: list) -> None:
+            super().__init__()
+            self._session_holder = session_holder
+
+        def finish(self) -> str:
+            session = self._session_holder[0]
+            session._machine.handle(Event.INTERRUPT)
+            return super().finish()
+
+    session_holder: list = []
+    stt = InterruptDuringFinishStt(session_holder)
+    session = make_session(transport, stt=stt)
+    session_holder.append(session)
+
+    await session.handle_text(SPEECH_START)
+    await session.handle_audio(b"\x01\x02")
+    await session.handle_text(SPEECH_END)
+    await session.wait_for_turn()
+
+    assert session.state is State.LISTENING
+    assert transport.types() == []

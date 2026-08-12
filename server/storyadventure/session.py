@@ -123,13 +123,28 @@ class SessionRunner:
         try:
             # KyutaiStt.finish() runs model inference (an MLX forward pass
             # over the whole utterance) — potentially 0.5-3s. Running it off
-            # the event loop is what lets an interrupt still be handled
-            # while the transcript is being finalized, same reasoning as
-            # KokoroTts.synthesize's asyncio.to_thread usage.
+            # the event loop keeps that call from stalling the process-wide
+            # event loop and websocket keepalive for its whole duration,
+            # same reasoning as KokoroTts.synthesize's asyncio.to_thread
+            # usage. It does NOT, today, let an interrupt for *this* session
+            # be handled concurrently with this await: app.py's read loop
+            # awaits each message handler serially, so an interrupt frame
+            # can't even be read off the socket until this coroutine yields
+            # control back. The state re-check right below exists for when
+            # that changes -- if a future concurrency change does let an
+            # interrupt interleave here, it will have moved self._machine's
+            # state out from under us while we were suspended.
             transcript = await asyncio.to_thread(self._stt.finish)
         except EngineError as exc:
             logger.error("engine failure finishing the utterance: %s", exc)
             await self._fail_turn(str(exc))
+            return
+        if self._machine.state is not State.THINKING:
+            # Something (an interrupt, once handling stops being serialized)
+            # already moved the session elsewhere while we were suspended in
+            # to_thread above. The transcript we just finished is stale --
+            # discard it rather than building a reply to an utterance the
+            # child has already interrupted.
             return
         await self._transport.send_text(encode_transcript_final(transcript))
         if not transcript.strip():
