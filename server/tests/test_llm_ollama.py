@@ -34,6 +34,15 @@ def test_parse_chat_line_raises_on_malformed_json():
         parse_chat_line("{not json")
 
 
+def test_parse_chat_line_raises_on_a_mid_stream_error_line():
+    # Ollama can return HTTP 200 and then emit {"error": "..."} as a stream
+    # line (e.g. a model load failure after headers are already sent). This
+    # must not be silently skipped as if it were just a contentless chunk.
+    line = json.dumps({"error": "model runner has terminated"})
+    with pytest.raises(EngineError, match="model runner has terminated"):
+        parse_chat_line(line)
+
+
 async def test_stream_reply_yields_content_chunks_in_order():
     lines = [chat_line("Once "), chat_line("upon "), chat_line("a time."), chat_line("", done=True)]
 

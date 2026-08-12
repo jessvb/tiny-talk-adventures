@@ -24,6 +24,8 @@ def parse_chat_line(line: str) -> str | None:
         payload = json.loads(stripped)
     except json.JSONDecodeError as exc:
         raise EngineError(f"Ollama sent a malformed response line: {stripped!r}") from exc
+    if "error" in payload:
+        raise EngineError(f"Ollama reported an error: {payload['error']}")
     if payload.get("done"):
         return None
     return payload.get("message", {}).get("content") or None
