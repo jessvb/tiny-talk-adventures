@@ -2,11 +2,11 @@ import asyncio
 import json
 
 from conftest import FailingLlm, FakeLlm, FakeStt, FakeTransport, FakeTts
-from storyadventure.conversation import INTERRUPTED_MARKER
-from storyadventure.engines import EngineError
-from storyadventure.safety import SAFE_FALLBACK
-from storyadventure.session import SessionRunner
-from storyadventure.state import Event, State
+from tinytalk.conversation import INTERRUPTED_MARKER
+from tinytalk.engines import EngineError
+from tinytalk.safety import SAFE_FALLBACK
+from tinytalk.session import SessionRunner
+from tinytalk.state import Event, State
 
 SPEECH_START = '{"type": "speech_start"}'
 SPEECH_END = '{"type": "speech_end"}'

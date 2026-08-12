@@ -1,7 +1,7 @@
 [project]
-name = "storyadventure-server"
+name = "tinytalk-server"
 version = "0.1.0"
-description = "Voice/dialog pipeline server for the Story Adventure kids' storytelling app"
+description = "Voice/dialog pipeline server for the Tiny Talk Adventures kids' storytelling app"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "websockets>=13.0",
@@ -22,7 +22,7 @@ build-backend = "setuptools.build_meta"
 # Explicit, because `tools/` and `tests/` sit alongside the package and would
 # otherwise confuse setuptools' flat-layout auto-discovery.
 [tool.setuptools]
-packages = ["storyadventure"]
+packages = ["tinytalk"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

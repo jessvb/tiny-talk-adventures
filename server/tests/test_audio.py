@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from storyadventure.audio import (
+from tinytalk.audio import (
     MIC_SAMPLE_RATE,
     TTS_SAMPLE_RATE,
     float32_to_pcm16,

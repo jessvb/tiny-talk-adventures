@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from storyadventure.audio import float32_to_pcm16
-from storyadventure.engines import EngineError
-from storyadventure.stt_kyutai import KyutaiStt
+from tinytalk.audio import float32_to_pcm16
+from tinytalk.engines import EngineError
+from tinytalk.stt_kyutai import KyutaiStt
 
 
 class FakeRecognizer:

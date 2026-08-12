@@ -1,4 +1,4 @@
-# Story Adventure
+# Tiny Talk Adventures
 
 A voice-based, collaborative story-writing app for kids. A child and an LLM
 write a story together, out loud: the child picks an animal, real facts about
@@ -26,7 +26,7 @@ The **voice/dialog pipeline** — the interruptible speech I/O layer (phone
 client + local Mac server), built first because low-latency barge-in
 handling is the core technical learning goal — has its server implemented on
 the `voice-dialog-server` branch, pending merge. One piece is still
-pending: `storyadventure/stt_kyutai.py`'s recognizer is a deliberate stub
+pending: `tinytalk/stt_kyutai.py`'s recognizer is a deliberate stub
 while the real `moshi_mlx` API is explored separately (see "Running the
 server" below).
 
@@ -51,7 +51,7 @@ See `docs/superpowers/specs/2026-08-12-voice-dialog-pipeline-design.md` for
 the full design. Note on the wire protocol: a client must send its
 `speech_start`/`interrupt` control frame *before* the audio frames for that
 utterance — audio arriving outside a listening state is silently dropped
-(see `server/storyadventure/protocol.py`'s module docstring for details).
+(see `server/tinytalk/protocol.py`'s module docstring for details).
 
 ## Setup
 
@@ -108,7 +108,7 @@ Android Studio and likely separate VAD/audio tuning given the older hardware
 
 ### Running the server
 
-**Known limitation:** `storyadventure/stt_kyutai.py`'s recognizer is
+**Known limitation:** `tinytalk/stt_kyutai.py`'s recognizer is
 currently a deliberate stub (`NotImplementedError`) pending exploration of
 the real `moshi_mlx` API — a human partner is filling it in separately. If
 you follow the steps below today, expect
@@ -131,7 +131,7 @@ Then, three terminals:
 ollama serve
 
 # 2. The voice/dialog server
-cd server && source .venv/bin/activate && python -m storyadventure.app
+cd server && source .venv/bin/activate && python -m tinytalk.app
 
 # 3. The CLI test client (stands in for the phone)
 cd server && source .venv/bin/activate

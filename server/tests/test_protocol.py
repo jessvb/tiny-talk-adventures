@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from storyadventure.protocol import (
+from tinytalk.protocol import (
     Interrupt,
     ProtocolError,
     SpeechEnd,
