@@ -3,8 +3,8 @@ import json
 import httpx
 import pytest
 
-from storyadventure.engines import EngineError
-from storyadventure.llm_ollama import OllamaLlm, parse_chat_line
+from tinytalk.engines import EngineError
+from tinytalk.llm_ollama import OllamaLlm, parse_chat_line
 
 
 def chat_line(content: str, done: bool = False) -> str:

@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from storyadventure.audio import float32_to_pcm16
-from storyadventure.engines import EngineError
-from storyadventure.tts_kokoro import KokoroTts
+from tinytalk.audio import float32_to_pcm16
+from tinytalk.engines import EngineError
+from tinytalk.tts_kokoro import KokoroTts
 
 
 class FakePipeline:

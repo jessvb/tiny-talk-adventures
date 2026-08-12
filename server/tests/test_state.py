@@ -1,6 +1,6 @@
 import pytest
 
-from storyadventure.state import Event, InvalidTransition, State, TurnStateMachine
+from tinytalk.state import Event, InvalidTransition, State, TurnStateMachine
 
 
 def test_starts_idle():

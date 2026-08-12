@@ -20,7 +20,7 @@ import wave
 
 import websockets
 
-from storyadventure.audio import MIC_SAMPLE_RATE, TTS_SAMPLE_RATE
+from tinytalk.audio import MIC_SAMPLE_RATE, TTS_SAMPLE_RATE
 
 CHUNK_FRAMES = 1600  # 100 ms at 16 kHz
 

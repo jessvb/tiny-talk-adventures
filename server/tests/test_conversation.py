@@ -1,4 +1,4 @@
-from storyadventure.conversation import Conversation, Turn
+from tinytalk.conversation import Conversation, Turn
 
 SYSTEM = "You tell stories to children."
 

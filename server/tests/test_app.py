@@ -1,7 +1,7 @@
 from conftest import FakeLlm, FakeStt, FakeTts
-from storyadventure.app import WebSocketTransport, handle_connection
-from storyadventure.engines import EngineError
-from storyadventure.session import SessionRunner
+from tinytalk.app import WebSocketTransport, handle_connection
+from tinytalk.engines import EngineError
+from tinytalk.session import SessionRunner
 
 
 class FakeWebSocket:

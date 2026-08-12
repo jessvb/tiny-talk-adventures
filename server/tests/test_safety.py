@@ -1,6 +1,6 @@
 import pytest
 
-from storyadventure.safety import SAFE_FALLBACK, filter_reply, is_safe
+from tinytalk.safety import SAFE_FALLBACK, filter_reply, is_safe
 
 
 @pytest.mark.parametrize(
