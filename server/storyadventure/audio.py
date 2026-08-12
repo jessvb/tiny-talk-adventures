@@ -14,6 +14,10 @@ _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
 
 def float32_to_pcm16(samples: np.ndarray) -> bytes:
     """Convert model float audio in [-1.0, 1.0] to wire-format PCM16 LE."""
+    # Coerce whatever array-like object the model backend yields (a numpy
+    # array, a torch tensor, a plain list) into a real numpy float32 array.
+    # Kokoro's real KPipeline yields torch tensors, not numpy arrays.
+    samples = np.asarray(samples, dtype=np.float32)
     clipped = np.clip(samples, -1.0, 1.0)
     return (clipped * 32767.0).astype("<i2").tobytes()
 
