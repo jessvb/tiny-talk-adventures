@@ -3,6 +3,15 @@
 Control messages are JSON text frames. Audio travels as binary frames and is
 not represented here: mic audio in (16 kHz mono PCM16 LE) and TTS audio out
 (24 kHz mono PCM16 LE).
+
+Ordering requirement: the server only accepts mic audio frames while it is
+LISTENING, which it enters on `speech_start` or `interrupt`. A client must
+therefore send the control frame (`speech_start` for a fresh utterance,
+`interrupt` for a barge-in) *before* any audio frames for that utterance.
+Audio that arrives outside LISTENING (e.g. a frame sent before the control
+frame, or one still in flight when an utterance ended) is silently dropped —
+no error is surfaced. Getting this ordering wrong on a barge-in would lose
+the first word of what the child says.
 """
 
 from __future__ import annotations
