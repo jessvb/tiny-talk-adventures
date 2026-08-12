@@ -6,6 +6,7 @@ way through the reply, and writes the received TTS audio to a WAV file.
 Usage:
     python tools/test_client.py utterance.wav
     python tools/test_client.py utterance.wav --interrupt-after 0.8
+    python tools/test_client.py utterance.wav --interrupt-after 0.8 --then second.wav
 """
 
 from __future__ import annotations
@@ -43,7 +44,21 @@ def write_wav(path: str, pcm: bytes) -> None:
         out.writeframes(pcm)
 
 
-async def receive(websocket, audio: list[bytes], interrupt_at: float | None, started: float):
+async def send_utterance(websocket, pcm: bytes) -> None:
+    """Send one utterance's worth of control frames and mic audio."""
+    await websocket.send(json.dumps({"type": "speech_start"}))
+    for offset in range(0, len(pcm), CHUNK_FRAMES * 2):
+        await websocket.send(pcm[offset : offset + CHUNK_FRAMES * 2])
+        await asyncio.sleep(0.01)  # loosely pace it like a live mic
+    await websocket.send(json.dumps({"type": "speech_end"}))
+
+
+async def receive(websocket, audio: list[bytes], remaining_turn_ends: int, started: float):
+    # `remaining_turn_ends` counts how many turn_end frames still complete
+    # the run: 1 for a plain send-and-wait, 1 for "interrupt then a
+    # follow-up utterance" (only the follow-up's turn actually finishes —
+    # the interrupted one never emits turn_end), or 0 for "interrupt with no
+    # follow-up", where the caller cancels this task externally instead.
     async for message in websocket:
         if isinstance(message, bytes):
             audio.append(message)
@@ -59,7 +74,8 @@ async def receive(websocket, audio: list[bytes], interrupt_at: float | None, sta
             sys.exit(1)
         elif kind == "turn_end":
             print(f"  turn complete in {time.monotonic() - started:.2f}s")
-            if interrupt_at is None:
+            remaining_turn_ends -= 1
+            if remaining_turn_ends <= 0:
                 return
 
 
@@ -74,23 +90,32 @@ async def main() -> None:
         metavar="SECONDS",
         help="fire an interrupt this long after speech_end",
     )
+    parser.add_argument(
+        "--then",
+        metavar="WAV",
+        help=(
+            "after the interrupt fires, send this WAV as a follow-up utterance "
+            "and wait for its reply -- exercises the actual payoff of barge-in: "
+            "that the reply reacts to the interruption. Requires --interrupt-after."
+        ),
+    )
     parser.add_argument("--out", default="/tmp/reply.wav")
     args = parser.parse_args()
+
+    if args.then is not None and args.interrupt_after is None:
+        parser.error("--then requires --interrupt-after")
 
     pcm = read_wav(args.wav)
     audio: list[bytes] = []
 
     async with websockets.connect(args.url, max_size=None) as websocket:
         started = time.monotonic()
-        await websocket.send(json.dumps({"type": "speech_start"}))
-        for offset in range(0, len(pcm), CHUNK_FRAMES * 2):
-            await websocket.send(pcm[offset : offset + CHUNK_FRAMES * 2])
-            await asyncio.sleep(0.01)  # loosely pace it like a live mic
-        await websocket.send(json.dumps({"type": "speech_end"}))
+        await send_utterance(websocket, pcm)
         print("sent utterance, waiting for reply...")
 
+        expect_turn_end = args.interrupt_after is None or args.then is not None
         receiver = asyncio.create_task(
-            receive(websocket, audio, args.interrupt_after, started)
+            receive(websocket, audio, 1 if expect_turn_end else 0, started)
         )
 
         if args.interrupt_after is not None:
@@ -98,8 +123,14 @@ async def main() -> None:
             fired = time.monotonic()
             await websocket.send(json.dumps({"type": "interrupt"}))
             print(f"  sent interrupt at {fired - started:.2f}s")
-            await asyncio.sleep(0.5)
-            receiver.cancel()
+
+            if args.then is not None:
+                await asyncio.sleep(0.3)  # brief pause before the follow-up
+                print(f"  sending follow-up utterance {args.then!r}...")
+                await send_utterance(websocket, read_wav(args.then))
+            else:
+                await asyncio.sleep(0.5)
+                receiver.cancel()
 
         try:
             await receiver
