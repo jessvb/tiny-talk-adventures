@@ -56,6 +56,7 @@ async def receive(websocket, audio: list[bytes], interrupt_at: float | None, sta
             print(f"  agent: {payload['text']!r}")
         elif kind == "error":
             print(f"  ERROR: {payload['message']}")
+            sys.exit(1)
         elif kind == "turn_end":
             print(f"  turn complete in {time.monotonic() - started:.2f}s")
             if interrupt_at is None:
