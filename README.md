@@ -1,4 +1,4 @@
-# Story Adventure
+# Tiny Talk Adventures
 
 A voice-based, collaborative story-writing app for kids. A child and an LLM
 write a story together, out loud: the child picks an animal, real facts about
@@ -18,16 +18,22 @@ Three reasons this exists:
 
 ## Status
 
-Early design phase. The full app is being built as a sequence of independent
-sub-projects; each gets its own design spec before implementation. See
-`docs/superpowers/specs/` for specs in progress.
+The full app is being built as a sequence of independent sub-projects; each
+gets its own design spec before implementation. See `docs/superpowers/specs/`
+for specs in progress.
 
-Currently in progress: the **voice/dialog pipeline** — the interruptible
-speech I/O layer (phone client + local Mac server), built first because
-low-latency barge-in handling is the core technical learning goal.
+The **voice/dialog pipeline** — the interruptible speech I/O layer (phone
+client + local Mac server), built first because low-latency barge-in
+handling is the core technical learning goal — has its server implemented on
+the `voice-dialog-server` branch, pending merge. One piece is still
+pending: `tinytalk/stt_kyutai.py`'s recognizer is a deliberate stub
+while the real `moshi_mlx` API is explored separately (see "Running the
+server" below).
 
-Planned next, in rough order: story generation engine (narrative arc + safety
-scaffolding), animal facts retrieval, on-device object recognition for
+Next up: the iOS phone client.
+
+Planned after that, in rough order: story generation engine (narrative arc +
+safety scaffolding), animal facts retrieval, on-device object recognition for
 environment-based inspiration, illustration sourcing with attribution,
 storybook persistence.
 
@@ -42,14 +48,16 @@ storybook persistence.
   No cloud AI APIs — everything free and offline.
 
 See `docs/superpowers/specs/2026-08-12-voice-dialog-pipeline-design.md` for
-the full design.
+the full design. Note on the wire protocol: a client must send its
+`speech_start`/`interrupt` control frame *before* the audio frames for that
+utterance — audio arriving outside a listening state is silently dropped
+(see `server/tinytalk/protocol.py`'s module docstring for details).
 
 ## Setup
 
-No app code exists yet (see Status above) — this covers the environment the
-voice/dialog pipeline will be built against, so it's ready to go once
-implementation starts. Commands verified 2026-08-12; re-check versions if
-it's been a while.
+The voice/dialog pipeline server (see Status above) is implemented under
+`server/`. This section covers how to set up the environment to run it.
+Commands verified 2026-08-12; re-check versions if it's been a while.
 
 ### Mac server prerequisites
 
@@ -98,10 +106,49 @@ Not yet scoped in detail; deferred until the iOS path is working. Will need
 Android Studio and likely separate VAD/audio tuning given the older hardware
 (see the design spec's non-goals).
 
+### Running the server
+
+**Known limitation:** `tinytalk/stt_kyutai.py`'s recognizer is
+currently a deliberate stub (`NotImplementedError`) pending exploration of
+the real `moshi_mlx` API — a human partner is filling it in separately. If
+you follow the steps below today, expect
+`error: Kyutai STT failed to transcribe: ...` on the first real utterance.
+That's expected, not a bug.
+
+First, create the virtualenv and install the package (one-time setup):
+
+```bash
+cd server
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+Then, three terminals:
+
+```bash
+# 1. Ollama
+ollama serve
+
+# 2. The voice/dialog server
+cd server && source .venv/bin/activate && python -m tinytalk.app
+
+# 3. The CLI test client (stands in for the phone)
+cd server && source .venv/bin/activate
+say "tell me a story about a brave little fox" -o /tmp/utterance.wav --data-format=LEI16@16000
+python tools/test_client.py /tmp/utterance.wav          # full turn
+python tools/test_client.py /tmp/utterance.wav --interrupt-after 0.8   # barge-in
+afplay /tmp/reply.wav
+```
+
+Run the tests with `cd server && source .venv/bin/activate && pytest`.
+
 ## Repo layout
 
 - `docs/superpowers/specs/` — design specs, one per sub-project, dated
-- (implementation directories to follow as sub-projects are built)
+- `server/` — the voice/dialog pipeline server: Python, pytest, see
+  "Running the server" below
+- (further implementation directories to follow as sub-projects are built)
 
 ## Development
 
