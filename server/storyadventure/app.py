@@ -12,7 +12,9 @@ from typing import Callable
 import websockets
 
 from . import config
+from .engines import EngineError
 from .llm_ollama import OllamaLlm
+from .protocol import encode_error
 from .session import SessionRunner, Transport
 from .stt_kyutai import KyutaiStt
 from .tts_kokoro import KokoroTts
@@ -52,10 +54,17 @@ async def handle_connection(
     logger.info("client connected")
     try:
         async for message in websocket:
-            if isinstance(message, bytes):
-                await session.handle_audio(message)
-            else:
-                await session.handle_text(message)
+            try:
+                if isinstance(message, bytes):
+                    await session.handle_audio(message)
+                else:
+                    await session.handle_text(message)
+            except EngineError as exc:
+                logger.error("engine failure handling message: %s", exc)
+                await transport.send_text(encode_error(str(exc)))
+            except Exception:  # noqa: BLE001 - one bad frame must not kill the socket
+                logger.exception("unexpected failure handling message")
+                await transport.send_text(encode_error("internal error"))
         await session.wait_for_turn()
     finally:
         await session.aclose()
