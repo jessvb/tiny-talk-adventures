@@ -1,0 +1,89 @@
+"""WebSocket entry point.
+
+Binary frames are mic audio; text frames are JSON control messages.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Callable
+
+import websockets
+
+from . import config
+from .llm_ollama import OllamaLlm
+from .session import SessionRunner, Transport
+from .stt_kyutai import KyutaiStt
+from .tts_kokoro import KokoroTts
+
+logger = logging.getLogger(__name__)
+
+
+class WebSocketTransport:
+    def __init__(self, websocket) -> None:
+        self._websocket = websocket
+
+    async def send_text(self, payload: str) -> None:
+        await self._websocket.send(payload)
+
+    async def send_bytes(self, payload: bytes) -> None:
+        await self._websocket.send(payload)
+
+
+def build_session(transport: Transport) -> SessionRunner:
+    # Engines are per-connection so one session's STT buffer can never bleed
+    # into another's. Single-household use, so the memory cost is fine.
+    return SessionRunner(
+        transport=transport,
+        stt=KyutaiStt(),
+        llm=OllamaLlm(),
+        tts=KokoroTts(),
+    )
+
+
+async def handle_connection(
+    websocket,
+    *,
+    session_factory: Callable[[Transport], SessionRunner] = build_session,
+) -> None:
+    transport = WebSocketTransport(websocket)
+    session = session_factory(transport)
+    logger.info("client connected")
+    try:
+        async for message in websocket:
+            if isinstance(message, bytes):
+                await session.handle_audio(message)
+            else:
+                await session.handle_text(message)
+        await session.wait_for_turn()
+    finally:
+        await session.aclose()
+        logger.info("client disconnected")
+
+
+async def serve() -> None:
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    logger.info(
+        "listening on ws://%s:%s (model=%s)",
+        config.SERVER_HOST,
+        config.SERVER_PORT,
+        config.OLLAMA_MODEL,
+    )
+    async with websockets.serve(
+        handle_connection, config.SERVER_HOST, config.SERVER_PORT, max_size=None
+    ):
+        await asyncio.Future()
+
+
+def main() -> None:
+    try:
+        asyncio.run(serve())
+    except KeyboardInterrupt:
+        logger.info("shutting down")
+
+
+if __name__ == "__main__":
+    main()
