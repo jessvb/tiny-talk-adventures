@@ -253,6 +253,57 @@ async def test_speech_start_mid_turn_is_treated_as_an_interrupt(transport):
     assert stt.fed == [b"\x09"]
 
 
+async def test_cancel_turn_propagates_the_callers_own_cancellation(transport):
+    # Regression test: `_cancel_turn` always calls `task.cancel()` on the
+    # turn task itself before `await task`, so `task.cancelled()` is True on
+    # every path and can't be used to tell "the turn task we just cancelled
+    # finished being cancelled" (must swallow) apart from "our own caller
+    # was cancelled while sitting at `await task`" (must propagate). This
+    # exercises the second case directly, via deterministic
+    # asyncio.sleep(0) interleaving rather than real-time delays, so it
+    # cannot flake.
+    class HangingTts:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        async def synthesize(self, text: str):
+            try:
+                while True:
+                    await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+            yield b""  # pragma: no cover - unreachable, marks this a generator
+
+    tts = HangingTts()
+    session = make_session(transport, tts=tts)
+
+    await session.handle_text(SPEECH_START)
+    await session.handle_text(SPEECH_END)
+
+    # Let the turn task run up to its first real suspension point, inside
+    # HangingTts.synthesize's `await asyncio.sleep(0)`.
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    # Simulate the connection handler calling aclose() as its own task, then
+    # being cancelled itself while suspended at `await task` inside
+    # _cancel_turn -- exactly the shutdown race the removed comment claimed
+    # to handle correctly.
+    outer = asyncio.create_task(session.aclose())
+    await asyncio.sleep(0)  # let outer reach `task.cancel(); await task`
+    outer.cancel()
+
+    propagated = False
+    try:
+        await outer
+    except asyncio.CancelledError:
+        propagated = True
+
+    assert propagated, "the caller's own cancellation must propagate, not be swallowed"
+    assert tts.cancelled is True
+
+
 async def test_fail_turn_restores_state_even_if_sending_the_error_fails(transport):
     # Regression test for review finding 3: if the transport itself is dead
     # (closed socket) the error-send can raise. The state walk-back must

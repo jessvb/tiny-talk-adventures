@@ -149,13 +149,19 @@ class SessionRunner:
             await task
         except asyncio.CancelledError:
             # `await task` raises CancelledError both when the turn task
-            # itself finished being cancelled (expected — swallow it) and
-            # when cancellation was aimed at *this* coroutine instead (e.g.
-            # the connection handler being cancelled during shutdown while
-            # sitting at this await). Only the first case leaves the turn
-            # task actually done; in the second, re-raise so the caller's
-            # own cancellation isn't silently absorbed.
-            if not task.cancelled():
+            # itself finished being cancelled by our own `task.cancel()`
+            # above (expected — swallow it) and when cancellation was aimed
+            # at *this* coroutine instead (e.g. the connection handler being
+            # cancelled during shutdown while sitting at this await). Since
+            # we unconditionally call task.cancel() on every path here,
+            # `task.cancelled()` is True in both cases and can't tell them
+            # apart. `current_task().cancelling()` can: it reports whether
+            # *our own* task has an outstanding cancellation request,
+            # independent of what we did to the inner task. Only re-raise
+            # when that's the case, so the caller's own cancellation isn't
+            # silently absorbed.
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
                 raise
         if record_spoken and self._spoken:
             self._conversation.add_agent(" ".join(self._spoken), interrupted=True)
