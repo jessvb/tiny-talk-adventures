@@ -120,7 +120,17 @@ class SessionRunner:
         if self._machine.state is not State.LISTENING:
             return
         self._transition(Event.SPEECH_END)
-        transcript = self._stt.finish()
+        try:
+            # KyutaiStt.finish() runs model inference (an MLX forward pass
+            # over the whole utterance) — potentially 0.5-3s. Running it off
+            # the event loop is what lets an interrupt still be handled
+            # while the transcript is being finalized, same reasoning as
+            # KokoroTts.synthesize's asyncio.to_thread usage.
+            transcript = await asyncio.to_thread(self._stt.finish)
+        except EngineError as exc:
+            logger.error("engine failure finishing the utterance: %s", exc)
+            await self._fail_turn(str(exc))
+            return
         await self._transport.send_text(encode_transcript_final(transcript))
         if not transcript.strip():
             self._transition(Event.RESPONSE_READY)

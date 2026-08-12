@@ -163,6 +163,11 @@ async def test_interrupted_turn_is_visible_to_the_next_llm_call(transport):
     assert second_call[2]["role"] == "assistant"
     assert second_call[2]["content"].endswith(INTERRUPTED_MARKER)
 
+    # The session must fully recover after the barge-in, not just accept the
+    # next transcript: the second turn has to actually complete cleanly.
+    assert session.state is State.IDLE
+    assert "turn_end" in transport.types()
+
 
 async def test_interrupt_resets_stt_so_old_audio_is_discarded(transport):
     stt = FakeStt()
@@ -302,6 +307,27 @@ async def test_cancel_turn_propagates_the_callers_own_cancellation(transport):
 
     assert propagated, "the caller's own cancellation must propagate, not be swallowed"
     assert tts.cancelled is True
+
+
+async def test_stt_finish_failure_walks_the_state_back_to_idle(transport):
+    # Regression test for review finding 2: stt.finish() raising EngineError
+    # (e.g. a real Kyutai model failure) must not leave the session wedged in
+    # THINKING -- it should be reported as an error and walked back to IDLE,
+    # the same as any other engine failure during a turn.
+    class BoomStt(FakeStt):
+        def finish(self) -> str:
+            raise EngineError("stt exploded")
+
+    session = make_session(transport, stt=BoomStt())
+
+    await session.handle_text(SPEECH_START)
+    await session.handle_audio(b"\x01\x02")
+    await session.handle_text(SPEECH_END)
+
+    errors = transport.messages_of_type("error")
+    assert len(errors) == 1
+    assert "stt exploded" in errors[0]["message"]
+    assert session.state is State.IDLE
 
 
 async def test_fail_turn_restores_state_even_if_sending_the_error_fails(transport):

@@ -20,7 +20,11 @@ class SttEngine(Protocol):
         ...
 
     def finish(self) -> str:
-        """Finalize the utterance and return the full transcript."""
+        """Finalize the utterance and return the full transcript.
+
+        May block on model inference (e.g. an MLX forward pass); callers
+        should run it off the event loop, e.g. via `asyncio.to_thread`.
+        """
         ...
 
     def reset(self) -> None:
