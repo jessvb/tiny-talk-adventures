@@ -98,6 +98,27 @@ Not yet scoped in detail; deferred until the iOS path is working. Will need
 Android Studio and likely separate VAD/audio tuning given the older hardware
 (see the design spec's non-goals).
 
+### Running the server
+
+Three terminals:
+
+```bash
+# 1. Ollama
+ollama serve
+
+# 2. The voice/dialog server
+cd server && source .venv/bin/activate && python -m storyadventure.app
+
+# 3. The CLI test client (stands in for the phone)
+cd server && source .venv/bin/activate
+say "tell me a story about a brave little fox" -o /tmp/utterance.wav --data-format=LEI16@16000
+python tools/test_client.py /tmp/utterance.wav          # full turn
+python tools/test_client.py /tmp/utterance.wav --interrupt-after 0.8   # barge-in
+afplay /tmp/reply.wav
+```
+
+Run the tests with `cd server && source .venv/bin/activate && pytest`.
+
 ## Repo layout
 
 - `docs/superpowers/specs/` — design specs, one per sub-project, dated
