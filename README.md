@@ -131,14 +131,22 @@ you follow the steps below today, expect
 That's expected, not a bug.
 
 **First setup (one-time only):** Create the virtualenv and install all
-dependencies — this is the only place anything gets installed:
+dependencies (`tinytalk` itself, Kyutai STT, Kokoro TTS, and test tools) —
+this is the only place anything gets installed:
 
 ```bash
 cd server
-python3.12 -m venv .venv          # creates the .venv directory
-source .venv/bin/activate         # activates the venv for this terminal
-pip install -e ".[dev]"           # installs tinytalk, Kyutai STT, Kokoro TTS, and test tools
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
 ```
+
+> **Copy-pasting commands from this README:** paste each code block as a
+> whole, not line-by-line with extra text appended. If your shell is zsh
+> (the macOS default — check with `echo $SHELL`), it does **not** treat a
+> trailing `# comment` as a comment inside an interactive command the way
+> bash does; anything after `#` gets passed as a literal extra argument
+> instead. That's why these commands are written with no inline comments.
 
 **Every time you open a new terminal:** Activate the venv before running
 server commands:
@@ -156,18 +164,32 @@ activation command above.
 
 Then, three terminals:
 
+**Terminal 1 — Ollama:**
+
 ```bash
-# 1. Ollama
 ollama serve
+```
 
-# 2. The voice/dialog server
+**Terminal 2 — the voice/dialog server:**
+
+```bash
 cd server && source .venv/bin/activate && python -m tinytalk.app
+```
 
-# 3. The CLI test client (stands in for the phone)
+**Terminal 3 — the CLI test client** (stands in for the phone). Record a
+test utterance, then run a full turn, then try a barge-in interrupt:
+
+```bash
 cd server && source .venv/bin/activate
 say "tell me a story about a brave little fox" -o /tmp/utterance.wav --data-format=LEI16@16000
-python tools/test_client.py /tmp/utterance.wav          # full turn
-python tools/test_client.py /tmp/utterance.wav --interrupt-after 0.8   # barge-in
+python tools/test_client.py /tmp/utterance.wav
+```
+
+```bash
+python tools/test_client.py /tmp/utterance.wav --interrupt-after 0.8
+```
+
+```bash
 afplay /tmp/reply.wav
 ```
 
