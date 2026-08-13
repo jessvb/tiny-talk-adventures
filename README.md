@@ -57,15 +57,32 @@ utterance — audio arriving outside a listening state is silently dropped
 
 The voice/dialog pipeline server (see Status above) is implemented under
 `server/`. This section covers how to set up the environment to run it.
-Commands verified 2026-08-12; re-check versions if it's been a while.
+Commands verified 2026-08-13; re-check versions if it's been a while.
+
+**Isolation policy:** nothing for this project is ever installed into
+system Python or a global environment. Python version selection is pinned
+per-directory via [pyenv](https://github.com/pyenv/pyenv) (`server/.python-version`),
+and every Python package — including `tinytalk` itself — lives in
+`server/.venv`, created fresh by the steps below. The one exception is
+system-level tooling that isn't a Python package and has no meaningful
+"environment" of its own: Ollama and espeak-ng are installed via Homebrew,
+same as any other CLI tool on the machine. (Docker was considered and
+rejected for this project: Kyutai STT's MLX backend needs direct access to
+Apple's Metal/Neural Engine hardware, which Docker Desktop on macOS cannot
+provide — containers there run inside a Linux VM with no Metal passthrough.)
 
 ### Mac server prerequisites
 
 1. **Homebrew** (if not already installed): https://brew.sh
-2. **Python 3.12** — required by `moshi_mlx` (Kyutai STT):
+2. **pyenv** — manages the pinned Python version without ever touching
+   system Python:
    ```
-   brew install python@3.12
+   brew install pyenv
+   pyenv install 3.12.12   # matches server/.python-version
    ```
+   `cd server` will then auto-select 3.12.12 via `.python-version` — no
+   `brew install python@3.12`, and no relying on whatever `python3` already
+   resolves to on your machine.
 3. **espeak-ng** — required by Kokoro TTS:
    ```
    brew install espeak-ng
@@ -78,18 +95,14 @@ Commands verified 2026-08-12; re-check versions if it's been a while.
    Note: Ollama's newer MLX backend (added March 2026) needs 32GB unified
    memory. On this 16GB M1, Ollama will use its default Metal backend
    instead — that's expected, not a misconfiguration.
-5. **Kyutai STT** (MLX build), in a Python 3.12 virtualenv:
-   ```
-   pip install moshi_mlx
-   ```
-   Quick test once installed:
+5. **Kyutai STT** (MLX build) — added to `server/pyproject.toml`'s
+   dependencies already; installed by `pip install -e ".[dev]"` below, inside
+   `server/.venv`. To test it standalone once the venv is active:
    ```
    python -m moshi_mlx.run_inference --hf-repo kyutai/stt-2.6b-en-mlx <audio-file> --temp 0
    ```
-6. **Kokoro TTS**, in the same virtualenv:
-   ```
-   pip install kokoro soundfile
-   ```
+6. **Kokoro TTS** — also a declared dependency, installed the same way as
+   Kyutai STT above.
 
 ### Phone (iOS) prerequisites
 
@@ -115,7 +128,9 @@ you follow the steps below today, expect
 `error: Kyutai STT failed to transcribe: ...` on the first real utterance.
 That's expected, not a bug.
 
-First, create the virtualenv and install the package (one-time setup):
+First, create the virtualenv and install the package (one-time setup — this
+is the only place anything gets installed; `server/.python-version` makes
+`python3.12` resolve to the pyenv-managed 3.12.12 rather than system Python):
 
 ```bash
 cd server
@@ -123,6 +138,12 @@ python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 ```
+
+Every subsequent command in this README assumes that venv is active
+(`source .venv/bin/activate` from inside `server/`). Nothing should ever be
+`pip install`ed without it active — if a command prints `command not found`
+for something Python-related, that's usually the venv not being active, not
+a missing system install.
 
 Then, three terminals:
 
@@ -147,7 +168,9 @@ Run the tests with `cd server && source .venv/bin/activate && pytest`.
 
 - `docs/superpowers/specs/` — design specs, one per sub-project, dated
 - `server/` — the voice/dialog pipeline server: Python, pytest, see
-  "Running the server" below
+  "Running the server" below. `server/.python-version` pins the pyenv
+  Python version; `server/.venv` (gitignored) is where all Python
+  dependencies actually live — see the Setup section's isolation policy.
 - (further implementation directories to follow as sub-projects are built)
 
 ## Development
