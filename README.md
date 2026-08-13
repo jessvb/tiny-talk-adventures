@@ -12,9 +12,9 @@ Personal pet project, built for one family, not intended to scale or ship.
 ## Why
 
 Three reasons this exists:
-- Learning to build with Claude Code
 - Learning how to build an interruptible, low-latency voice dialog system
-- Building something real for the author's kid to play and learn with
+- Learning to build with Claude Code
+- Building something real for my kiddo to play and learn with
 
 ## Status
 
@@ -95,14 +95,16 @@ provide — containers there run inside a Linux VM with no Metal passthrough.)
    Note: Ollama's newer MLX backend (added March 2026) needs 32GB unified
    memory. On this 16GB M1, Ollama will use its default Metal backend
    instead — that's expected, not a misconfiguration.
-5. **Kyutai STT** (MLX build) — added to `server/pyproject.toml`'s
-   dependencies already; installed by `pip install -e ".[dev]"` below, inside
-   `server/.venv`. To test it standalone once the venv is active:
+5. **Kyutai STT** (MLX build) — already declared in `server/pyproject.toml`;
+   no manual installation needed. It will be installed automatically in step 3
+   of "Running the server" below when you run `pip install -e ".[dev]"` inside
+   the venv. Once the venv is active, you can test it standalone:
    ```
    python -m moshi_mlx.run_inference --hf-repo kyutai/stt-2.6b-en-mlx <audio-file> --temp 0
    ```
-6. **Kokoro TTS** — also a declared dependency, installed the same way as
-   Kyutai STT above.
+6. **Kokoro TTS** — also already declared in `server/pyproject.toml`; no manual
+   installation needed. Like Kyutai STT, it installs automatically with
+   `pip install -e ".[dev]"` in step 3 of "Running the server" below.
 
 ### Phone (iOS) prerequisites
 
@@ -128,22 +130,29 @@ you follow the steps below today, expect
 `error: Kyutai STT failed to transcribe: ...` on the first real utterance.
 That's expected, not a bug.
 
-First, create the virtualenv and install the package (one-time setup — this
-is the only place anything gets installed; `server/.python-version` makes
-`python3.12` resolve to the pyenv-managed 3.12.12 rather than system Python):
+**First setup (one-time only):** Create the virtualenv and install all
+dependencies — this is the only place anything gets installed:
 
 ```bash
 cd server
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+python3.12 -m venv .venv          # creates the .venv directory
+source .venv/bin/activate         # activates the venv for this terminal
+pip install -e ".[dev]"           # installs tinytalk, Kyutai STT, Kokoro TTS, and test tools
 ```
 
-Every subsequent command in this README assumes that venv is active
-(`source .venv/bin/activate` from inside `server/`). Nothing should ever be
-`pip install`ed without it active — if a command prints `command not found`
-for something Python-related, that's usually the venv not being active, not
-a missing system install.
+**Every time you open a new terminal:** Activate the venv before running
+server commands:
+
+```bash
+cd server
+source .venv/bin/activate
+```
+
+The `source .venv/bin/activate` command tells your shell to use the venv's
+Python and packages for that terminal session. Every subsequent command in
+this README assumes the venv is active. If you see `command not found` for
+something Python-related, the venv is probably not active — run the
+activation command above.
 
 Then, three terminals:
 
