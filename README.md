@@ -24,11 +24,15 @@ for specs in progress.
 
 The **voice/dialog pipeline** — the interruptible speech I/O layer (phone
 client + local Mac server), built first because low-latency barge-in
-handling is the core technical learning goal — has its server implemented on
-the `voice-dialog-server` branch, pending merge. One piece is still
-pending: `tinytalk/stt_kyutai.py`'s recognizer is a deliberate stub
-while the real `moshi_mlx` API is explored separately (see "Running the
-server" below).
+handling is the core technical learning goal — has its server implemented
+and merged to `main`, verified end to end against real models (Kyutai STT,
+Qwen 3.5 9B via Ollama, Kokoro TTS) including a real barge-in test.
+
+**Known constraint, confirmed real (not just a risk on paper):** running all
+three models concurrently is tight on an M1/16GB — see the design spec's
+"Open questions / risks" for what was actually measured. In short: expect
+slow or occasionally failed replies on a loaded machine, and close other
+memory-hungry apps for a fair test.
 
 Next up: the iOS phone client.
 
@@ -123,12 +127,12 @@ Android Studio and likely separate VAD/audio tuning given the older hardware
 
 ### Running the server
 
-**Known limitation:** `tinytalk/stt_kyutai.py`'s recognizer is
-currently a deliberate stub (`NotImplementedError`) pending exploration of
-the real `moshi_mlx` API — a human partner is filling it in separately. If
-you follow the steps below today, expect
-`error: Kyutai STT failed to transcribe: ...` on the first real utterance.
-That's expected, not a bug.
+**Known constraint:** all three models (Kyutai STT, Ollama/Qwen, Kokoro TTS)
+together need close to the full 16GB on an M1. Close other memory-heavy
+apps (browsers, IDEs, VMs) before testing — with them running, expect slow
+replies or an occasional failed turn from Ollama specifically, not from
+this server's own code. See the design spec's "Open questions / risks" for
+what was actually measured.
 
 **First setup (one-time only):** Create the virtualenv and install all
 dependencies (`tinytalk` itself, Kyutai STT, Kokoro TTS, and test tools) —
