@@ -30,6 +30,20 @@ public final class WebSocketServerConnection: ServerConnecting, @unchecked Senda
 
     public func events() -> AsyncStream<ServerConnectionEvent> { stream }
 
+    /// Continuously receives WebSocket messages and dispatches them as events.
+    ///
+    /// Dispatch logic: binary frames → `.audio` events, text frames → `decodeServerEvent`
+    /// → `.message` events, malformed text → logged (not silent), any error → `.closed` + finish.
+    ///
+    /// Testing note: This function's 3-branch dispatch logic does not have a dedicated
+    /// loopback integration test. Coverage comes from:
+    /// - `decodeServerEvent` itself has 11 dedicated unit tests (Task 1, Protocol.swift)
+    ///   verifying all decode paths and error cases
+    /// - The dispatch branches are thin (one line each) and trivially reviewable
+    /// - Real end-to-end testing happens in Task 8 against the actual Python server
+    ///   running over the network, which is a more meaningful verification than a
+    ///   synthetic fixture would provide
+    /// Malformed frame logging is verified to not crash/hang by existing tests.
     private func receiveLoop() async {
         guard let task else {
             continuation.yield(.closed)
