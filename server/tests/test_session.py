@@ -236,6 +236,21 @@ async def test_aclose_cancels_an_in_flight_turn(transport):
     assert tts.cancelled is True
 
 
+async def test_aclose_resets_stt_so_a_dropped_connection_cannot_leak_audio(transport):
+    # Engines are shared across connections in production (app.py) for
+    # loading cost reasons; a dropped connection must not leave stale
+    # buffered audio in the STT engine for the next connection to inherit.
+    stt = FakeStt()
+    session = make_session(transport, stt=stt)
+
+    await session.handle_text(SPEECH_START)
+    await session.handle_audio(b"\x01\x02")
+    await session.aclose()
+
+    assert stt.resets == 1
+    assert stt.fed == []
+
+
 async def test_speech_start_mid_turn_is_treated_as_an_interrupt(transport):
     # Regression test for review finding 1: a speech_start arriving while a
     # turn is in flight (THINKING or SPEAKING) must not wedge the session in

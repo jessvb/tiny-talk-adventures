@@ -70,8 +70,13 @@ async def test_handle_connection_drives_a_full_turn():
     # The binary frame must actually have reached the STT engine -- this is
     # the routing this task is responsible for, and it's easy to break
     # silently since FakeStt.finish() returns a canned transcript regardless
-    # of what was fed to it.
-    assert stt.fed == [b"\x01\x02"]
+    # of what was fed to it. Checked via resets/all_fed rather than
+    # stt.fed directly: handle_connection's cleanup now resets the STT on
+    # every disconnect (shared engines mean a dropped connection must not
+    # leave stale buffered audio for whoever connects next), which clears
+    # stt.fed as its own correct side effect.
+    assert stt.all_fed == [b"\x01\x02"]
+    assert stt.resets == 1
 
     text_frames = [item for item in websocket.sent if isinstance(item, str)]
     assert any("transcript_final" in frame for frame in text_frames)

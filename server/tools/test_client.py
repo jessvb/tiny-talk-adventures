@@ -22,7 +22,7 @@ import websockets
 
 from tinytalk.audio import MIC_SAMPLE_RATE, TTS_SAMPLE_RATE
 
-CHUNK_FRAMES = 1600  # 100 ms at 16 kHz
+CHUNK_FRAMES = 2400  # 100 ms at 24 kHz
 
 
 def read_wav(path: str) -> bytes:
@@ -81,7 +81,7 @@ async def receive(websocket, audio: list[bytes], remaining_turn_ends: int, start
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("wav", help="mono 16 kHz PCM16 WAV file to send as mic audio")
+    parser.add_argument("wav", help="mono 24 kHz PCM16 WAV file to send as mic audio")
     parser.add_argument("--url", default="ws://localhost:8765")
     parser.add_argument(
         "--interrupt-after",

@@ -6,13 +6,14 @@ Binary frames are mic audio; text frames are JSON control messages.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from typing import Callable
 
 import websockets
 
 from . import config
-from .engines import EngineError
+from .engines import EngineError, LlmEngine, SttEngine, TtsEngine
 from .llm_ollama import OllamaLlm
 from .protocol import encode_error
 from .session import SessionRunner, Transport
@@ -33,21 +34,16 @@ class WebSocketTransport:
         await self._websocket.send(payload)
 
 
-def build_session(transport: Transport) -> SessionRunner:
-    # Engines are per-connection so one session's STT buffer can never bleed
-    # into another's. Single-household use, so the memory cost is fine.
-    return SessionRunner(
-        transport=transport,
-        stt=KyutaiStt(),
-        llm=OllamaLlm(),
-        tts=KokoroTts(),
-    )
+def build_session(
+    transport: Transport, *, stt: SttEngine, llm: LlmEngine, tts: TtsEngine
+) -> SessionRunner:
+    return SessionRunner(transport=transport, stt=stt, llm=llm, tts=tts)
 
 
 async def handle_connection(
     websocket,
     *,
-    session_factory: Callable[[Transport], SessionRunner] = build_session,
+    session_factory: Callable[[Transport], SessionRunner],
 ) -> None:
     transport = WebSocketTransport(websocket)
     session = session_factory(transport)
@@ -81,8 +77,28 @@ async def serve() -> None:
         config.SERVER_PORT,
         config.OLLAMA_MODEL,
     )
+
+    # Built once and shared across every connection: each of these lazily
+    # loads a multi-GB model on first use and caches it for its own
+    # lifetime. Constructing fresh ones per connection (the original design)
+    # meant every reconnect reloaded gigabytes of weights from disk from
+    # scratch for no reason -- confirmed wasteful by inspection (KyutaiStt
+    # and KokoroTts both cache their model on first use per-instance, so a
+    # new instance always pays that cost again). Sharing is safe because
+    # none of the three carry cross-utterance state except KyutaiStt's
+    # buffer, which SessionRunner.aclose() resets on every disconnect. See
+    # the design spec's "Open questions / risks" for the separate, larger
+    # finding this benchmarking surfaced: running all three models
+    # concurrently is a real memory-pressure risk on a 16GB Mac, traced to
+    # Ollama's own inference rather than to engine construction here.
+    stt = KyutaiStt()
+    llm = OllamaLlm()
+    tts = KokoroTts()
+    session_factory = functools.partial(build_session, stt=stt, llm=llm, tts=tts)
+    handler = functools.partial(handle_connection, session_factory=session_factory)
+
     async with websockets.serve(
-        handle_connection, config.SERVER_HOST, config.SERVER_PORT, max_size=None
+        handler, config.SERVER_HOST, config.SERVER_PORT, max_size=None
     ):
         await asyncio.Future()
 

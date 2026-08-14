@@ -8,16 +8,16 @@ from __future__ import annotations
 
 import os
 
-SERVER_HOST = os.environ.get("STORYADVENTURE_HOST", "0.0.0.0")
-SERVER_PORT = int(os.environ.get("STORYADVENTURE_PORT", "8765"))
+SERVER_HOST = os.environ.get("TINYTALK_HOST", "0.0.0.0")
+SERVER_PORT = int(os.environ.get("TINYTALK_PORT", "8765"))
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("STORYADVENTURE_MODEL", "qwen3.5:9b")
+OLLAMA_MODEL = os.environ.get("TINYTALK_MODEL", "qwen3.5:9b")
 
-STT_HF_REPO = os.environ.get("STORYADVENTURE_STT_REPO", "kyutai/stt-2.6b-en-mlx")
+STT_HF_REPO = os.environ.get("TINYTALK_STT_REPO", "kyutai/stt-2.6b-en-mlx")
 
-KOKORO_LANG_CODE = os.environ.get("STORYADVENTURE_TTS_LANG", "a")
-KOKORO_VOICE = os.environ.get("STORYADVENTURE_TTS_VOICE", "af_heart")
+KOKORO_LANG_CODE = os.environ.get("TINYTALK_TTS_LANG", "a")
+KOKORO_VOICE = os.environ.get("TINYTALK_TTS_VOICE", "af_heart")
 
 SYSTEM_PROMPT = (
     "You are a warm, playful storyteller telling a story out loud with a young "

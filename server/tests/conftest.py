@@ -30,10 +30,12 @@ class FakeStt:
     def __init__(self, transcript: str = "tell me about a fox") -> None:
         self.transcript = transcript
         self.fed: list[bytes] = []
+        self.all_fed: list[bytes] = []  # unlike fed, survives reset() -- for asserting
         self.resets = 0
 
     def feed(self, pcm: bytes) -> str | None:
         self.fed.append(pcm)
+        self.all_fed.append(pcm)
         return None
 
     def finish(self) -> str:

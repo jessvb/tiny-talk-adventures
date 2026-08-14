@@ -6,7 +6,7 @@ import re
 
 import numpy as np
 
-MIC_SAMPLE_RATE = 16000
+MIC_SAMPLE_RATE = 24000
 TTS_SAMPLE_RATE = 24000
 
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
