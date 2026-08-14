@@ -43,8 +43,11 @@ public final class WebSocketServerConnection: ServerConnecting, @unchecked Senda
                 case .data(let pcm):
                     continuation.yield(.audio(pcm))
                 case .string(let raw):
-                    if let event = try? decodeServerEvent(raw) {
+                    do {
+                        let event = try decodeServerEvent(raw)
                         continuation.yield(.message(event))
+                    } catch {
+                        print("WebSocketServerConnection: malformed server frame: \(error)")
                     }
                 @unknown default:
                     continue
