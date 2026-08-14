@@ -6,7 +6,16 @@ final class FakeAudio: AudioPlaying, @unchecked Sendable {
     private var _stopped = false
     private var _played: [Data] = []
     private var _playWasCancelled = false
-    var playDelayNanos: UInt64 = 0
+    private var _playDelayNanos: UInt64 = 0
+    /// Lock-protected (not a bare var) so a test can safely flip this
+    /// mid-run -- e.g. to let one chunk be genuinely slow while later
+    /// chunks resolve instantly, isolating "did a buffered event reach
+    /// play() at all" from "Task.sleep's own cancellation-awareness
+    /// happened to save us."
+    var playDelayNanos: UInt64 {
+        get { lock.withLock { _playDelayNanos } }
+        set { lock.withLock { _playDelayNanos = newValue } }
+    }
 
     var stopped: Bool { lock.withLock { _stopped } }
     var played: [Data] { lock.withLock { _played } }
@@ -21,6 +30,7 @@ final class FakeAudio: AudioPlaying, @unchecked Sendable {
     }
 
     func play(_ pcm: Data) async {
+        let playDelayNanos = playDelayNanos
         if playDelayNanos > 0 {
             do {
                 try await Task.sleep(nanoseconds: playDelayNanos)

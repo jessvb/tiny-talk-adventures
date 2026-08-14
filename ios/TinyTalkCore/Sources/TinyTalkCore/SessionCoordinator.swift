@@ -53,13 +53,18 @@ public actor SessionCoordinator {
         }
     }
 
-    /// Called by the real AudioEngine (Task 6) as mic audio is captured
-    /// while .listening. Exposed as a method (not folded into VAD's own
-    /// event stream) because captured audio and VAD's speech/silence
-    /// decisions are two independent streams from two different sources.
+    /// Called by the real AudioEngine (Task 6) as mic audio is captured.
+    /// VAD must be fed unconditionally, regardless of state -- it has to
+    /// keep monitoring the mic while the agent is .speaking, since that is
+    /// the only way a barge-in can ever be detected in the first place.
+    /// Only the network send (uploading the child's own speech to the
+    /// server) is gated on .listening. Exposed as a method (not folded
+    /// into VAD's own event stream) because captured audio and VAD's
+    /// speech/silence decisions are two independent streams from two
+    /// different sources.
     public func captureAudio(_ pcm: Data) async {
-        guard machine.state == .listening else { return }
         vad.feed(pcm)
+        guard machine.state == .listening else { return }
         try? await connection.send(audio: pcm)
     }
 
@@ -120,6 +125,20 @@ public actor SessionCoordinator {
     /// Cancelling turnTask genuinely cancels whatever this is awaiting.
     private func runTurn(_ turnStream: AsyncStream<ServerConnectionEvent>) async {
         for await event in turnStream {
+            // `interrupt()`/the `.closed` handler finish() the stream and
+            // cancel this task, but AsyncStream.finish() only stops NEW
+            // items from being enqueued -- it does not discard items
+            // already buffered (e.g. several TTS chunks plus a turnEnd
+            // that arrived back-to-back, faster than play() drains them).
+            // A stale, cancelled runTurn would otherwise keep delivering
+            // those buffered events -- playing audio after the child was
+            // told to stop, and worse, applying a stale turnEnd to
+            // `machine`/`turnContinuation` even after a NEW turn has
+            // already started, corrupting it. Checking cancellation before
+            // touching any shared state on every iteration closes that
+            // window: cancel() is synchronous, so this check reliably
+            // catches a stale turn on its very next loop iteration.
+            if Task.isCancelled { return }
             switch event {
             case .audio(let pcm):
                 if machine.state == .waitingForReply {
@@ -150,13 +169,20 @@ public actor SessionCoordinator {
         // The critical operation: stop sound RIGHT NOW, before anything
         // else in this method runs, so nothing async can delay it further.
         audio.stopPlaybackImmediately()
+        // Stamp the headline latency metric (vadFireToPlaybackStoppedMillis)
+        // right here, immediately after the stop actually happened -- not
+        // after the network send below. recordPlaybackStopped both records
+        // "now" and finalizes/removes the pending entry, so calling it
+        // this early means the metric reflects only VAD-fire-to-actual-stop,
+        // not VAD-fire-to-actual-stop-plus-a-network-round-trip. Because the
+        // entry is finalized here, recordInterruptSent(for:) below would be
+        // a no-op if called -- intentionally not called.
+        latencyLogger.recordPlaybackStopped(for: id)
         turnContinuation?.finish()
         turnContinuation = nil
         turnTask?.cancel()
         turnTask = nil
         _ = try? machine.handle(.interrupt)
         try? await connection.send(.interrupt)
-        latencyLogger.recordInterruptSent(for: id)
-        latencyLogger.recordPlaybackStopped(for: id)
     }
 }
