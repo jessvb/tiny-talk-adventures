@@ -100,6 +100,11 @@ class SessionRunner:
 
     async def aclose(self) -> None:
         await self._cancel_turn(record_spoken=False)
+        # Engines are shared across connections (loading them is expensive --
+        # see app.py), so a connection that drops mid-utterance must not
+        # leave stale buffered audio behind for whatever connection uses
+        # this STT engine next.
+        self._stt.reset()
 
     async def _start_listening(self) -> None:
         if self._machine.state in (State.THINKING, State.SPEAKING):

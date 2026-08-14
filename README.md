@@ -181,7 +181,7 @@ test utterance, then run a full turn, then try a barge-in interrupt:
 
 ```bash
 cd server && source .venv/bin/activate
-say "tell me a story about a brave little fox" -o /tmp/utterance.wav --data-format=LEI16@16000
+say "tell me a story about a brave little fox" -o /tmp/utterance.wav --data-format=LEI16@24000
 python tools/test_client.py /tmp/utterance.wav
 ```
 

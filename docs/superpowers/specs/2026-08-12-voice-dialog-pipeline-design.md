@@ -159,12 +159,59 @@ testing isn't a good investment. The plan:
 
 ## Open questions / risks
 
-- Kyutai's built-in semantic VAD ("is the user done talking") is documented
-  as available in their Rust server but not confirmed for the Python/MLX
-  path this design relies on. If it's unavailable there, `speech_end` will
-  rely solely on the phone-side Silero VAD's silence detection instead —
-  acceptable fallback, but worth confirming early during implementation.
-- No confirmed benchmark of Kyutai STT/Kokoro/Qwen 3.5 9B running
-  concurrently on an M1 (vs. the newer chips most current benchmarks target).
-  Should validate real-world latency/memory headroom early, since running
-  three models on one 16GB Mac at once is the main hardware risk.
+- **Resolved (2026-08-13):** the installed `moshi_mlx` (0.3.0) has no
+  ready-made streaming or semantic-VAD-exposing API in Python at all — no
+  class you can feed incremental audio to and read partial text or an
+  end-of-turn signal from. The only Python entry point is a single-file
+  batch flow (`moshi_mlx.run_inference`'s `main()`): load the whole
+  utterance's audio, run it through in fixed 1920-sample (80ms) steps, and
+  collect whatever text tokens come out. `tinytalk/stt_kyutai.py`'s
+  `KyutaiStt.feed()`/`.finish()` are built around this: `feed()` only
+  buffers, `finish()` runs the batch transcription once the phone's VAD says
+  the utterance is over. The fallback this design already anticipated is
+  therefore not a fallback — it's the only option this package version
+  offers. (Kyutai's Rust server reportedly exposes more; out of scope here.)
+- Also discovered while implementing: the real model requires 24kHz audio
+  (confirmed from `kyutai/stt-2.6b-en-mlx`'s `config.json`) and needs
+  silence padding around the utterance (`audio_silence_prefix_seconds` +
+  `audio_delay_seconds` from that same config) because the model is causal
+  and running behind the audio — without the trailing pad it has no room to
+  emit the end of the transcript. `MIC_SAMPLE_RATE` was changed from the
+  originally-assumed 16kHz to 24kHz to match, unifying it with
+  `TTS_SAMPLE_RATE` (already 24kHz) — one consistent audio domain, no
+  resampling anywhere in the pipeline.
+- **Confirmed as a real risk, not just a hypothetical one (2026-08-14):**
+  benchmarked Kyutai STT + Kokoro TTS + Qwen 3.5 9B (Ollama) running together
+  on an M1/16GB, engines shared across connections (loaded once at server
+  startup — see `tinytalk/app.py`'s `serve()` — not per-connection, which was
+  fixed during this benchmarking after an early per-connection design was
+  found to reload multi-GB weights on every reconnect).
+
+  With the machine's memory otherwise mostly free (other apps closed,
+  `caffeinate` preventing sleep during the test), a first turn was fast and
+  correct (~28-40s: STT + LLM, and ~7-130s for TTS depending on reply
+  length). A second turn, immediately after, was consistently much worse —
+  anywhere from ~2x slower to a full LLM timeout returning an empty reply,
+  across several repeated trials. Root-caused with in-process timing
+  instrumentation (not guesswork): **Kyutai STT and Kokoro TTS were not the
+  problem** — both stayed fast and stable turn over turn, confirmed by
+  direct measurement, including a case where a real second-turn TTS call
+  logged 0.5-0.8s per sentence, same as the first turn. The instability is
+  in **Ollama's LLM inference itself**, which sometimes took 450+ seconds
+  and returned empty content. This correlates directly with total system
+  memory: our server process (Kyutai + Kokoro, ~6.6GB resident) and
+  Ollama's `llama-server` (~5.4-6.6GB resident) together leave the machine
+  with only tens of MB of free memory once both are warm — confirmed via
+  `vm_stat`/`top` showing free pages collapsing to near-zero and heavy
+  swap-compressor activity immediately after a real two-turn run, even with
+  no other applications competing for RAM.
+
+  This is a genuine hardware capacity constraint, not a software defect —
+  running all three models concurrently on a 16GB Mac is tight to the point
+  of causing real instability, exactly as this risk originally predicted.
+  Not fixed as part of this work (fixing it means a hardware or model-size
+  decision, not a code change to this pipeline). Options for whoever picks
+  this up next: a smaller/more quantized LLM than `qwen3.5:9b` (6.6GB),
+  reducing Ollama's context window, more RAM, or accepting that this
+  single-household server needs to run with little else competing for
+  memory on the host Mac during real use.

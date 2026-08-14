@@ -11,7 +11,9 @@ from tinytalk.audio import (
 
 
 def test_sample_rates_match_the_wire_format():
-    assert MIC_SAMPLE_RATE == 16000
+    # Both match Kyutai's native 24kHz (its Mimi audio codec and STT model
+    # both operate at 24kHz) -- one consistent audio domain, no resampling.
+    assert MIC_SAMPLE_RATE == 24000
     assert TTS_SAMPLE_RATE == 24000
 
 
