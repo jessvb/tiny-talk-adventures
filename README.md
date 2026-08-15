@@ -199,6 +199,30 @@ afplay /tmp/reply.wav
 
 Run the tests with `cd server && source .venv/bin/activate && pytest`.
 
+### iOS client
+
+One-time setup:
+
+```bash
+brew install xcodegen
+cd ios/TinyTalkApp
+xcodegen generate
+open TinyTalkApp.xcodeproj
+```
+
+In Xcode: select your iPhone as the run destination (not the Simulator —
+mic/VAD/AEC need real hardware), set your team under Signing & Capabilities
+so it can be installed via your free Apple ID, and Run. On first launch,
+grant microphone access when prompted.
+
+Enter your Mac's LAN IP (find it with `ifconfig | grep inet` on the Mac)
+as `ws://<ip>:8765` and tap Connect. The server must already be running
+(see "Running the server" above).
+
+**Known limitation:** the VAD probability threshold and hangover window in
+`VoiceActivityDetector.swift` are untuned defaults pending real on-device
+testing — expect to adjust them by ear.
+
 ## Repo layout
 
 - `docs/superpowers/specs/` — design specs, one per sub-project, dated
