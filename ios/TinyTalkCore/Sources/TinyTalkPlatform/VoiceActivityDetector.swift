@@ -159,6 +159,13 @@ public final class SileroVoiceActivityDetector: VoiceActivityDetecting, @uncheck
 
     public func events() -> AsyncStream<VADEvent> { stream }
 
+    /// Finishes the events() stream so a caller tearing down the
+    /// coordinator (SessionCoordinator.close()) unblocks consumeVADEvents()'s
+    /// `for await` loop -- see VoiceActivityDetecting.close()'s doc comment.
+    public func close() {
+        continuation.finish()
+    }
+
     public func feed(_ pcm: Data) {
         guard !pcm.isEmpty, let resampled = resample(pcm) else { return }
         pendingSamples.append(contentsOf: resampled)

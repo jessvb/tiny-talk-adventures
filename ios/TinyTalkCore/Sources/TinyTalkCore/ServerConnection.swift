@@ -30,6 +30,16 @@ public final class WebSocketServerConnection: ServerConnecting, @unchecked Senda
 
     public func events() -> AsyncStream<ServerConnectionEvent> { stream }
 
+    /// Cancels the underlying WebSocket task and finishes the events()
+    /// stream directly (rather than waiting for receiveLoop()'s catch
+    /// block to notice the cancellation asynchronously), so a caller
+    /// tearing down the coordinator gets a deterministic, immediate
+    /// teardown instead of racing the receive loop.
+    public func close() {
+        task?.cancel(with: .goingAway, reason: nil)
+        continuation.finish()
+    }
+
     /// Continuously receives WebSocket messages and dispatches them as events.
     ///
     /// Dispatch logic: binary frames → `.audio` events, text frames → `decodeServerEvent`

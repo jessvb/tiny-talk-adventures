@@ -69,6 +69,15 @@ final class AppModel: ObservableObject {
     func disconnect() {
         pollTask?.cancel()
         runLoop?.cancel()
+        // Cancelling runLoop's Task alone does not stop the coordinator's
+        // internal consume loops (see SessionCoordinator.close()'s doc
+        // comment) -- without this, every Connect->Disconnect cycle leaked
+        // the WebSocket connection, the coordinator's running Task, and
+        // (transitively) this audioEngine instance. Capture the coordinator
+        // before nilling it out below, since close() is async and this
+        // method is not.
+        let coordinatorToClose = coordinator
+        Task { await coordinatorToClose?.close() }
         audioEngine?.stopCapturing()
         coordinator = nil
         audioEngine = nil
@@ -84,9 +93,21 @@ final class AppModel: ObservableObject {
                 guard let self, let coordinator = self.coordinator else { return }
                 let currentState = await coordinator.state
                 let history = await coordinator.latencyHistory
+                let transcript = await coordinator.lastTranscript
+                let reply = await coordinator.lastReply
+                let errorMessage = await coordinator.lastErrorMessage
                 await MainActor.run {
                     self.state = currentState
                     self.latencyHistory = history
+                    self.lastTranscript = transcript
+                    self.lastReply = reply
+                    // Only overwrite with a real server error -- a nil here
+                    // just means "no server error yet," and must not erase
+                    // a client-side error (e.g. audio capture failing to
+                    // start) that connect() already surfaced.
+                    if let errorMessage {
+                        self.lastErrorMessage = errorMessage
+                    }
                 }
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
