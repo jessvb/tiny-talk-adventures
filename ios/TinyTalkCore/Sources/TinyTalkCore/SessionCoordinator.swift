@@ -46,6 +46,39 @@ public actor SessionCoordinator {
     public private(set) var lastTranscript: String = ""
     public private(set) var lastReply: String = ""
     public private(set) var lastErrorMessage: String?
+    /// Flips to true the moment consumeServerEvents() sees the connection
+    /// close. A poll-loop UI (e.g. AppModel) has no other way to learn
+    /// about a dropped/failed connection -- state alone walks back to
+    /// .idle on disconnect, which is indistinguishable from a normal idle
+    /// state, so this is the dedicated signal for "the connection died,
+    /// tear yourself down and tell the user." Never reset to false by this
+    /// actor; the UI's disconnect() is what retires it (by discarding this
+    /// coordinator entirely and creating a fresh one on reconnect).
+    public private(set) var isClosed = false
+
+    /// Roughly how much recently-captured mic audio to retain so it can be
+    /// flushed as pre-roll the instant a turn/barge-in starts -- see
+    /// preRollBuffer's doc comment.
+    private static let preRollDurationSeconds: Double = 0.2
+    /// Matches RealAudioEngine.wireSampleRate / server MIC_SAMPLE_RATE
+    /// (24kHz mono Int16 LE) -- see that file's doc comment. Only used here
+    /// to size the pre-roll buffer's byte cap; not load-bearing for
+    /// correctness if a fake/future audio source uses a different rate,
+    /// since the cap just becomes a differently-sized window in that case.
+    private static let wireBytesPerSecond: Int = 24_000 * 2
+    private static let preRollByteCap = Int(Double(wireBytesPerSecond) * preRollDurationSeconds)
+    /// Ring buffer of the most recent ~200ms of mic audio, populated on
+    /// every captureAudio() call regardless of state (see that method's
+    /// doc comment). Only network-sending audio is gated on .listening --
+    /// but that means the very audio that caused the VAD to fire (which by
+    /// definition arrives just BEFORE the state machine transitions into
+    /// .listening) would otherwise never reach the server, clipping the
+    /// start of every utterance. Flushed and cleared the instant the state
+    /// machine transitions into .listening (both the happy-path speechStart
+    /// and the barge-in interrupt path), immediately after the control
+    /// frame that announces the new utterance.
+    private var preRollBuffer: [Data] = []
+    private var preRollBufferBytes = 0
 
     public init(connection: any ServerConnecting, audio: any AudioPlaying, vad: any VoiceActivityDetecting) {
         self.connection = connection
@@ -73,8 +106,37 @@ public actor SessionCoordinator {
     /// different sources.
     public func captureAudio(_ pcm: Data) async {
         vad.feed(pcm)
-        guard machine.state == .listening else { return }
+        guard machine.state == .listening else {
+            appendToPreRollBuffer(pcm)
+            return
+        }
         try? await connection.send(audio: pcm)
+    }
+
+    /// Appends to the pre-roll ring buffer, evicting the oldest chunks once
+    /// the ~200ms byte cap is exceeded. Only called while NOT .listening --
+    /// once .listening, captured audio goes straight to the network instead
+    /// (see captureAudio() above).
+    private func appendToPreRollBuffer(_ pcm: Data) {
+        preRollBuffer.append(pcm)
+        preRollBufferBytes += pcm.count
+        while preRollBufferBytes > Self.preRollByteCap, !preRollBuffer.isEmpty {
+            preRollBufferBytes -= preRollBuffer.removeFirst().count
+        }
+    }
+
+    /// Sends every buffered pre-roll chunk to the server, in capture order,
+    /// then clears the buffer. Must be called immediately after the control
+    /// frame (speech_start or interrupt) that announces a new utterance is
+    /// starting, so the server receives this audio right after being told
+    /// to expect it.
+    private func flushPreRoll() async {
+        let buffered = preRollBuffer
+        preRollBuffer = []
+        preRollBufferBytes = 0
+        for chunk in buffered {
+            try? await connection.send(audio: chunk)
+        }
     }
 
     private func consumeVADEvents() async {
@@ -103,7 +165,28 @@ public actor SessionCoordinator {
                 // legal from every state (see SessionState.swift), so this
                 // is always safe to call regardless of current state.
                 _ = try? machine.handle(.disconnected)
+                // Nothing else (state walking back to .idle looks just like
+                // a normal idle state) tells a UI the connection actually
+                // died -- see isClosed's doc comment. Must be set before
+                // returning, since this loop -- and therefore this actor's
+                // only observer of connection.events() -- is about to stop
+                // running for good.
+                isClosed = true
                 return
+            }
+            // Handled here, unconditionally, rather than only inside
+            // runTurn()'s loop: an error frame can arrive OUTSIDE an active
+            // turn too (e.g. while .listening, before speech_end, if the
+            // server's STT feed fails) -- runTurn() only exists between
+            // handleSpeechEnd() and turn end, so turnContinuation is nil at
+            // that point and yielding to it would silently drop the event.
+            // Set unconditionally, before the forwarding below, so it's
+            // captured either way; runTurn() still separately handles
+            // `.message(.error)` for turns that ARE active, ending the turn
+            // immediately instead of waiting for a turn_end that may have
+            // been preempted -- that in-turn behavior is unchanged.
+            if case .message(.error(let text)) = event {
+                lastErrorMessage = text
             }
             turnContinuation?.yield(event)
         }
@@ -116,6 +199,7 @@ public actor SessionCoordinator {
         }
         guard (try? machine.handle(.speechStart)) != nil else { return }
         try? await connection.send(.speechStart)
+        await flushPreRoll()
     }
 
     private func handleSpeechEnd() async {
@@ -181,14 +265,13 @@ public actor SessionCoordinator {
     }
 
     /// Tears the coordinator down: closes the connection and the VAD
-    /// detector's event stream so start()'s two consumeVADEvents()/
-    /// consumeServerEvents() loops actually return instead of blocking
-    /// forever on a `for await` whose stream never yields or finishes
-    /// again. Cancelling the Task that's running start() is NOT sufficient
-    /// on its own -- Swift's cooperative cancellation doesn't make an
-    /// in-progress `for await` over an AsyncStream exit unless the stream
-    /// itself yields or finishes. Call once, right before discarding this
-    /// coordinator (e.g. from the iOS client's disconnect()).
+    /// detector's event stream. Cancelling the Task that's running start()
+    /// alone is NOT sufficient: cancellation alone would leave the
+    /// underlying WebSocket connection (and, for the VAD, whatever native
+    /// resources it holds) open -- close() ensures the connection/stream is
+    /// actually torn down, not just that the consuming loops stop. Call
+    /// once, right before discarding this coordinator (e.g. from the iOS
+    /// client's disconnect()).
     public func close() async {
         turnContinuation?.finish()
         turnContinuation = nil
@@ -218,5 +301,6 @@ public actor SessionCoordinator {
         turnTask = nil
         _ = try? machine.handle(.interrupt)
         try? await connection.send(.interrupt)
+        await flushPreRoll()
     }
 }

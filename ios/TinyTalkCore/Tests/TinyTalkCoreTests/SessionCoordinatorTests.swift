@@ -358,4 +358,151 @@ final class SessionCoordinatorTests: XCTestCase {
 
         runLoop.cancel()
     }
+
+    /// Regression test for a whole-branch review finding: captureAudio()
+    /// only sends audio to the server once .listening, which only becomes
+    /// true AFTER the VAD has already decided speech started -- so the
+    /// very audio that caused the VAD to fire never reached the server,
+    /// clipping the start of every utterance. The pre-roll buffer must
+    /// flush everything captured before speechStart, in order, right after
+    /// the speech_start control frame.
+    func testPreRollAudioIsFlushedOnSpeechStart() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        // Captured while idle -- this is the audio the VAD used to decide
+        // to fire speechStart, arriving to captureAudio() BEFORE the state
+        // machine transitions to .listening.
+        await coordinator.captureAudio(Data([1]))
+        await coordinator.captureAudio(Data([2]))
+        await coordinator.captureAudio(Data([3]))
+        XCTAssertTrue(connection.sentAudio.isEmpty, "pre-roll audio must not be sent until speech_start is announced")
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(connection.sentMessages, [.speechStart])
+        XCTAssertEqual(connection.sentAudio, [Data([1]), Data([2]), Data([3])], "buffered pre-roll audio must be flushed, in capture order, right after speech_start")
+
+        runLoop.cancel()
+    }
+
+    /// Same pre-roll requirement, but for the barge-in path: audio captured
+    /// while .speaking (buffered because it isn't .listening yet) must be
+    /// flushed right after the `interrupt` control frame.
+    func testPreRollAudioIsFlushedOnBargeIn() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.audio(Data([9, 9, 9]))) // drives state to .speaking
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        // Captured while .speaking, i.e. the audio that triggers the
+        // barge-in -- must not be dropped.
+        await coordinator.captureAudio(Data([7]))
+        await coordinator.captureAudio(Data([8]))
+
+        vad.fire(.speechStart) // the barge-in
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(connection.sentMessages.last, .interrupt)
+        XCTAssertEqual(Array(connection.sentAudio.suffix(2)), [Data([7]), Data([8])], "pre-roll captured just before the barge-in must be flushed right after the interrupt control frame")
+
+        runLoop.cancel()
+    }
+
+    /// Regression test: the pre-roll ring buffer must stay capped (~200ms
+    /// of 24kHz mono Int16 audio) rather than growing unbounded, evicting
+    /// the OLDEST chunks first once the cap is exceeded.
+    func testPreRollBufferEvictsOldestChunksOnceCapExceeded() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        // Cap is 24_000 * 2 bytes/sec * 0.2s = 9600 bytes. Four 4000-byte
+        // chunks (16000 bytes total) exceed that, so the oldest ones must
+        // be evicted, leaving only the most recent chunks whose combined
+        // size fits under the cap.
+        let chunk1 = Data(repeating: 1, count: 4000)
+        let chunk2 = Data(repeating: 2, count: 4000)
+        let chunk3 = Data(repeating: 3, count: 4000)
+        let chunk4 = Data(repeating: 4, count: 4000)
+        await coordinator.captureAudio(chunk1)
+        await coordinator.captureAudio(chunk2)
+        await coordinator.captureAudio(chunk3)
+        await coordinator.captureAudio(chunk4)
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(connection.sentAudio, [chunk3, chunk4], "the oldest chunks (1 and 2) must have been evicted once the ~200ms byte cap was exceeded")
+
+        runLoop.cancel()
+    }
+
+    /// Regression test for a whole-branch review finding: a dropped/failed
+    /// connection was invisible to a UI polling this coordinator's state --
+    /// `.closed` walked state back to .idle, which looks identical to a
+    /// normal idle state. `isClosed` is the dedicated signal a poll loop
+    /// needs to notice the connection actually died.
+    func testClosedEventSetsIsClosedFlag() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        let isClosedBefore = await coordinator.isClosed
+        XCTAssertFalse(isClosedBefore)
+
+        connection.emit(.closed)
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let isClosedAfter = await coordinator.isClosed
+        XCTAssertTrue(isClosedAfter, "isClosed must flip to true once the connection closes, so a polling UI can notice and tear itself down")
+
+        runLoop.cancel()
+    }
+
+    /// Regression test for a whole-branch review finding: `error` frames
+    /// were only surfaced by runTurn()'s loop, which only exists between
+    /// speech_end and turn end. An error arriving OUTSIDE that window
+    /// (e.g. while .listening, before speech_end -- reachable if the
+    /// server's STT feed fails) used to hit `turnContinuation?.yield(event)`
+    /// with a nil continuation and vanish silently.
+    func testOutOfTurnErrorStillSetsLastErrorMessage() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        // .listening, but before speech_end -- no turn is active yet, so
+        // turnContinuation is nil.
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        let stateBeforeError = await coordinator.state
+        XCTAssertEqual(stateBeforeError, .listening)
+
+        connection.emit(.message(.error("stt feed failed")))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        let errorMessage = await coordinator.lastErrorMessage
+        XCTAssertEqual(errorMessage, "stt feed failed", "an error frame arriving outside an active turn must still be surfaced, not silently dropped")
+
+        runLoop.cancel()
+    }
 }
