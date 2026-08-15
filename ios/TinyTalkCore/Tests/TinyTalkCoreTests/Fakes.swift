@@ -47,22 +47,72 @@ final class FakeConnection: ServerConnecting, @unchecked Sendable {
     private let lock = NSLock()
     private var _sentMessages: [ClientMessage] = []
     private var _sentAudio: [Data] = []
+    /// Interleaved record of everything sent, in the order the fake
+    /// actually observed it -- unlike sentMessages/sentAudio (which split
+    /// control frames and audio into separate arrays and so can't reveal
+    /// their relative ordering), this is what a reentrancy-ordering test
+    /// needs to assert against.
+    private var _sentLog: [SentItem] = []
     private let continuation: AsyncStream<ServerConnectionEvent>.Continuation
     private let stream: AsyncStream<ServerConnectionEvent>
+    /// Lock-protected delays applied inside send(_:)/send(audio:) before
+    /// they record the send, so a test can force either call to genuinely
+    /// suspend (a real `await`, not one that resolves instantly) -- see
+    /// sendMessageDelayNanos/sendAudioDelayNanos.
+    private var _sendMessageDelayNanos: UInt64 = 0
+    private var _sendAudioDelayNanos: UInt64 = 0
+
+    enum SentItem: Equatable {
+        case message(ClientMessage)
+        case audio(Data)
+    }
 
     var sentMessages: [ClientMessage] { lock.withLock { _sentMessages } }
     var sentAudio: [Data] { lock.withLock { _sentAudio } }
+    var sentLog: [SentItem] { lock.withLock { _sentLog } }
+    /// How long send(_:) (control frames) suspends (via Task.sleep) before
+    /// recording its send. See sendAudioDelayNanos's doc comment for why
+    /// this matters -- same reasoning, for control frames instead of audio.
+    /// Lock-protected so a test can flip it mid-run.
+    var sendMessageDelayNanos: UInt64 {
+        get { lock.withLock { _sendMessageDelayNanos } }
+        set { lock.withLock { _sendMessageDelayNanos = newValue } }
+    }
+    /// How long send(audio:) suspends (via Task.sleep) before recording its
+    /// send. Every other fake in this file (FakeAudio.playDelayNanos)
+    /// completes instantly by default too -- real reentrancy bugs need a
+    /// real suspension point to manifest, since an instantly-resolving
+    /// `await` never actually hands control back to the actor's scheduler.
+    /// Lock-protected so a test can flip it mid-run.
+    var sendAudioDelayNanos: UInt64 {
+        get { lock.withLock { _sendAudioDelayNanos } }
+        set { lock.withLock { _sendAudioDelayNanos = newValue } }
+    }
 
     init() {
         (stream, continuation) = AsyncStream<ServerConnectionEvent>.makeStream()
     }
 
     func send(_ message: ClientMessage) async throws {
-        lock.withLock { _sentMessages.append(message) }
+        let delay = sendMessageDelayNanos
+        if delay > 0 {
+            try? await Task.sleep(nanoseconds: delay)
+        }
+        lock.withLock {
+            _sentMessages.append(message)
+            _sentLog.append(.message(message))
+        }
     }
 
     func send(audio pcm: Data) async throws {
-        lock.withLock { _sentAudio.append(pcm) }
+        let delay = sendAudioDelayNanos
+        if delay > 0 {
+            try? await Task.sleep(nanoseconds: delay)
+        }
+        lock.withLock {
+            _sentAudio.append(pcm)
+            _sentLog.append(.audio(pcm))
+        }
     }
 
     // `SessionCoordinator.start()` is the ONLY caller of this, exactly

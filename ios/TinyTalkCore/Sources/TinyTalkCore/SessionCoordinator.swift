@@ -79,6 +79,22 @@ public actor SessionCoordinator {
     /// frame that announces the new utterance.
     private var preRollBuffer: [Data] = []
     private var preRollBufferBytes = 0
+    /// True from the moment a control-frame-send-then-flush sequence begins
+    /// (set just before the `speechStart`/`interrupt` control frame's
+    /// `await connection.send(...)`, in handleSpeechStart()/interrupt())
+    /// until flushPreRoll() has genuinely drained everything and confirmed
+    /// nothing new arrived while doing so. `machine.state` flips to
+    /// `.listening` synchronously, BEFORE that first control-frame await --
+    /// so without this flag, a captureAudio() call delivered by the mic
+    /// pipeline's own task during that await (or during any await inside
+    /// flushPreRoll()'s send loop) would see `.listening` already, take the
+    /// direct-send branch, and race its own independently-awaited send
+    /// against the control frame / pre-roll flush, reaching the wire out of
+    /// order. While this is true, captureAudio() buffers instead (same as
+    /// the not-yet-`.listening` case), even though `machine.state` already
+    /// reports `.listening` -- closing that reentrancy window. See
+    /// flushPreRoll()'s doc comment for how it's cleared safely.
+    private var isFlushing = false
 
     public init(connection: any ServerConnecting, audio: any AudioPlaying, vad: any VoiceActivityDetecting) {
         self.connection = connection
@@ -106,7 +122,10 @@ public actor SessionCoordinator {
     /// different sources.
     public func captureAudio(_ pcm: Data) async {
         vad.feed(pcm)
-        guard machine.state == .listening else {
+        // isFlushing overrides an already-.listening state on purpose -- see
+        // its doc comment: a control-frame-send-then-flush sequence is in
+        // progress, so this chunk must queue behind it, not race it.
+        guard machine.state == .listening, !isFlushing else {
             appendToPreRollBuffer(pcm)
             return
         }
@@ -114,9 +133,10 @@ public actor SessionCoordinator {
     }
 
     /// Appends to the pre-roll ring buffer, evicting the oldest chunks once
-    /// the ~200ms byte cap is exceeded. Only called while NOT .listening --
-    /// once .listening, captured audio goes straight to the network instead
-    /// (see captureAudio() above).
+    /// the ~200ms byte cap is exceeded. Only called while NOT .listening, or
+    /// while isFlushing is true -- once .listening AND not flushing,
+    /// captured audio goes straight to the network instead (see
+    /// captureAudio() above).
     private func appendToPreRollBuffer(_ pcm: Data) {
         preRollBuffer.append(pcm)
         preRollBufferBytes += pcm.count
@@ -129,14 +149,33 @@ public actor SessionCoordinator {
     /// then clears the buffer. Must be called immediately after the control
     /// frame (speech_start or interrupt) that announces a new utterance is
     /// starting, so the server receives this audio right after being told
-    /// to expect it.
+    /// to expect it. Callers must set `isFlushing = true` before that
+    /// control frame's own `await connection.send(...)` -- i.e. before
+    /// calling this method at all -- so captureAudio() is already buffering
+    /// (instead of racing a direct send) for the whole sequence, not just
+    /// for this method's own body.
+    ///
+    /// Each `await connection.send(audio:)` below is itself a suspension
+    /// point: a concurrently-running captureAudio() call can be scheduled
+    /// in the gap, see isFlushing is still true, and append to
+    /// `preRollBuffer` again before this loop finishes draining its
+    /// snapshot. Looping -- re-snapshotting and re-draining -- until a pass
+    /// leaves the buffer empty, checked with no `await` in between, closes
+    /// that: only once a drain pass is immediately followed by an empty
+    /// buffer (nothing could have snuck in between the check and the flag
+    /// flip, since actor-isolated code between two awaits is atomic) is it
+    /// safe to flip `isFlushing` back to false and let captureAudio()
+    /// resume direct-sending.
     private func flushPreRoll() async {
-        let buffered = preRollBuffer
-        preRollBuffer = []
-        preRollBufferBytes = 0
-        for chunk in buffered {
-            try? await connection.send(audio: chunk)
+        while !preRollBuffer.isEmpty {
+            let buffered = preRollBuffer
+            preRollBuffer = []
+            preRollBufferBytes = 0
+            for chunk in buffered {
+                try? await connection.send(audio: chunk)
+            }
         }
+        isFlushing = false
     }
 
     private func consumeVADEvents() async {
@@ -198,6 +237,12 @@ public actor SessionCoordinator {
             return
         }
         guard (try? machine.handle(.speechStart)) != nil else { return }
+        // Must be set before the control frame's own await below -- see
+        // isFlushing's and flushPreRoll()'s doc comments. machine.state is
+        // already .listening at this point (machine.handle() above flipped
+        // it synchronously), so without this, a captureAudio() call
+        // delivered during the send's suspension would race it.
+        isFlushing = true
         try? await connection.send(.speechStart)
         await flushPreRoll()
     }
@@ -300,6 +345,9 @@ public actor SessionCoordinator {
         turnTask?.cancel()
         turnTask = nil
         _ = try? machine.handle(.interrupt)
+        // See the matching comment in handleSpeechStart(): must be set
+        // before the control frame's own await below, for the same reason.
+        isFlushing = true
         try? await connection.send(.interrupt)
         await flushPreRoll()
     }
