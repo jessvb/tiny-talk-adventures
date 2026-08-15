@@ -37,6 +37,15 @@ public actor SessionCoordinator {
 
     public var state: SessionState { machine.state }
     public var latencyHistory: [InterruptLatency] { latencyLogger.history }
+    /// Latest transcript_final/response_text/error text from the server,
+    /// for a UI (e.g. the iOS client's poll loop) to surface -- see
+    /// runTurn()'s .message cases below for where these are set. The design
+    /// spec requires errors be surfaced clearly rather than silently
+    /// dropped, and the "Heard/Reply" UI needs real values, not permanently
+    /// empty strings.
+    public private(set) var lastTranscript: String = ""
+    public private(set) var lastReply: String = ""
+    public private(set) var lastErrorMessage: String?
 
     public init(connection: any ServerConnecting, audio: any AudioPlaying, vad: any VoiceActivityDetecting) {
         self.connection = connection
@@ -149,19 +158,44 @@ public actor SessionCoordinator {
                 _ = try? machine.handle(.turnEnd)
                 turnContinuation = nil
                 return
-            case .message(.error):
+            case .message(.error(let text)):
+                lastErrorMessage = text
                 // Mirrors the server's own behavior: end the turn
                 // immediately rather than waiting for a turn_end the
                 // error may have preempted.
                 _ = try? machine.handle(.turnEnd)
                 turnContinuation = nil
                 return
-            case .message(.transcriptPartial), .message(.transcriptFinal), .message(.responseText):
+            case .message(.transcriptFinal(let text)):
+                lastTranscript = text
+                continue
+            case .message(.responseText(let text)):
+                lastReply = text
+                continue
+            case .message(.transcriptPartial):
                 continue
             case .closed:
                 return
             }
         }
+    }
+
+    /// Tears the coordinator down: closes the connection and the VAD
+    /// detector's event stream so start()'s two consumeVADEvents()/
+    /// consumeServerEvents() loops actually return instead of blocking
+    /// forever on a `for await` whose stream never yields or finishes
+    /// again. Cancelling the Task that's running start() is NOT sufficient
+    /// on its own -- Swift's cooperative cancellation doesn't make an
+    /// in-progress `for await` over an AsyncStream exit unless the stream
+    /// itself yields or finishes. Call once, right before discarding this
+    /// coordinator (e.g. from the iOS client's disconnect()).
+    public func close() async {
+        turnContinuation?.finish()
+        turnContinuation = nil
+        turnTask?.cancel()
+        turnTask = nil
+        connection.close()
+        vad.close()
     }
 
     private func interrupt() async {

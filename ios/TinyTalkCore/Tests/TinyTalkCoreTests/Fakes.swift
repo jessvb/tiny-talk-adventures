@@ -80,6 +80,13 @@ final class FakeConnection: ServerConnecting, @unchecked Sendable {
     func finish() {
         continuation.finish()
     }
+
+    /// Real ServerConnecting.close() requirement -- same effect as the
+    /// test-only finish() helper above, but this is what production
+    /// teardown code (SessionCoordinator.close()) actually calls.
+    func close() {
+        continuation.finish()
+    }
 }
 
 final class FakeVAD: VoiceActivityDetecting, @unchecked Sendable {
@@ -103,6 +110,11 @@ final class FakeVAD: VoiceActivityDetecting, @unchecked Sendable {
     /// Test-only: simulate the VAD firing, as if real audio triggered it.
     func fire(_ event: VADEvent) {
         continuation.yield(event)
+    }
+
+    /// Real VoiceActivityDetecting.close() requirement.
+    func close() {
+        continuation.finish()
     }
 }
 
