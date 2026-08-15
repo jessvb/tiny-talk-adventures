@@ -52,8 +52,34 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         }
         wireFormat = format
 
+        // .playAndRecord + .voiceChat mode alone is necessary but NOT
+        // sufficient for AEC: per AVAudioSessionTypes.h's documentation of
+        // AVAudioSessionModeVoiceChat, echo cancellation is only loaded once
+        // the Voice-Processing I/O unit is enabled. Must be set while the
+        // engine is stopped (also per that header); enabling it on the
+        // input node auto-enables it on the output node too, so this is the
+        // only call needed for both directions. This is the actual
+        // mechanism behind the file-level doc comment's AEC claim.
+        do {
+            try engine.inputNode.setVoiceProcessingEnabled(true)
+        } catch {
+            throw AudioEngineError.sessionConfigurationFailed(error)
+        }
+
         engine.attach(playerNode)
-        engine.connect(playerNode, to: engine.mainMixerNode, format: nil)
+        // wireFormat (24kHz mono Int16), not nil: nil leaves the connection
+        // at the mixer's default format (typically 44.1/48kHz float32,
+        // often stereo), which pcmDataToBuffer's 24kHz mono Int16 buffers
+        // don't match -- AVAudioPlayerNode.h documents that scheduling can
+        // throw on a channel-count mismatch, and sample-rate mismatch isn't
+        // validated at all, so mismatched-but-not-crashing means TTS plays
+        // back at roughly double speed. The mixer input bus is the
+        // documented place a non-standard interleaved Int16 format is
+        // accepted. If a real device rejects this (only Task 8's on-device
+        // testing can confirm either way), the documented fallback is a
+        // 24kHz float32 connection format with PCM16->Float32 conversion
+        // added to pcmDataToBuffer.
+        engine.connect(playerNode, to: engine.mainMixerNode, format: wireFormat)
     }
 
     /// Starts mic capture. `onAudioCaptured` is invoked with 24kHz mono
@@ -65,7 +91,14 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     public func startCapturing(onAudioCaptured: @escaping @Sendable (Data) -> Void) throws {
         self.onAudioCaptured = onAudioCaptured
         let inputNode = engine.inputNode
-        let hardwareFormat = inputNode.inputFormat(forBus: 0)
+        // outputFormat(forBus:), not inputFormat(forBus:): AVAudioNode.h's
+        // tap documentation says the tap/connection format should match the
+        // node's OUTPUT format on that bus -- inputFormat and outputFormat
+        // are different properties that happen to coincide before
+        // setVoiceProcessingEnabled(true) is called (which changes what
+        // this returns), which is exactly why using the wrong one was
+        // invisible until voice processing was enabled above.
+        let hardwareFormat = inputNode.outputFormat(forBus: 0)
         guard let converter = AVAudioConverter(from: hardwareFormat, to: wireFormat) else {
             throw AudioEngineError.captureStartFailed(
                 NSError(domain: "RealAudioEngine", code: 1, userInfo: [
@@ -81,8 +114,30 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
                 frameCapacity: AVAudioFrameCount(self.wireFormat.sampleRate * Double(buffer.frameLength) / hardwareFormat.sampleRate) + 1
             ) else { return }
 
+            // AVAudioConverter.h documents that this block can be invoked
+            // more than once per outer convert() call (e.g. the first call,
+            // or calls after a reset, request additional input frames).
+            // Serving the same `buffer` on every invocation -- rather than
+            // signaling .noDataNow once it's been consumed -- would
+            // duplicate the captured audio and inject standing latency
+            // directly into the mic path that feeds the VAD/barge-in
+            // detector. `served` makes this the canonical one-shot idiom:
+            // hand the buffer over once, then tell the converter there's
+            // nothing more this call. `nonisolated(unsafe)`: the block is
+            // @Sendable per AVAudioConverter's imported signature, but
+            // convert(to:error:withInputFrom:) documents that it invokes
+            // this block synchronously and reentrantly on the calling
+            // thread while producing a single output buffer -- never truly
+            // concurrently -- so the mutation is safe despite the
+            // compiler's conservative Sendable-closure check.
+            nonisolated(unsafe) var served = false
             var error: NSError?
             converter.convert(to: outputBuffer, error: &error) { _, outStatus in
+                if served {
+                    outStatus.pointee = .noDataNow
+                    return nil
+                }
+                served = true
                 outStatus.pointee = .haveData
                 return buffer
             }
