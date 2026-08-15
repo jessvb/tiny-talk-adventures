@@ -476,6 +476,122 @@ final class SessionCoordinatorTests: XCTestCase {
         runLoop.cancel()
     }
 
+    /// Regression test for a re-review finding on the pre-roll fix itself:
+    /// actor reentrancy meant the ordering guarantee didn't actually hold.
+    /// `machine.handle(.speechStart)` flips state to `.listening`
+    /// SYNCHRONOUSLY, before `try? await connection.send(.speechStart)` even
+    /// starts its network round trip -- so a captureAudio() call delivered
+    /// by a separate task (the mic pipeline) while that send is still in
+    /// flight used to see `.listening` already, take the direct-send
+    /// branch, and race its own independently-awaited send against both the
+    /// control frame and the pre-roll flush that follows it.
+    ///
+    /// The previous 5 pre-roll tests never caught this because
+    /// FakeConnection.send() resolved instantly, so there was never a real
+    /// suspension window for a concurrent captureAudio() call to land in.
+    /// This test uses FakeConnection's new sendMessageDelayNanos to force
+    /// the control frame's send to genuinely suspend, then drives
+    /// captureAudio() from the test itself (a separate, concurrently
+    /// scheduled call into the actor, exactly like the real mic pipeline)
+    /// while that send is provably still in flight, and asserts the
+    /// resulting wire order via sentLog -- which, unlike sentMessages/
+    /// sentAudio separately, is the only place the RELATIVE order of
+    /// control frames and audio is observable at all.
+    func testSpeechStartOrderingSurvivesReentrantCaptureAudioDuringFlush() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        // Ordinary pre-roll, captured while idle, before the VAD ever fires.
+        await coordinator.captureAudio(Data([1]))
+        await coordinator.captureAudio(Data([2]))
+
+        // Make the control frame's send genuinely suspend for 40ms, and
+        // each audio send take 15ms -- both real `await` suspension points
+        // a concurrent task can be scheduled into, not the previous fakes'
+        // instantly-resolving ones.
+        connection.sendMessageDelayNanos = 40_000_000
+        connection.sendAudioDelayNanos = 15_000_000
+
+        vad.fire(.speechStart)
+        // handleSpeechStart() has by now definitely run its synchronous
+        // prefix (machine.handle -> .listening, isFlushing = true) and is
+        // parked inside the 40ms-delayed connection.send(.speechStart) --
+        // well before that delay elapses.
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        // The race: captureAudio() called from a separate task (this test's
+        // own), concurrently with the still-in-flight control-frame send.
+        // Pre-fix, machine.state already reads .listening here, so this
+        // would take the direct-send branch and reach the wire out of
+        // order. Post-fix, isFlushing still reads true, so this must
+        // buffer instead.
+        await coordinator.captureAudio(Data([3]))
+
+        // Long enough for: the remaining ~30ms of the control-frame send,
+        // plus three 15ms-delayed audio sends (chunks 1, 2, 3) draining
+        // through flushPreRoll().
+        try? await Task.sleep(nanoseconds: 150_000_000)
+
+        XCTAssertEqual(
+            connection.sentLog,
+            [.message(.speechStart), .audio(Data([1])), .audio(Data([2])), .audio(Data([3]))],
+            "control frame must go out first, then pre-roll in capture order, then the chunk captured during the flush window -- nothing reordered ahead of the control frame or the earlier pre-roll"
+        )
+
+        runLoop.cancel()
+    }
+
+    /// Same race, but for the barge-in path (interrupt() has its own
+    /// control-frame-send-then-flush sequence, with the identical
+    /// reentrancy window).
+    func testInterruptOrderingSurvivesReentrantCaptureAudioDuringFlush() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.audio(Data([9, 9, 9]))) // drives state to .speaking
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        // Pre-roll captured while .speaking, just before the barge-in.
+        await coordinator.captureAudio(Data([7]))
+        await coordinator.captureAudio(Data([8]))
+
+        connection.sendMessageDelayNanos = 40_000_000
+        connection.sendAudioDelayNanos = 15_000_000
+
+        vad.fire(.speechStart) // the barge-in -> interrupt()
+        try? await Task.sleep(nanoseconds: 10_000_000) // interrupt()'s control-frame send is now in flight
+
+        // The race: a concurrent captureAudio() call while `interrupt`'s
+        // control frame is still being sent.
+        await coordinator.captureAudio(Data([10]))
+
+        try? await Task.sleep(nanoseconds: 150_000_000)
+
+        let log = connection.sentLog
+        guard let interruptIndex = log.firstIndex(of: .message(.interrupt)) else {
+            XCTFail("interrupt control frame was never sent")
+            runLoop.cancel()
+            return
+        }
+        XCTAssertEqual(
+            Array(log[interruptIndex...]),
+            [.message(.interrupt), .audio(Data([7])), .audio(Data([8])), .audio(Data([10]))],
+            "interrupt control frame must go out first, then pre-roll in capture order, then the chunk captured during the flush window"
+        )
+
+        runLoop.cancel()
+    }
+
     /// Regression test for a whole-branch review finding: `error` frames
     /// were only surfaced by runTurn()'s loop, which only exists between
     /// speech_end and turn end. An error arriving OUTSIDE that window
