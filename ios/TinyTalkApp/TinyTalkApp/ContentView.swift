@@ -16,6 +16,18 @@ final class AppModel: ObservableObject {
     private var audioEngine: RealAudioEngine?
     private var runLoop: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
+    /// Ordered pipe from the audio tap's real-time callback into the
+    /// coordinator actor. Kept as a stream (not a per-buffer `Task { await
+    /// coordinator.captureAudio(pcm) }`) because separate unstructured
+    /// Tasks have no FIFO guarantee when calling into an actor -- under
+    /// congestion (e.g. captureAudio() awaiting a slow connection.send()),
+    /// buffers could arrive at the actor out of order, corrupting both the
+    /// uploaded audio stream and the VAD's stateful resampler/LSTM state
+    /// chain, which assumes strictly sequential audio. continuation.yield()
+    /// is cheap and non-blocking from the tap's real-time thread, and a
+    /// single long-lived consumer task drains the stream strictly in order.
+    private var micStreamContinuation: AsyncStream<Data>.Continuation?
+    private var micConsumerTask: Task<Void, Never>?
 
     init() {
         serverAddress = UserDefaults.standard.string(forKey: "serverAddress") ?? "ws://192.168.1.1:8765"
@@ -45,9 +57,20 @@ final class AppModel: ObservableObject {
         self.coordinator = coordinator
         runLoop = Task { await coordinator.start() }
 
+        let (micStream, micContinuation) = AsyncStream<Data>.makeStream()
+        micStreamContinuation = micContinuation
+        micConsumerTask = Task { [weak self] in
+            for await pcm in micStream {
+                await self?.coordinator?.captureAudio(pcm)
+            }
+        }
+
         do {
-            try audio.startCapturing { [weak self] pcm in
-                Task { await self?.coordinator?.captureAudio(pcm) }
+            // micContinuation is a value type (AsyncStream.Continuation is a
+            // struct), so capturing it here does not retain `self` or the
+            // coordinator -- no weak-capture is needed or possible.
+            try audio.startCapturing { pcm in
+                micContinuation.yield(pcm)
             }
         } catch {
             // The most common real cause here is the user denying the
@@ -79,6 +102,14 @@ final class AppModel: ObservableObject {
         let coordinatorToClose = coordinator
         Task { await coordinatorToClose?.close() }
         audioEngine?.stopCapturing()
+        // Finish the mic pipe and stop its consumer -- mirrors the
+        // coordinator teardown above: without this, every Connect-Disconnect
+        // cycle would leak the consumer Task (it awaits `for await` on a
+        // stream nobody ever finishes again).
+        micStreamContinuation?.finish()
+        micStreamContinuation = nil
+        micConsumerTask?.cancel()
+        micConsumerTask = nil
         coordinator = nil
         audioEngine = nil
         isConnected = false
@@ -96,7 +127,14 @@ final class AppModel: ObservableObject {
                 let transcript = await coordinator.lastTranscript
                 let reply = await coordinator.lastReply
                 let errorMessage = await coordinator.lastErrorMessage
-                await MainActor.run {
+                let closed = await coordinator.isClosed
+                // Returns "should this loop stop" as the closure's result,
+                // rather than mutating a captured local var, since
+                // MainActor.run's body is @Sendable and Swift 6 strict
+                // concurrency rejects mutation of captured state from a
+                // @Sendable closure even when (as here) it only ever runs
+                // synchronously on this same task.
+                let shouldStop: Bool = await MainActor.run {
                     self.state = currentState
                     self.latencyHistory = history
                     self.lastTranscript = transcript
@@ -108,7 +146,24 @@ final class AppModel: ObservableObject {
                     if let errorMessage {
                         self.lastErrorMessage = errorMessage
                     }
+                    // The connection died: consumeServerEvents() saw
+                    // `.closed` and walked the coordinator's own state back
+                    // to .idle, but nothing else about that is visible to
+                    // this UI on its own -- isConnected would stay stuck
+                    // true forever, the button would keep saying
+                    // "Disconnect", no error would appear, and mic capture
+                    // would keep running while every send silently fails.
+                    // Match the design spec: clear disconnected/error state
+                    // on screen, mic capture stops, user must manually
+                    // reconnect.
+                    guard closed else { return false }
+                    if self.lastErrorMessage == nil {
+                        self.lastErrorMessage = "disconnected from server"
+                    }
+                    self.disconnect()
+                    return true
                 }
+                if shouldStop { return }
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
         }
