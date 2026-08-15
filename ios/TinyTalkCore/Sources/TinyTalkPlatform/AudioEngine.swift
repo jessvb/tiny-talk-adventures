@@ -31,6 +31,21 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
     private var wireFormat: AVAudioFormat!
+    /// Format used ONLY for the playerNode -> mainMixerNode engine
+    /// connection -- AVAudioPlayerNode's output bus rejects Int16 as a
+    /// sample format outright (confirmed by directly compiling and running
+    /// standalone AVAudioEngine probes on this Mac: connecting at Int16,
+    /// interleaved or not, raises an uncaught NSException from
+    /// AVAudioPlayerNodeImpl::SetOutputFormat,
+    /// NSOSStatusErrorDomain -10868 / kAudioUnitErr_FormatNotSupported;
+    /// Float32 succeeds). This is a hard restriction on engine bus
+    /// connection formats specifically, not on PCM buffers/AVAudioFormat in
+    /// general -- wireFormat (Int16) stays correct for the wire protocol
+    /// and for AVAudioConverter's output on the capture side. Since
+    /// connect(_:to:format:) is non-throwing, this exception cannot be
+    /// caught from Swift -- getting this format wrong crashes the process
+    /// on every launch, before the app can do anything.
+    private var playbackConnectionFormat: AVAudioFormat!
     private var onAudioCaptured: (@Sendable (Data) -> Void)?
 
     public init() throws {
@@ -52,6 +67,16 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         }
         wireFormat = format
 
+        guard let connectionFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: Self.wireSampleRate,
+            channels: 1,
+            interleaved: false
+        ) else {
+            fatalError("24kHz mono Float32 is a valid AVAudioFormat configuration")
+        }
+        playbackConnectionFormat = connectionFormat
+
         // .playAndRecord + .voiceChat mode alone is necessary but NOT
         // sufficient for AEC: per AVAudioSessionTypes.h's documentation of
         // AVAudioSessionModeVoiceChat, echo cancellation is only loaded once
@@ -67,19 +92,17 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         }
 
         engine.attach(playerNode)
-        // wireFormat (24kHz mono Int16), not nil: nil leaves the connection
-        // at the mixer's default format (typically 44.1/48kHz float32,
-        // often stereo), which pcmDataToBuffer's 24kHz mono Int16 buffers
-        // don't match -- AVAudioPlayerNode.h documents that scheduling can
-        // throw on a channel-count mismatch, and sample-rate mismatch isn't
-        // validated at all, so mismatched-but-not-crashing means TTS plays
-        // back at roughly double speed. The mixer input bus is the
-        // documented place a non-standard interleaved Int16 format is
-        // accepted. If a real device rejects this (only Task 8's on-device
-        // testing can confirm either way), the documented fallback is a
-        // 24kHz float32 connection format with PCM16->Float32 conversion
-        // added to pcmDataToBuffer.
-        engine.connect(playerNode, to: engine.mainMixerNode, format: wireFormat)
+        // playbackConnectionFormat (24kHz mono Float32), not wireFormat and
+        // not nil. `nil` leaves the connection at the mixer's default
+        // format (typically 44.1/48kHz float32, often stereo) -- mismatched
+        // vs. the buffers actually scheduled. Int16 was tried and directly
+        // disproven (see playbackConnectionFormat's doc comment above):
+        // AVAudioPlayerNode's output bus rejects Int16 as a sample format
+        // outright, an uncaught NSException `connect` can't propagate as a
+        // Swift error, so that crashes the process on every launch. Float32
+        // is the confirmed-working connection format; pcmDataToBuffer
+        // converts the Int16 wire bytes to Float32 before scheduling.
+        engine.connect(playerNode, to: engine.mainMixerNode, format: playbackConnectionFormat)
     }
 
     /// Starts mic capture. `onAudioCaptured` is invoked with 24kHz mono
@@ -177,15 +200,21 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         }
     }
 
+    /// Converts wire-format (24kHz mono Int16 LE) bytes into an
+    /// AVAudioPCMBuffer in playbackConnectionFormat (24kHz mono Float32),
+    /// since that's what's actually scheduled against playerNode --
+    /// AVAudioPlayerNode's output bus rejects Int16 buffers outright (see
+    /// playbackConnectionFormat's doc comment). Standard Int16 -> Float32
+    /// PCM sample conversion: divide by Int16.max to land in [-1, 1].
     private func pcmDataToBuffer(_ pcm: Data) -> AVAudioPCMBuffer? {
         let frameCount = UInt32(pcm.count / MemoryLayout<Int16>.size)
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: wireFormat, frameCapacity: frameCount) else { return nil }
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: playbackConnectionFormat, frameCapacity: frameCount) else { return nil }
         buffer.frameLength = frameCount
         pcm.withUnsafeBytes { rawBuffer in
-            guard let channelData = buffer.int16ChannelData else { return }
+            guard let channelData = buffer.floatChannelData else { return }
             let samples = rawBuffer.bindMemory(to: Int16.self)
             for i in 0..<Int(frameCount) {
-                channelData[0][i] = samples[i]
+                channelData[0][i] = Float(samples[i]) / Float(Int16.max)
             }
         }
         return buffer
