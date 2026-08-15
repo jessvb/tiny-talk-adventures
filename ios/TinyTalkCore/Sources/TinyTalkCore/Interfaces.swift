@@ -22,10 +22,10 @@ public protocol ServerConnecting: Sendable {
     func send(audio pcm: Data) async throws
     func events() -> AsyncStream<ServerConnectionEvent>
     /// Tears down the underlying connection and finishes the events()
-    /// stream, so a consumer's `for await` over it actually returns instead
-    /// of hanging forever -- cancelling the Task that's consuming it is not
-    /// enough on its own, since cancellation doesn't make an in-progress
-    /// `for await` exit unless the stream itself yields or finishes.
+    /// stream. Cancelling the Task that's consuming it is not enough on its
+    /// own: cancellation alone would leave the underlying connection open
+    /// -- close() ensures the connection/stream is actually torn down, not
+    /// just that the consuming `for await` loop exits.
     func close()
 }
 
@@ -38,8 +38,9 @@ public protocol VoiceActivityDetecting: Sendable {
     func events() -> AsyncStream<VADEvent>
     func feed(_ pcm: Data)
     /// Finishes the events() stream for the same reason ServerConnecting.close()
-    /// does -- so SessionCoordinator's consumeVADEvents() loop actually
-    /// returns during teardown instead of blocking forever on an event that
-    /// will never come.
+    /// does -- cancellation alone would leave whatever native resources the
+    /// detector holds open, so close() ensures those (and the stream) are
+    /// actually torn down during teardown, not just that
+    /// SessionCoordinator's consumeVADEvents() loop exits.
     func close()
 }
