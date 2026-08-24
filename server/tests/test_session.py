@@ -8,9 +8,9 @@ from tinytalk.safety import SAFE_FALLBACK
 from tinytalk.session import SessionRunner
 from tinytalk.state import Event, State
 
-SPEECH_START = '{"type": "speech_start"}'
+SPEECH_START = '{"type": "speech_start", "turn_id": 1}'
 SPEECH_END = '{"type": "speech_end"}'
-INTERRUPT = '{"type": "interrupt"}'
+INTERRUPT = '{"type": "interrupt", "turn_id": 2}'
 
 
 def make_session(transport, *, stt=None, llm=None, tts=None) -> SessionRunner:
@@ -46,6 +46,54 @@ async def test_full_turn_emits_transcript_response_audio_and_turn_end(transport)
     assert tts.spoken == ["Once upon a time.", "A fox ran."]
     assert transport.audio == [b"<audio:Once upon a time.>", b"<audio:A fox ran.>"]
     assert session.state is State.IDLE
+
+
+async def test_every_event_in_a_turn_carries_the_speech_starts_turn_id(transport):
+    # The whole point of turn_id: the client must be able to tell which
+    # utterance a given reply actually belongs to. Every event this turn
+    # produces should carry the same id the client sent on speech_start.
+    session = make_session(transport)
+
+    await session.handle_text('{"type": "speech_start", "turn_id": 42}')
+    await session.handle_audio(b"\x01\x02")
+    await session.handle_text(SPEECH_END)
+    await session.wait_for_turn()
+
+    assert transport.types() == ["transcript_final", "response_text", "turn_end"]
+    for kind in ("transcript_final", "response_text", "turn_end"):
+        assert transport.messages_of_type(kind)[0]["turn_id"] == 42
+    assert session.current_turn_id == 42
+
+
+async def test_a_new_speech_start_after_a_completed_turn_gets_a_new_turn_id(transport):
+    session = make_session(transport)
+
+    await session.handle_text('{"type": "speech_start", "turn_id": 1}')
+    await session.handle_audio(b"\x01\x02")
+    await session.handle_text(SPEECH_END)
+    await session.wait_for_turn()
+
+    await session.handle_text('{"type": "speech_start", "turn_id": 2}')
+    await session.handle_audio(b"\x03\x04")
+    await session.handle_text(SPEECH_END)
+    await session.wait_for_turn()
+
+    turn_ends = transport.messages_of_type("turn_end")
+    assert [event["turn_id"] for event in turn_ends] == [1, 2]
+
+
+async def test_interrupt_updates_the_turn_id_for_the_next_turns_events(transport):
+    session = make_session(transport)
+
+    await session.handle_text('{"type": "speech_start", "turn_id": 1}')
+    await session.handle_text('{"type": "interrupt", "turn_id": 2}')
+    assert session.current_turn_id == 2
+
+    await session.handle_audio(b"\x01\x02")
+    await session.handle_text(SPEECH_END)
+    await session.wait_for_turn()
+
+    assert transport.messages_of_type("turn_end")[0]["turn_id"] == 2
 
 
 async def test_audio_is_forwarded_to_stt_while_listening(transport):
@@ -142,6 +190,74 @@ async def test_interrupt_records_spoken_text_as_an_interrupted_turn(transport):
     assert len(agent_turns) == 1
     assert agent_turns[0].text == "Once upon a time."
     assert agent_turns[0].interrupted is True
+
+
+async def test_interrupt_excludes_sentences_sent_but_not_yet_actually_heard(transport):
+    # Regression test for a real bug: sending is network/compute-bound and
+    # much faster than real-time playback, so a sentence can finish SENDING
+    # (and, pre-fix, get unconditionally recorded as "spoken") well before
+    # the child has actually finished HEARING it -- confirmed on real
+    # hardware as later story content (e.g. a character introduced in a
+    # sentence that was sent but not yet played) leaking into the
+    # conversation history as if the child had heard it.
+    #
+    # Three sentences, each with its own delay (fast, fast, slow):
+    # sentence 1 and 2 are both fully SENT within ~40ms (delays[0]/[1] =
+    # 20ms each) -- proving the bug isn't just "wasn't sent yet". Each still
+    # carries its own ESTIMATED real-world playback duration
+    # (seconds_per_sentence=100ms), independent of how fast it was sent:
+    # sentence 1's estimated completion is ~120ms (first_audio_at ~20ms +
+    # 100ms), sentence 2's is ~220ms (same start + 200ms cumulative).
+    # Sentence 3's long delay (300ms, delays[2]) is a deliberate keep-alive:
+    # it holds _run_turn()'s task genuinely in flight (not yet task.done(),
+    # so the normal-completion path hasn't recorded anything yet) long
+    # enough for the interrupt below to land in the real window between
+    # sentence 1's and sentence 2's estimated completions -- at 170ms.
+    tts = FakeTts(delays=[0.02, 0.02, 0.3], seconds_per_sentence=0.1)
+    llm = FakeLlm(
+        chunks=[
+            "The fox found a key. ",
+            "Then a ladybug landed on its nose. ",
+            "Wait, don't say anything yet.",
+        ]
+    )
+    session = make_session(transport, llm=llm, tts=tts)
+
+    await session.handle_text(SPEECH_START)
+    await session.handle_text(SPEECH_END)
+    await asyncio.sleep(0.17)
+    await session.handle_text(INTERRUPT)
+
+    agent_turns = [turn for turn in session.conversation.turns if turn.speaker == "agent"]
+    assert len(agent_turns) == 1
+    assert agent_turns[0].text == "The fox found a key.", (
+        "only the sentence actually finished playing by interrupt time may be recorded -- "
+        "the ladybug sentence was already fully SENT, but its audio had not actually "
+        "finished playing yet, and must still be excluded"
+    )
+    assert agent_turns[0].interrupted is True
+
+
+async def test_interrupt_before_anything_has_actually_been_heard_records_nothing(transport):
+    # The other edge of the same fix: if the interrupt lands before even
+    # the FIRST sentence's estimated playback has finished, nothing should
+    # be recorded as an interrupted agent turn at all -- not "everything
+    # sent so far", which pre-fix would have included the whole first
+    # sentence the instant its bytes finished sending. The second sentence
+    # is a keep-alive (see the test above) so the interrupt at 50ms -- well
+    # before sentence 1's ~120ms estimated completion -- lands while the
+    # task is still genuinely in flight.
+    tts = FakeTts(delays=[0.02, 0.3], seconds_per_sentence=0.1)
+    llm = FakeLlm(chunks=["The fox found a key. ", "Wait, don't say anything yet."])
+    session = make_session(transport, llm=llm, tts=tts)
+
+    await session.handle_text(SPEECH_START)
+    await session.handle_text(SPEECH_END)
+    await asyncio.sleep(0.05)
+    await session.handle_text(INTERRUPT)
+
+    agent_turns = [turn for turn in session.conversation.turns if turn.speaker == "agent"]
+    assert agent_turns == []
 
 
 async def test_interrupted_turn_is_visible_to_the_next_llm_call(transport):
