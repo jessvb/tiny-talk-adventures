@@ -11,6 +11,7 @@ final class AppModel: ObservableObject {
     @Published var lastErrorMessage: String?
     @Published var latencyHistory: [InterruptLatency] = []
     @Published var isConnected = false
+    @Published var isMicMuted = false
 
     private var coordinator: SessionCoordinator?
     private var audioEngine: RealAudioEngine?
@@ -58,7 +59,7 @@ final class AppModel: ObservableObject {
             return
         }
 
-        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad, waitingDittyAudio: WaitingDitty.audio)
         self.coordinator = coordinator
         runLoop = Task { await coordinator.start() }
 
@@ -119,6 +120,21 @@ final class AppModel: ObservableObject {
         audioEngine = nil
         isConnected = false
         state = .idle
+        // Reset so the UI doesn't show "Muted" against a fresh coordinator
+        // (created unmuted by default) on the next connect().
+        isMicMuted = false
+    }
+
+    /// Lets the child/parent mute the mic -- e.g. to prevent an accidental
+    /// barge-in while waiting for a reply. Toggles local UI state directly
+    /// (rather than polling it back from the coordinator, the way state/
+    /// transcript/etc. are) since this button is the only thing that ever
+    /// changes it -- there's no async server-driven update to reconcile.
+    func toggleMute() {
+        isMicMuted.toggle()
+        let coordinatorToUpdate = coordinator
+        let muted = isMicMuted
+        Task { await coordinatorToUpdate?.setMuted(muted) }
     }
 
     private func startPollingState() {
@@ -191,6 +207,17 @@ struct ContentView: View {
                     Task { await model.connect() }
                 }
             }
+
+            if model.isConnected {
+                Button {
+                    model.toggleMute()
+                } label: {
+                    Label(
+                        model.isMicMuted ? "Muted" : "Mute Mic",
+                        systemImage: model.isMicMuted ? "mic.slash.fill" : "mic.fill"
+                    )
+                }
+                .tint(model.isMicMuted ? .red : .accentColor)
             }
 
             Text("State: \(String(describing: model.state))")

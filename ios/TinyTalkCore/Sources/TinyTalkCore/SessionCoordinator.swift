@@ -34,6 +34,28 @@ public actor SessionCoordinator {
 
     private var turnTask: Task<Void, Never>?
     private var turnContinuation: AsyncStream<ServerConnectionEvent>.Continuation?
+    /// Audio to loop while .waitingForReply, covering the STT/LLM/TTS
+    /// pipeline's real multi-second latency with something more engaging
+    /// than dead silence -- see WaitingDitty.swift. nil by default (not
+    /// WaitingDitty.audio) specifically so every existing test that
+    /// doesn't pass this explicitly stays completely unaffected; the real
+    /// app wiring (ContentView.swift) passes WaitingDitty.audio, and
+    /// dedicated tests pass their own fake audio to exercise this feature.
+    private let waitingDittyAudio: Data?
+    private var dittyTask: Task<Void, Never>?
+    /// The turn_id sent on the most recent speechStart/interrupt -- see
+    /// Protocol.swift's module doc comment for the full rationale.
+    /// Confirmed necessary on real hardware: the server's read loop is
+    /// strictly serial and STT can take several real seconds per
+    /// utterance, so if the child interrupts and starts a new utterance
+    /// while the server is still finishing the previous one, that reply
+    /// arrives late -- after this client has already moved on to a newer
+    /// turn. consumeServerEvents() uses this to tell a late reply for an
+    /// abandoned utterance apart from a reply for the current one, instead
+    /// of accepting whatever arrives next as if it must belong to the
+    /// active turn (which was observed, on-device, to either misattribute
+    /// a reply to the wrong turn or silently drop it entirely).
+    private var currentTurnId = 0
 
     public var state: SessionState { machine.state }
     public var latencyHistory: [InterruptLatency] { latencyLogger.history }
@@ -105,10 +127,31 @@ public actor SessionCoordinator {
     /// flushPreRoll()'s doc comment for how it's cleared safely.
     private var isFlushing = false
 
-    public init(connection: any ServerConnecting, audio: any AudioPlaying, vad: any VoiceActivityDetecting) {
+    /// True while the child/parent has muted the mic via the UI. Checked
+    /// first thing in captureAudio(), before audio ever reaches the VAD --
+    /// this is a deliberate "mute" (matching the mental model of a video-
+    /// call mute button), not merely a barge-in suppressor: while muted, no
+    /// new speechStart can be detected either, not just interrupts of an
+    /// in-flight reply. That's the whole point of exposing it as a plain
+    /// mute toggle rather than a narrower "block interrupts" flag -- it's
+    /// simpler to explain to a parent and impossible to misread from the
+    /// UI. Muting mid-.listening utterance is handled explicitly by
+    /// setMuted(_:) below: since captureAudio() stops feeding the VAD the
+    /// instant this flips true, the VAD would otherwise never observe the
+    /// silence hangover needed to fire speechEnd on its own, leaving the
+    /// state machine stuck in .listening forever.
+    private var isMuted = false
+
+    public init(
+        connection: any ServerConnecting,
+        audio: any AudioPlaying,
+        vad: any VoiceActivityDetecting,
+        waitingDittyAudio: Data? = nil
+    ) {
         self.connection = connection
         self.audio = audio
         self.vad = vad
+        self.waitingDittyAudio = waitingDittyAudio
     }
 
     /// Runs for the coordinator's whole lifetime. Call once. Cancel the
@@ -130,6 +173,7 @@ public actor SessionCoordinator {
     /// speech/silence decisions are two independent streams from two
     /// different sources.
     public func captureAudio(_ pcm: Data) async {
+        guard !isMuted else { return }
         vad.feed(pcm)
         // isFlushing overrides an already-.listening state on purpose -- see
         // its doc comment: a control-frame-send-then-flush sequence is in
@@ -139,6 +183,34 @@ public actor SessionCoordinator {
             return
         }
         try? await connection.send(audio: pcm)
+    }
+
+    /// Toggles mic muting -- see isMuted's doc comment for exactly what
+    /// this does and doesn't affect. Safe to call from any state; has no
+    /// effect on audio the server has already been sent or is already
+    /// playing back, only on mic audio captured from this point forward.
+    ///
+    /// isMuted is set BEFORE the handleSpeechEnd() call below (not after),
+    /// so that even though handleSpeechEnd() suspends (its own
+    /// `connection.send(.speechEnd)` await), any captureAudio() call
+    /// scheduled concurrently during that suspension already observes
+    /// isMuted == true and skips feeding the VAD -- same reasoning as
+    /// isFlushing being set before its own control-frame send elsewhere in
+    /// this file.
+    ///
+    /// Muting while .listening finalizes the in-progress utterance exactly
+    /// as if the VAD itself had observed silence: this reuses
+    /// handleSpeechEnd() as-is (its own `guard machine.state == .listening`
+    /// makes this a no-op in every other state), so whatever was captured
+    /// up to the moment of muting is sent to the server as a normal turn --
+    /// "stop listening" really does stop listening, rather than leaving the
+    /// state machine stuck in .listening with no more audio ever arriving
+    /// to end it.
+    public func setMuted(_ muted: Bool) async {
+        isMuted = muted
+        if muted {
+            await handleSpeechEnd()
+        }
     }
 
     /// Appends to the pre-roll ring buffer, evicting the oldest chunks once
@@ -187,6 +259,37 @@ public actor SessionCoordinator {
         isFlushing = false
     }
 
+    /// Starts looping waitingDittyAudio (if configured) through the same
+    /// AudioPlaying path real replies use. A no-op if already running or if
+    /// no ditty audio was configured (see waitingDittyAudio's doc comment).
+    /// Each loop iteration awaits a full play() call, so the ditty's own
+    /// baked-in trailing silence (see WaitingDitty.audio) paces the loop --
+    /// no separate timer/sleep needed.
+    private func startWaitingDitty() {
+        guard let waitingDittyAudio, dittyTask == nil else { return }
+        dittyTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                await self.audio.play(waitingDittyAudio)
+            }
+        }
+    }
+
+    /// Stops the ditty loop, if one is running. Calls stopPlaybackImmediately()
+    /// unconditionally (safe even if nothing is playing) rather than relying
+    /// on cancellation alone to silence a note already in flight -- the same
+    /// reasoning as interrupt()'s own use of it: cancelling dittyTask only
+    /// stops the NEXT loop iteration from starting, it doesn't by itself cut
+    /// off audio the player node is already partway through. Called before
+    /// any real reply audio starts playing, so the two can never be
+    /// in-flight on the same player node at once.
+    private func stopWaitingDitty() {
+        guard dittyTask != nil else { return }
+        dittyTask?.cancel()
+        dittyTask = nil
+        audio.stopPlaybackImmediately()
+    }
+
     private func consumeVADEvents() async {
         for await event in vad.events() {
             switch event {
@@ -202,8 +305,17 @@ public actor SessionCoordinator {
     /// whole lifetime. See the type-level doc comment above for why this
     /// must never be duplicated.
     private func consumeServerEvents() async {
+        // Audio frames carry no turn_id of their own (see Protocol.swift --
+        // only the JSON control events do), but the server only ever sends
+        // audio strictly between a matching response_text and that same
+        // turn's turn_end, so this tracks "was the most recent turn_id-
+        // bearing event for the turn we're currently accepting" and gates
+        // audio on it. Starts false: audio can't legitimately arrive before
+        // any text event has established which turn it belongs to.
+        var isCurrentTurnAudio = false
         for await event in connection.events() {
             if case .closed = event {
+                stopWaitingDitty()
                 turnContinuation?.finish()
                 turnContinuation = nil
                 turnTask?.cancel()
@@ -222,6 +334,31 @@ public actor SessionCoordinator {
                 isClosed = true
                 return
             }
+
+            if case .audio = event {
+                guard isCurrentTurnAudio else { continue }
+                turnContinuation?.yield(event)
+                continue
+            }
+
+            let eventTurnId: Int
+            switch event {
+            case .message(.transcriptPartial(_, let turnId)),
+                 .message(.transcriptFinal(_, let turnId)),
+                 .message(.responseText(_, let turnId)),
+                 .message(.turnEnd(let turnId)),
+                 .message(.error(_, let turnId)):
+                eventTurnId = turnId
+            case .audio, .closed:
+                fatalError("unreachable: handled above")
+            }
+
+            isCurrentTurnAudio = eventTurnId == currentTurnId
+            guard isCurrentTurnAudio else {
+                print("SessionCoordinator: discarding \(event) -- turn_id \(eventTurnId) does not match current turn \(currentTurnId)")
+                continue
+            }
+
             // Handled here, unconditionally, rather than only inside
             // runTurn()'s loop: an error frame can arrive OUTSIDE an active
             // turn too (e.g. while .listening, before speech_end, if the
@@ -232,8 +369,11 @@ public actor SessionCoordinator {
             // captured either way; runTurn() still separately handles
             // `.message(.error)` for turns that ARE active, ending the turn
             // immediately instead of waiting for a turn_end that may have
-            // been preempted -- that in-turn behavior is unchanged.
-            if case .message(.error(let text)) = event {
+            // been preempted -- that in-turn behavior is unchanged. Only
+            // reached for turn_id-matching errors -- see the guard above --
+            // so a stale, already-abandoned turn's error can no longer
+            // overwrite a legitimate current one.
+            if case .message(.error(let text, _)) = event {
                 lastErrorMessage = text
             }
             turnContinuation?.yield(event)
@@ -246,13 +386,19 @@ public actor SessionCoordinator {
             return
         }
         guard (try? machine.handle(.speechStart)) != nil else { return }
+        // Assigned before the control frame's own await below, same
+        // reasoning as isFlushing just above it: machine.state is already
+        // .listening at this point, so the id must be settled before
+        // anything else can suspend and let a stale/concurrent read of it
+        // through.
+        currentTurnId += 1
         // Must be set before the control frame's own await below -- see
         // isFlushing's and flushPreRoll()'s doc comments. machine.state is
         // already .listening at this point (machine.handle() above flipped
         // it synchronously), so without this, a captureAudio() call
         // delivered during the send's suspension would race it.
         isFlushing = true
-        try? await connection.send(.speechStart)
+        try? await connection.send(.speechStart(turnId: currentTurnId))
         await flushPreRoll()
     }
 
@@ -265,6 +411,7 @@ public actor SessionCoordinator {
         turnTask = Task { [weak self] in
             await self?.runTurn(turnStream)
         }
+        startWaitingDitty()
     }
 
     /// turnTask's real body: processes exactly one turn's worth of server
@@ -285,18 +432,30 @@ public actor SessionCoordinator {
             // touching any shared state on every iteration closes that
             // window: cancel() is synchronous, so this check reliably
             // catches a stale turn on its very next loop iteration.
-            if Task.isCancelled { return }
+            if Task.isCancelled {
+                print("SessionCoordinator: discarding \(event) -- this turn was cancelled")
+                return
+            }
             switch event {
             case .audio(let pcm):
                 if machine.state == .waitingForReply {
+                    // Real reply audio is about to start -- stop the
+                    // ditty (if any) BEFORE playing it, so the two can
+                    // never be in flight on the same player node at once.
+                    stopWaitingDitty()
                     guard (try? machine.handle(.audioChunkReceived)) != nil else { return }
                 }
                 await audio.play(pcm)
-            case .message(.turnEnd):
+            case .message(.turnEnd(_)):
+                // Covers the empty-reply case: no .audio event ever
+                // arrives, so this is the only place left to stop a
+                // still-looping ditty for this turn.
+                stopWaitingDitty()
                 _ = try? machine.handle(.turnEnd)
                 turnContinuation = nil
                 return
-            case .message(.error(let text)):
+            case .message(.error(let text, _)):
+                stopWaitingDitty()
                 lastErrorMessage = text
                 // Mirrors the server's own behavior: end the turn
                 // immediately rather than waiting for a turn_end the
@@ -304,15 +463,16 @@ public actor SessionCoordinator {
                 _ = try? machine.handle(.turnEnd)
                 turnContinuation = nil
                 return
-            case .message(.transcriptFinal(let text)):
+            case .message(.transcriptFinal(let text, _)):
                 lastTranscript = text
                 continue
-            case .message(.responseText(let text)):
+            case .message(.responseText(let text, _)):
                 lastReply = text
                 continue
-            case .message(.transcriptPartial):
+            case .message(.transcriptPartial(_, _)):
                 continue
             case .closed:
+                stopWaitingDitty()
                 return
             }
         }
@@ -327,6 +487,7 @@ public actor SessionCoordinator {
     /// once, right before discarding this coordinator (e.g. from the iOS
     /// client's disconnect()).
     public func close() async {
+        stopWaitingDitty()
         turnContinuation?.finish()
         turnContinuation = nil
         turnTask?.cancel()
@@ -336,6 +497,7 @@ public actor SessionCoordinator {
     }
 
     private func interrupt() async {
+        stopWaitingDitty()
         let id = latencyLogger.recordVADFire()
         // The critical operation: stop sound RIGHT NOW, before anything
         // else in this method runs, so nothing async can delay it further.
@@ -354,10 +516,15 @@ public actor SessionCoordinator {
         turnTask?.cancel()
         turnTask = nil
         _ = try? machine.handle(.interrupt)
+        // Same reasoning as handleSpeechStart()'s currentTurnId += 1: must
+        // be assigned before the control frame's own await below, so
+        // consumeServerEvents() can't observe a stale value while this is
+        // suspended sending it.
+        currentTurnId += 1
         // See the matching comment in handleSpeechStart(): must be set
         // before the control frame's own await below, for the same reason.
         isFlushing = true
-        try? await connection.send(.interrupt)
+        try? await connection.send(.interrupt(turnId: currentTurnId))
         await flushPreRoll()
     }
 }
