@@ -33,10 +33,15 @@ final class AppModel: ObservableObject {
         serverAddress = UserDefaults.standard.string(forKey: "serverAddress") ?? "ws://192.168.1.1:8765"
     }
 
-    func connect() {
+    func connect() async {
         UserDefaults.standard.set(serverAddress, forKey: "serverAddress")
         guard let url = URL(string: serverAddress) else {
             lastErrorMessage = "invalid server address"
+            return
+        }
+
+        guard await RealAudioEngine.requestMicrophonePermission() else {
+            lastErrorMessage = "microphone access denied. Check Settings > Privacy > Microphone > TinyTalkApp."
             return
         }
 
@@ -180,7 +185,12 @@ struct ContentView: View {
                 .disabled(model.isConnected)
 
             Button(model.isConnected ? "Disconnect" : "Connect") {
-                model.isConnected ? model.disconnect() : model.connect()
+                if model.isConnected {
+                    model.disconnect()
+                } else {
+                    Task { await model.connect() }
+                }
+            }
             }
 
             Text("State: \(String(describing: model.state))")

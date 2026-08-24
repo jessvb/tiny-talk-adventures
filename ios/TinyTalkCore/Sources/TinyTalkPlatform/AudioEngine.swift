@@ -47,6 +47,10 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     /// on every launch, before the app can do anything.
     private var playbackConnectionFormat: AVAudioFormat!
     private var onAudioCaptured: (@Sendable (Data) -> Void)?
+    /// See installCaptureTapAndStart()/rebuildCaptureTap()'s doc comments --
+    /// confirmed on-device necessary to recover from voice processing's
+    /// graph rebuild silently invalidating the input tap.
+    private var configChangeObserver: NSObjectProtocol?
 
     public init() throws {
         let session = AVAudioSession.sharedInstance()
@@ -105,6 +109,27 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         engine.connect(playerNode, to: engine.mainMixerNode, format: playbackConnectionFormat)
     }
 
+    /// Explicitly requests microphone permission and awaits the user's
+    /// answer, rather than relying on AVAudioEngine/AVAudioSession to
+    /// trigger an implicit system prompt on first use. That implicit path
+    /// is not reliable on modern iOS: `setActive(true)`/`engine.start()`
+    /// can both succeed even when record permission is undetermined or
+    /// denied, leaving the input node silently deliver zero buffers to any
+    /// tap -- no thrown error, no crash, just permanent silence, which is
+    /// indistinguishable from "no speech yet" from the rest of this app's
+    /// perspective. Returns `true` only if permission is actually granted.
+    public static func requestMicrophonePermission() async -> Bool {
+        if #available(iOS 17.0, *) {
+            return await AVAudioApplication.requestRecordPermission()
+        } else {
+            return await withCheckedContinuation { continuation in
+                AVAudioSession.sharedInstance().requestRecordPermission { granted in
+                    continuation.resume(returning: granted)
+                }
+            }
+        }
+    }
+
     /// Starts mic capture. `onAudioCaptured` is invoked with 24kHz mono
     /// PCM16 LE chunks (matching the wire format) as they're captured --
     /// converted from whatever format the hardware's input node natively
@@ -113,6 +138,41 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     /// AVAudioConverter is the right tool for the format conversion itself.
     public func startCapturing(onAudioCaptured: @escaping @Sendable (Data) -> Void) throws {
         self.onAudioCaptured = onAudioCaptured
+
+        // Confirmed on-device (real iPhone 13 Pro): enabling voice
+        // processing makes the input tap deliver zero buffers forever, no
+        // thrown error, even though engine.isRunning and every session
+        // property (route/availability/category) report healthy. This is a
+        // documented AVAudioEngine behavior, not a bug in this file's own
+        // configuration: enabling voice processing rebuilds the underlying
+        // audio unit graph, and the engine can silently invalidate the
+        // already-installed tap's render path without engine.start()
+        // itself failing -- Apple's own guidance is to observe
+        // AVAudioEngineConfigurationChangeNotification and rebuild.
+        // Registering unconditionally (not just after voice processing) is
+        // deliberate: this notification is also the same, real, recommended
+        // recovery mechanism for a completely different case Task 8's own
+        // review already anticipated -- a route change from a phone call,
+        // AirPods connecting, etc. -- so this one observer covers both.
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            print("RealAudioEngine: AVAudioEngineConfigurationChange received -- rebuilding capture tap")
+            self?.rebuildCaptureTap()
+        }
+
+        try installCaptureTapAndStart()
+    }
+
+    /// (Re)installs the mic tap against the input node's CURRENT format and
+    /// (re)starts the engine. Called both from startCapturing() and from
+    /// the AVAudioEngineConfigurationChange handler, since a configuration
+    /// change can also mean the hardware format itself changed (e.g. a
+    /// route change), not just that voice processing's graph rebuild
+    /// invalidated the previous tap.
+    private func installCaptureTapAndStart() throws {
         let inputNode = engine.inputNode
         // outputFormat(forBus:), not inputFormat(forBus:): AVAudioNode.h's
         // tap documentation says the tap/connection format should match the
@@ -130,6 +190,7 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             )
         }
 
+        print("RealAudioEngine: installing tap, hardwareFormat=\(hardwareFormat)")
         inputNode.installTap(onBus: 0, bufferSize: 2400, format: hardwareFormat) { [weak self] buffer, _ in
             guard let self else { return }
             guard let outputBuffer = AVAudioPCMBuffer(
@@ -177,8 +238,33 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         }
     }
 
-    public func stopCapturing() {
+    private func rebuildCaptureTap() {
+        engine.stop()
         engine.inputNode.removeTap(onBus: 0)
+        do {
+            try installCaptureTapAndStart()
+        } catch {
+            print("RealAudioEngine: failed to rebuild capture tap after configuration change: \(error)")
+        }
+    }
+
+    public func stopCapturing() {
+        if let configChangeObserver {
+            NotificationCenter.default.removeObserver(configChangeObserver)
+            self.configChangeObserver = nil
+        }
+        engine.inputNode.removeTap(onBus: 0)
+        // Removing the tap alone leaves the engine (and its
+        // voice-processing I/O unit, which owns the physical mic) running.
+        // A fast disconnect/reconnect cycle then briefly has two
+        // AVAudioEngine instances both holding the shared input hardware --
+        // observed on-device as the newer engine's tap silently receiving
+        // zero buffers, no error either side. engine.stop() releases the
+        // hardware; play()'s existing `if !engine.isRunning { try?
+        // engine.start() }` already handles a caller needing to use this
+        // same instance for playback afterward.
+        engine.stop()
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
     public func stopPlaybackImmediately() {
