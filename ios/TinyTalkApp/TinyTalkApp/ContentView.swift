@@ -228,7 +228,21 @@ struct ContentView: View {
             }
 
             Text("Heard: \(model.lastTranscript)")
-            Text("Reply: \(model.lastReply)")
+                .fixedSize(horizontal: false, vertical: true)
+
+            // The reply's own List sibling below is a flexible view that
+            // otherwise squeezes this Text down to ~3 visible lines even
+            // with no explicit lineLimit -- fixedSize forces it to take
+            // its full natural height instead of being compressed, and
+            // the ScrollView (capped, not full-screen) guarantees the
+            // whole reply is reachable even if it ever runs long enough
+            // to exceed the visible area.
+            ScrollView {
+                Text("Reply: \(model.lastReply)")
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 160)
 
             List(Array(model.latencyHistory.enumerated()), id: \.offset) { _, latency in
                 Text(String(format: "VAD→stopped: %.1fms", latency.vadFireToPlaybackStoppedMillis))
