@@ -44,7 +44,7 @@ _FRIGHTENING = (
     "nightmare",
     "screamed in terror",
     "trapped forever",
-    "evil",
+    "pure evil",
     "demon",
     "demons",
 )

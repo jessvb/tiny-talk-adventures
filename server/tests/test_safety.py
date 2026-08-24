@@ -51,7 +51,7 @@ def test_filter_replaces_unsafe_text_with_fallback():
     "text",
     [
         "The monster attacking the village was terrifying.",
-        "It was a nightmare full of evil demons.",
+        "It was a nightmare full of pure evil.",
         "She screamed in terror, trapped forever in the tower.",
     ],
 )
@@ -99,3 +99,13 @@ def test_innocent_fairy_tale_kiss_stays_safe():
     # children's stories, and blocking the bare word would over-trigger
     # constantly. Only a more explicit phrase should be blocked.
     assert is_safe("The prince gave the sleeping princess a gentle kiss.") is True
+
+
+def test_evil_queen_fairy_tale_trope_stays_safe():
+    # Same reasoning as the kiss regression guard: "the evil queen"/
+    # "the evil witch" are completely ordinary, wholesome fairy-tale
+    # villain descriptions (Snow White, Sleeping Beauty, etc.), not
+    # actually frightening content -- only a stronger explicit phrase
+    # should be blocked.
+    assert is_safe("The evil queen cast a spell on the princess.") is True
+    assert is_safe("The evil witch lived in the dark forest.") is True
