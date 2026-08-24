@@ -38,6 +38,11 @@ KOKORO_VOICE = os.environ.get("TINYTALK_TTS_VOICE", "af_heart")
 # or "cuda" instead.
 KOKORO_DEVICE = os.environ.get("TINYTALK_TTS_DEVICE", "mps")
 
+# One turn = one child utterance + one agent reply. Roughly matched to a
+# young child's attention span -- see story_arc.py's module docstring for
+# how this drives narrative staging.
+STORY_TARGET_TURNS = int(os.environ.get("TINYTALK_STORY_TARGET_TURNS", "12"))
+
 SYSTEM_PROMPT = (
     "You are a warm, playful storyteller telling a story out loud with a young "
     "child, aged about three to six. You and the child are making the story up "
