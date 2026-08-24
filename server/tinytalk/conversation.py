@@ -28,10 +28,15 @@ class Turn:
 class Conversation:
     def __init__(self, max_turns: int = 20) -> None:
         self._turns: deque[Turn] = deque(maxlen=max_turns)
+        self._full_history: list[Turn] = []
 
     @property
     def turns(self) -> tuple[Turn, ...]:
         return tuple(self._turns)
+
+    @property
+    def full_history(self) -> tuple[Turn, ...]:
+        return tuple(self._full_history)
 
     def add_child(self, text: str) -> None:
         self._add(Turn(speaker="child", text=text.strip()))
@@ -45,6 +50,7 @@ class Conversation:
         if not turn.text:
             return
         self._turns.append(turn)
+        self._full_history.append(turn)
 
     def to_messages(self, system_prompt: str) -> list[dict[str, str]]:
         messages = [{"role": "system", "content": system_prompt}]

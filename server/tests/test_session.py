@@ -563,6 +563,36 @@ async def test_reaching_story_done_saves_and_resets_conversation_and_arc(transpo
     # ...but session.conversation is now a FRESH one: the next story has
     # no memory of the finished one.
     assert session.conversation.turns == ()
+    assert session._story_arc.is_done is False, "the story arc must be a fresh instance, not the same already-done one"
+
+
+async def test_interrupting_a_concluding_turn_defers_save_and_reset_to_the_next_completed_turn(transport, monkeypatch):
+    # record_reply() runs BEFORE the TTS loop, so a turn that WOULD
+    # conclude the story can still be interrupted mid-playback -- is_done
+    # is already True by then, but the done-check (save + reset) only
+    # runs at the very end of a turn that completes normally. An
+    # interrupted concluding turn must NOT save or reset immediately; see
+    # story_arc.py's module docstring for the documented deferred-save
+    # behavior this pins.
+    saved: list = []
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.save_story",
+        lambda conversation, **kwargs: saved.append(conversation) or None,
+    )
+    tts = FakeTts(delay=0.05)  # slow enough to interrupt mid-playback
+    llm = FakeLlm(chunks=["And they all lived ", "happily ever after."])
+    session = make_session(transport, llm=llm, tts=tts)
+
+    await session.handle_text(SPEECH_START)
+    await session.handle_audio(b"\x01\x02")
+    await session.handle_text(SPEECH_END)
+    await asyncio.sleep(0.02)  # let the turn task reach record_reply() and start TTS playback
+
+    await session.handle_text(INTERRUPT)  # barge in mid-playback, before turn_end
+    await session.wait_for_turn()
+
+    assert saved == [], "an interrupted concluding turn must not save the story"
+    assert session.conversation.turns != (), "an interrupted concluding turn must not reset the conversation"
 
 
 async def test_story_not_done_does_not_save_or_reset_conversation(transport, monkeypatch):

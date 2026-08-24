@@ -25,7 +25,7 @@ STORIES_DIR = Path(__file__).resolve().parent.parent / "data" / "stories"
 def save_story(
     conversation: Conversation, *, stories_dir: Path = STORIES_DIR
 ) -> Path | None:
-    """Writes conversation.turns to a new JSON file under stories_dir.
+    """Writes conversation.full_history to a new JSON file under stories_dir.
 
     Returns the written path, or None if the write failed -- logged, not
     raised, since losing a saved story must never crash or hang the
@@ -44,7 +44,7 @@ def save_story(
                 "text": turn.text,
                 "interrupted": turn.interrupted,
             }
-            for turn in conversation.turns
+            for turn in conversation.full_history
         ],
     }
     try:

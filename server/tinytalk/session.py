@@ -13,7 +13,7 @@ import logging
 import time
 from typing import Protocol
 
-from . import config, safety
+from . import config, safety, story_store
 from .audio import TTS_SAMPLE_RATE, split_sentences
 from .conversation import Conversation
 from .engines import EngineError, LlmEngine, SttEngine, TtsEngine
@@ -29,9 +29,8 @@ from .protocol import (
     encode_transcript_partial,
     encode_turn_end,
 )
-from . import story_store
-from .story_arc import StoryArc
 from .state import Event, InvalidTransition, State, TurnStateMachine
+from .story_arc import StoryArc
 
 logger = logging.getLogger(__name__)
 

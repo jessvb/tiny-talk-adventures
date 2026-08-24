@@ -56,3 +56,15 @@ def test_save_failure_is_logged_and_returns_none_instead_of_raising(tmp_path):
     result = save_story(make_conversation(), stories_dir=blocked_path)
 
     assert result is None
+
+
+def test_save_story_includes_turns_beyond_the_llm_context_window(tmp_path):
+    conversation = Conversation()  # default max_turns=20
+    for i in range(15):
+        conversation.add_child(f"turn {i}")
+        conversation.add_agent(f"reply {i}")
+    # 30 entries added, exceeding the default window of 20
+    path = save_story(conversation, stories_dir=tmp_path)
+    payload = json.loads(path.read_text())
+    assert len(payload["turns"]) == 30
+    assert payload["turns"][0]["text"] == "turn 0"  # the beginning was NOT dropped
