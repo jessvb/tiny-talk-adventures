@@ -14,7 +14,7 @@ import time
 from typing import Protocol
 
 from . import config, safety
-from .audio import split_sentences
+from .audio import TTS_SAMPLE_RATE, split_sentences
 from .conversation import Conversation
 from .engines import EngineError, LlmEngine, SttEngine, TtsEngine
 from .protocol import (
@@ -58,7 +58,19 @@ class SessionRunner:
         self._conversation = conversation or Conversation()
         self._machine = TurnStateMachine()
         self._turn_task: asyncio.Task | None = None
-        self._spoken: list[str] = []
+        # (sentence text, estimated real-world time.monotonic() at which
+        # the child would actually have finished HEARING it) -- see
+        # _run_turn()'s TTS loop and _cancel_turn() for why "sent" and
+        # "heard" are tracked separately. Only meaningful while a turn is
+        # in flight; always cleared to [] once a turn ends or is cancelled.
+        self._spoken: list[tuple[str, float]] = []
+        # See protocol.py's module docstring for why this exists: the
+        # client assigns a new turn_id on every speech_start/interrupt, and
+        # every event this session sends is stamped with whichever turn_id
+        # it was most recently told, so the client can tell a late reply
+        # for an utterance it has already abandoned apart from a reply for
+        # its current one.
+        self._current_turn_id = 0
 
     @property
     def state(self) -> State:
@@ -68,30 +80,42 @@ class SessionRunner:
     def conversation(self) -> Conversation:
         return self._conversation
 
+    @property
+    def current_turn_id(self) -> int:
+        return self._current_turn_id
+
     async def handle_text(self, raw: str) -> None:
         try:
             message = decode_client_message(raw)
         except ProtocolError as exc:
             logger.warning("bad control frame: %s", exc)
-            await self._transport.send_text(encode_error(str(exc)))
+            await self._transport.send_text(encode_error(str(exc), self._current_turn_id))
             return
 
         match message:
-            case SpeechStart():
-                await self._start_listening()
+            case SpeechStart(turn_id=turn_id):
+                await self._start_listening(turn_id)
             case SpeechEnd():
                 await self._finish_listening()
-            case Interrupt():
-                await self._interrupt()
+            case Interrupt(turn_id=turn_id):
+                await self._interrupt(turn_id)
 
     async def handle_audio(self, pcm: bytes) -> None:
         # Audio arriving outside LISTENING is stale — a frame in flight when
         # the utterance ended. Dropping it is correct, not an error.
         if self._machine.state is not State.LISTENING:
             return
-        partial = self._stt.feed(pcm)
+        # KyutaiStt.feed() now decodes incrementally (a real MLX forward
+        # pass per audio chunk, not just a buffer append -- see
+        # stt_kyutai.py's module docstring for why), so it needs the same
+        # off-the-event-loop treatment as finish()'s to_thread usage below,
+        # for the same reason: keep it from stalling the process-wide event
+        # loop and websocket keepalive for its duration.
+        partial = await asyncio.to_thread(self._stt.feed, pcm)
         if partial:
-            await self._transport.send_text(encode_transcript_partial(partial))
+            await self._transport.send_text(
+                encode_transcript_partial(partial, self._current_turn_id)
+            )
 
     async def wait_for_turn(self) -> None:
         """Await the in-flight turn. Used by tests and on disconnect."""
@@ -106,7 +130,7 @@ class SessionRunner:
         # this STT engine next.
         self._stt.reset()
 
-    async def _start_listening(self) -> None:
+    async def _start_listening(self, turn_id: int) -> None:
         if self._machine.state in (State.THINKING, State.SPEAKING):
             # A speech_start arriving mid-turn means the child started
             # talking again before the agent finished — that is an
@@ -116,15 +140,25 @@ class SessionRunner:
             # SPEECH_START transition that only exists from IDLE. (A
             # duplicate speech_start while already LISTENING is left as the
             # existing no-op below — nothing is in flight to abort.)
-            await self._interrupt()
+            await self._interrupt(turn_id)
             return
         await self._cancel_turn(record_spoken=True)
+        self._current_turn_id = turn_id
         self._transition(Event.SPEECH_START)
 
     async def _finish_listening(self) -> None:
         if self._machine.state is not State.LISTENING:
             return
         self._transition(Event.SPEECH_END)
+        # Captured once, not re-read from self._current_turn_id later in
+        # this method or in _run_turn/_fail_turn: this utterance's events
+        # must all carry the turn_id that was active when it started, even
+        # though self._current_turn_id can only actually change again once
+        # _cancel_turn() has awaited this turn's task to a full stop (an
+        # interrupt/new speech_start cancels-and-awaits before updating
+        # it) -- capturing makes that invariant explicit rather than
+        # relying on the caller's ordering.
+        turn_id = self._current_turn_id
         try:
             # KyutaiStt.finish() runs model inference (an MLX forward pass
             # over the whole utterance) — potentially 0.5-3s. Running it off
@@ -139,10 +173,17 @@ class SessionRunner:
             # that changes -- if a future concurrency change does let an
             # interrupt interleave here, it will have moved self._machine's
             # state out from under us while we were suspended.
+            stt_start = time.monotonic()
             transcript = await asyncio.to_thread(self._stt.finish)
+            logger.info(
+                "stt finish took %.1f ms -> %d chars: %r",
+                (time.monotonic() - stt_start) * 1000,
+                len(transcript),
+                transcript,
+            )
         except EngineError as exc:
             logger.error("engine failure finishing the utterance: %s", exc)
-            await self._fail_turn(str(exc))
+            await self._fail_turn(str(exc), turn_id)
             return
         if self._machine.state is not State.THINKING:
             # Something (an interrupt, once handling stops being serialized)
@@ -150,20 +191,25 @@ class SessionRunner:
             # to_thread above. The transcript we just finished is stale --
             # discard it rather than building a reply to an utterance the
             # child has already interrupted.
+            logger.info(
+                "discarding stale transcript -- state is %s, not THINKING",
+                self._machine.state,
+            )
             return
-        await self._transport.send_text(encode_transcript_final(transcript))
+        await self._transport.send_text(encode_transcript_final(transcript, turn_id))
         if not transcript.strip():
             self._transition(Event.RESPONSE_READY)
             self._transition(Event.TTS_DONE)
-            await self._transport.send_text(encode_turn_end())
+            await self._transport.send_text(encode_turn_end(turn_id))
             return
         self._spoken = []
-        self._turn_task = asyncio.create_task(self._run_turn(transcript))
+        self._turn_task = asyncio.create_task(self._run_turn(transcript, turn_id))
 
-    async def _interrupt(self) -> None:
+    async def _interrupt(self, turn_id: int) -> None:
         interrupt_received = time.monotonic()
         await self._cancel_turn(record_spoken=True)
         self._stt.reset()
+        self._current_turn_id = turn_id
         self._transition(Event.INTERRUPT)
         logger.info(
             "interrupt handled in %.1f ms",
@@ -194,43 +240,103 @@ class SessionRunner:
             if current is not None and current.cancelling():
                 raise
         if record_spoken and self._spoken:
-            self._conversation.add_agent(" ".join(self._spoken), interrupted=True)
+            # "Sent" is not "heard": network transfer + synthesis is much
+            # faster than real-time audio playback (confirmed on real
+            # hardware -- an entire multi-sentence reply can finish
+            # SENDING in ~1-2s while its audio takes 5-8+s to actually
+            # play), so by the time an interrupt lands, sentences can
+            # already be recorded as "spoken" here that the child has not
+            # actually finished hearing yet -- observed for real as later
+            # story content (e.g. a character introduced in a sentence
+            # that was sent, but not yet played) leaking into the
+            # conversation history as if the child had heard it. Only
+            # include sentences whose ESTIMATED real-world playback would
+            # already be complete by now.
+            now = time.monotonic()
+            actually_heard = [text for text, complete_at in self._spoken if now >= complete_at]
+            if actually_heard:
+                self._conversation.add_agent(" ".join(actually_heard), interrupted=True)
         self._spoken = []
 
-    async def _run_turn(self, transcript: str) -> None:
+    async def _run_turn(self, transcript: str, turn_id: int) -> None:
+        # Per-stage timing: this pipeline is a personal pet project running
+        # on modest hardware (see CLAUDE.md), and latency was found to be
+        # noticeably higher than the design's 1-2s target -- logging where
+        # time actually goes (STT is timed separately, in
+        # _finish_listening) beats guessing which of LLM generation or TTS
+        # synthesis is the bottleneck before deciding what to optimize.
+        turn_start = time.monotonic()
         try:
             self._conversation.add_child(transcript)
             messages = self._conversation.to_messages(self._system_prompt)
 
             parts: list[str] = []
+            llm_start = time.monotonic()
+            first_chunk_at: float | None = None
             async for chunk in self._llm.stream_reply(messages):
+                if first_chunk_at is None:
+                    first_chunk_at = time.monotonic()
                 parts.append(chunk)
+            llm_done = time.monotonic()
             reply = safety.filter_reply("".join(parts).strip())
+            logger.info(
+                "llm stream_reply: %.1f ms to first chunk, %.1f ms total (%d chars)",
+                ((first_chunk_at or llm_done) - llm_start) * 1000,
+                (llm_done - llm_start) * 1000,
+                len(reply),
+            )
 
-            await self._transport.send_text(encode_response_text(reply))
+            await self._transport.send_text(encode_response_text(reply, turn_id))
             self._transition(Event.RESPONSE_READY)
 
+            tts_start = time.monotonic()
+            first_audio_at: float | None = None
+            # Cumulative estimated audio duration (seconds) sent so far this
+            # turn -- lets each sentence record when its own playback would
+            # actually finish, not just when its bytes finished sending. See
+            # _cancel_turn()'s doc comment for why this distinction matters.
+            playback_offset = 0.0
             for sentence in split_sentences(reply):
+                sentence_bytes = 0
                 async for pcm in self._tts.synthesize(sentence):
+                    if first_audio_at is None:
+                        first_audio_at = time.monotonic()
                     await self._transport.send_bytes(pcm)
-                # Recorded only once fully sent, so an interrupt attributes to
-                # the agent exactly what the child actually heard.
-                self._spoken.append(sentence)
+                    sentence_bytes += len(pcm)
+                # PCM16 mono at the wire sample rate (audio.py) -- 2 bytes/sample.
+                playback_offset += sentence_bytes / (2 * TTS_SAMPLE_RATE)
+                # Recorded once fully sent, paired with its ESTIMATED
+                # real-world playback-complete time (assuming the client
+                # plays back starting at first_audio_at, at roughly
+                # real-time pace) -- not just the raw text -- so an
+                # interrupt can tell what was actually HEARD apart from
+                # what was merely SENT.
+                self._spoken.append((sentence, (first_audio_at or time.monotonic()) + playback_offset))
+            tts_done = time.monotonic()
+            logger.info(
+                "tts synth+send: %.1f ms to first audio, %.1f ms total",
+                ((first_audio_at or tts_done) - tts_start) * 1000,
+                (tts_done - tts_start) * 1000,
+            )
 
             self._conversation.add_agent(reply)
             self._spoken = []
             self._transition(Event.TTS_DONE)
-            await self._transport.send_text(encode_turn_end())
+            await self._transport.send_text(encode_turn_end(turn_id))
+            logger.info(
+                "turn total (transcript -> turn_end): %.1f ms",
+                (time.monotonic() - turn_start) * 1000,
+            )
         except asyncio.CancelledError:
             raise
         except EngineError as exc:
             logger.error("engine failure during turn: %s", exc)
-            await self._fail_turn(str(exc))
+            await self._fail_turn(str(exc), turn_id)
         except Exception as exc:  # noqa: BLE001 - a session must survive one bad turn
             logger.exception("unexpected failure during turn")
-            await self._fail_turn(f"internal error: {exc}")
+            await self._fail_turn(f"internal error: {exc}", turn_id)
 
-    async def _fail_turn(self, message: str) -> None:
+    async def _fail_turn(self, message: str, turn_id: int) -> None:
         # Restore state before sending: if the transport is dead (closed
         # socket mid-turn) send_text can raise, and the exception must not
         # leave the state machine stuck outside IDLE.
@@ -239,7 +345,7 @@ class SessionRunner:
             self._transition(Event.RESPONSE_READY)
         if self._machine.state is State.SPEAKING:
             self._transition(Event.TTS_DONE)
-        await self._transport.send_text(encode_error(message))
+        await self._transport.send_text(encode_error(message, turn_id))
 
     def _transition(self, event: Event) -> None:
         try:
