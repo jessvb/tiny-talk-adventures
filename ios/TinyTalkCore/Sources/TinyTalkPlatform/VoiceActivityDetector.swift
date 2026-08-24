@@ -101,11 +101,32 @@ public final class SileroVoiceActivityDetector: VoiceActivityDetecting, @uncheck
 
     /// Placeholders pending on-device tuning against real audio in Task 8
     /// (per the plan) -- 0.5 is Silero's own commonly documented default
-    /// decision threshold; hangoverChunks is a short debounce (a handful of
-    /// 32ms/512-sample-at-16kHz chunks) so a single dip below threshold
-    /// mid-utterance doesn't immediately fire speechEnd.
+    /// decision threshold. hangoverChunks debounces speechEnd: confirmed
+    /// on-device that the original 5-chunk (~160ms) window was too short
+    /// for a child's natural mid-sentence pause (e.g. a breath between
+    /// "...about" and "a giraffe") -- the VAD declared the utterance over,
+    /// the client sent speech_end, and the words that followed the pause
+    /// got treated as a barge-in interrupt on a whole separate turn instead
+    /// of a continuation of the same sentence. 22 chunks (~700ms) gives
+    /// real pauses room to breathe; still far below the multi-second STT
+    /// cost that dominates total turn latency regardless.
     private static let speechThreshold: Float = 0.5
-    private static let hangoverChunks = 5
+    private static let hangoverChunks = 22
+    /// Symmetric debounce on the ONSET side: confirmed on-device that a
+    /// single transient chunk crossing threshold (e.g. bumping the phone)
+    /// was enough to fire speechStart with zero debounce, which
+    /// SessionCoordinator treats as a genuine barge-in -- stopping local
+    /// playback immediately and discarding the in-flight reply, per the
+    /// design's own "stop locally, don't wait for confirmation" principle.
+    /// That principle means recovering after the fact (e.g. only accepting
+    /// the interrupt once STT confirms real words were transcribed) isn't
+    /// viable -- playback is already gone by the time a transcript could
+    /// exist. Filtering at the source instead: require a short run of
+    /// consecutive above-threshold chunks, not just one, before treating it
+    /// as real speech. attackChunks*32ms adds well under 100ms before a
+    /// genuine utterance is recognized -- negligible next to any network
+    /// round trip, and still far faster than waiting for a transcript.
+    private static let attackChunks = 3
 
     private let env: ORTEnv
     private let session: ORTSession
@@ -115,6 +136,7 @@ public final class SileroVoiceActivityDetector: VoiceActivityDetecting, @uncheck
 
     private var speaking = false
     private var silentChunkStreak = 0
+    private var voicedChunkStreak = 0
     private var pendingSamples: [Float] = []
     /// The recurrent LSTM state Silero threads between calls, and the
     /// previous chunk's tail samples prepended to the next chunk -- see the
@@ -189,7 +211,13 @@ public final class SileroVoiceActivityDetector: VoiceActivityDetecting, @uncheck
                 // Inference failure on one chunk shouldn't take down the
                 // detector for the rest of the session -- state/context are
                 // already advanced above, so just skip emitting an event
-                // for this chunk and continue.
+                // for this chunk and continue. Logged (not silently
+                // swallowed) so a persistent failure -- e.g. the model's
+                // scalar `sr` tensor being rejected at runtime by ONNX
+                // Runtime's Objective-C binding, unverified until a real
+                // device run -- is visible instead of looking identical to
+                // "no speech detected yet".
+                print("SileroVoiceActivityDetector: inference failed on chunk, skipping: \(error)")
                 continue
             }
         }
@@ -298,15 +326,22 @@ public final class SileroVoiceActivityDetector: VoiceActivityDetecting, @uncheck
         if probability >= Self.speechThreshold {
             silentChunkStreak = 0
             if !speaking {
-                speaking = true
-                continuation.yield(.speechStart)
+                voicedChunkStreak += 1
+                if voicedChunkStreak >= Self.attackChunks {
+                    speaking = true
+                    voicedChunkStreak = 0
+                    continuation.yield(.speechStart)
+                }
             }
-        } else if speaking {
-            silentChunkStreak += 1
-            if silentChunkStreak >= Self.hangoverChunks {
-                speaking = false
-                silentChunkStreak = 0
-                continuation.yield(.speechEnd)
+        } else {
+            voicedChunkStreak = 0
+            if speaking {
+                silentChunkStreak += 1
+                if silentChunkStreak >= Self.hangoverChunks {
+                    speaking = false
+                    silentChunkStreak = 0
+                    continuation.yield(.speechEnd)
+                }
             }
         }
     }
