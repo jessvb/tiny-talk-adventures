@@ -23,7 +23,7 @@ def _default_pipeline_factory(lang_code: str):
             "Kokoro is not installed — run `pip install kokoro soundfile` "
             "and `brew install espeak-ng`"
         ) from exc
-    return KPipeline(lang_code=lang_code)
+    return KPipeline(lang_code=lang_code, device=config.KOKORO_DEVICE)
 
 
 class KokoroTts:
