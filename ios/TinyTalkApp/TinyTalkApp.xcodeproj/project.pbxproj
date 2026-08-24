@@ -16,10 +16,11 @@
 
 /* Begin PBXFileReference section */
 		37382A8458DB818AE90B7993 /* TinyTalkAppApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TinyTalkAppApp.swift; sourceTree = "<group>"; };
-		5B3EC89E9EEAEF7DFA4CFC5C /* silero_vad.onnx */ = {isa = PBXFileReference; lastKnownFileType = file; path = silero_vad.onnx; sourceTree = "<group>"; };
+		5B3EC89E9EEAEF7DFA4CFC5C /* silero_vad.onnx */ = {isa = PBXFileReference; path = silero_vad.onnx; sourceTree = "<group>"; };
+		7C554C1EE23344030C4B4EEB /* Local.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Local.xcconfig; sourceTree = "<group>"; };
 		8C08E7257C99B1CA50C2F1EC /* TinyTalkCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = TinyTalkCore; path = ../TinyTalkCore; sourceTree = SOURCE_ROOT; };
 		8D0D3978AC2A2D53115B8379 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
-		997CEE22CFBE485E57B27FEF /* TinyTalkApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TinyTalkApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		997CEE22CFBE485E57B27FEF /* TinyTalkApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = TinyTalkApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B25F7304A173D34DB6F56120 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -42,6 +43,15 @@
 				997CEE22CFBE485E57B27FEF /* TinyTalkApp.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		C2AF23B97D22EDAE08C01693 /* TinyTalkApp */ = {
+			isa = PBXGroup;
+			children = (
+				7C554C1EE23344030C4B4EEB /* Local.xcconfig */,
+			);
+			name = TinyTalkApp;
+			path = .;
 			sourceTree = "<group>";
 		};
 		D1F31A10837FB8A276D69CEE /* TinyTalkApp */ = {
@@ -68,6 +78,7 @@
 			children = (
 				EA409C35FE5145441A727698 /* Packages */,
 				D1F31A10837FB8A276D69CEE /* TinyTalkApp */,
+				C2AF23B97D22EDAE08C01693 /* TinyTalkApp */,
 				A85331132152DD2A54DA7F0C /* Products */,
 			);
 			sourceTree = "<group>";
@@ -104,6 +115,11 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					9710F7CD02766A5187A76861 = {
+						DevelopmentTeam = KLHAC4LYY3;
+					};
+				};
 			};
 			buildConfigurationList = E03726D8C548A70877D61D7B /* Build configuration list for PBXProject "TinyTalkApp" */;
 			developmentRegion = en;
@@ -153,6 +169,7 @@
 /* Begin XCBuildConfiguration section */
 		497FB4B492FDD480CFC0DFFA /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 7C554C1EE23344030C4B4EEB /* Local.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -208,6 +225,7 @@
 		};
 		7D8BBA58F7D9812F30BBE13A /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 7C554C1EE23344030C4B4EEB /* Local.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -273,7 +291,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = KLHAC4LYY3;
 				INFOPLIST_FILE = TinyTalkApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -292,7 +309,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = KLHAC4LYY3;
 				INFOPLIST_FILE = TinyTalkApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (

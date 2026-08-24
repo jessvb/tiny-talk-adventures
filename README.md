@@ -221,9 +221,16 @@ Run the tests with `cd server && source .venv/bin/activate && pytest`.
 ```bash
 brew install xcodegen
 cd ios/TinyTalkApp
+cp Local.xcconfig.example Local.xcconfig
 xcodegen generate
 open TinyTalkApp.xcodeproj
 ```
+
+`Local.xcconfig` is gitignored — it's how your own Apple Developer Team ID
+stays out of the committed project file. `xcodegen generate` needs the file
+to exist (even with its placeholder value untouched) or it fails with an
+"Invalid config file" error; you don't need to edit it by hand, since the
+next step sets your team from Xcode's UI anyway and that overrides it.
 
 In Xcode: select your iPhone as the run destination (not the Simulator —
 mic/VAD/AEC need real hardware), set your team under Signing & Capabilities

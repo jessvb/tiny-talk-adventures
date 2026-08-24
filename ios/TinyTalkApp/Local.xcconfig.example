@@ -1,0 +1,8 @@
+// Copy this file to Local.xcconfig (gitignored, never committed) and fill
+// in your own Apple Developer Team ID so `xcodegen generate` can produce a
+// project that code-signs on your machine without hardcoding a real team
+// ID into the committed project.pbxproj.
+//
+// Find your team ID at https://developer.apple.com/account/#/membership,
+// or in Xcode: Settings > Accounts > (your Apple ID) > (your team) > Team ID.
+DEVELOPMENT_TEAM = YOUR_TEAM_ID_HERE

@@ -1,6 +1,13 @@
 name: TinyTalkApp
 options:
   bundleIdPrefix: com.tinytalkadventures
+# Local.xcconfig is gitignored (see Local.xcconfig.example) -- keeps a real
+# Apple Developer Team ID out of the committed project.pbxproj. Missing on
+# a fresh clone until you copy the example file, per that file's own
+# instructions.
+configFiles:
+  Debug: Local.xcconfig
+  Release: Local.xcconfig
 targets:
   TinyTalkApp:
     type: application

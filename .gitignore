@@ -11,3 +11,4 @@ ios/TinyTalkCore/.swiftpm/
 ios/TinyTalkApp/TinyTalkApp.xcodeproj/xcuserdata/
 ios/TinyTalkApp/TinyTalkApp.xcodeproj/project.xcworkspace/xcuserdata/
 server/data/
+ios/TinyTalkApp/Local.xcconfig
