@@ -134,7 +134,12 @@ async def test_llm_receives_system_prompt_and_history(transport):
     await run_full_turn(session)
 
     assert llm.calls[0] == [
-        {"role": "system", "content": "be a kind storyteller"},
+        {
+            "role": "system",
+            "content": "be a kind storyteller\n\n"
+            "You're at the start of the story -- introduce the setting and "
+            "characters, and get the adventure going.",
+        },
         {"role": "user", "content": "tell me about a fox"},
     ]
 
@@ -528,3 +533,47 @@ async def test_finish_listening_discards_stale_transcript_if_interrupted_mid_awa
 
     assert session.state is State.LISTENING
     assert transport.types() == []
+
+
+async def test_story_arc_setup_guidance_is_included_in_the_llm_system_prompt(transport):
+    llm = FakeLlm()
+    session = make_session(transport, llm=llm)
+
+    await run_full_turn(session)
+
+    system_message = llm.calls[0][0]
+    assert system_message["role"] == "system"
+    assert "start of the story" in system_message["content"].lower()
+
+
+async def test_reaching_story_done_saves_and_resets_conversation_and_arc(transport, monkeypatch):
+    saved: list = []
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.save_story",
+        lambda conversation, **kwargs: saved.append(conversation) or None,
+    )
+    llm = FakeLlm(chunks=["And they all lived ", "happily ever after."])
+    session = make_session(transport, llm=llm)
+
+    await run_full_turn(session)
+
+    assert len(saved) == 1
+    # The conversation passed to save_story had this turn's content...
+    assert saved[0].turns[-1].text == "And they all lived happily ever after."
+    # ...but session.conversation is now a FRESH one: the next story has
+    # no memory of the finished one.
+    assert session.conversation.turns == ()
+
+
+async def test_story_not_done_does_not_save_or_reset_conversation(transport, monkeypatch):
+    saved: list = []
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.save_story",
+        lambda conversation, **kwargs: saved.append(conversation) or None,
+    )
+    session = make_session(transport)  # default FakeLlm reply has no conclusion phrase
+
+    await run_full_turn(session)
+
+    assert saved == []
+    assert len(session.conversation.turns) == 2  # child + agent turn both retained

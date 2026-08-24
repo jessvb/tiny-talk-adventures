@@ -29,6 +29,8 @@ from .protocol import (
     encode_transcript_partial,
     encode_turn_end,
 )
+from . import story_store
+from .story_arc import StoryArc
 from .state import Event, InvalidTransition, State, TurnStateMachine
 
 logger = logging.getLogger(__name__)
@@ -56,6 +58,7 @@ class SessionRunner:
         self._tts = tts
         self._system_prompt = system_prompt
         self._conversation = conversation or Conversation()
+        self._story_arc = StoryArc()
         self._machine = TurnStateMachine()
         self._turn_task: asyncio.Task | None = None
         # (sentence text, estimated real-world time.monotonic() at which
@@ -268,7 +271,10 @@ class SessionRunner:
         turn_start = time.monotonic()
         try:
             self._conversation.add_child(transcript)
-            messages = self._conversation.to_messages(self._system_prompt)
+            guidance = self._story_arc.record_turn(transcript)
+            messages = self._conversation.to_messages(
+                self._system_prompt + "\n\n" + guidance
+            )
 
             parts: list[str] = []
             llm_start = time.monotonic()
@@ -279,6 +285,7 @@ class SessionRunner:
                 parts.append(chunk)
             llm_done = time.monotonic()
             reply = safety.filter_reply("".join(parts).strip())
+            self._story_arc.record_reply(reply)
             logger.info(
                 "llm stream_reply: %.1f ms to first chunk, %.1f ms total (%d chars)",
                 ((first_chunk_at or llm_done) - llm_start) * 1000,
@@ -327,6 +334,12 @@ class SessionRunner:
                 "turn total (transcript -> turn_end): %.1f ms",
                 (time.monotonic() - turn_start) * 1000,
             )
+            if self._story_arc.is_done:
+                saved_path = story_store.save_story(self._conversation)
+                if saved_path is not None:
+                    logger.info("story saved to %s", saved_path)
+                self._conversation = Conversation()
+                self._story_arc = StoryArc()
         except asyncio.CancelledError:
             raise
         except EngineError as exc:
