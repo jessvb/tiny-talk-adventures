@@ -13,6 +13,21 @@ Audio that arrives outside LISTENING (e.g. a frame sent before the control
 frame, or one still in flight when an utterance ended) is silently dropped —
 no error is surfaced. Getting this ordering wrong on a barge-in would lose
 the first word of what the child says.
+
+turn_id: the client assigns a new turn_id every time it starts a fresh
+listening turn (speech_start or interrupt) and echoes it on nothing else --
+the server just remembers whichever turn_id it was most recently told and
+stamps every one of its own events (transcript_partial/transcript_final/
+response_text/turn_end/error) with that value, until superseded by the next
+speech_start/interrupt. This exists because the server's read loop is
+strictly serial and STT can take several real seconds per utterance: if the
+child interrupts and starts a new utterance while the server is still
+finishing the previous one, that stale reply arrives *after* the client has
+already moved on to a newer turn. Without turn_id, the client has no way to
+tell a late reply for an old, already-abandoned utterance apart from a
+legitimate reply for its current one -- confirmed on real hardware to cause
+a reply being silently misattributed to the wrong turn, or dropped
+entirely, when the child spoke faster than the server could keep up.
 """
 
 from __future__ import annotations
@@ -29,6 +44,8 @@ class ProtocolError(ValueError):
 class SpeechStart:
     """The client's VAD detected speech onset; audio frames follow."""
 
+    turn_id: int
+
 
 @dataclass(frozen=True)
 class SpeechEnd:
@@ -39,6 +56,8 @@ class SpeechEnd:
 class Interrupt:
     """The child barged in. Abort the in-flight turn and start listening."""
 
+    turn_id: int
+
 
 ClientMessage = SpeechStart | SpeechEnd | Interrupt
 
@@ -47,6 +66,7 @@ _CLIENT_MESSAGE_TYPES: dict[str, type] = {
     "speech_end": SpeechEnd,
     "interrupt": Interrupt,
 }
+_TYPES_REQUIRING_TURN_ID = (SpeechStart, Interrupt)
 
 
 def decode_client_message(raw: str) -> ClientMessage:
@@ -64,24 +84,29 @@ def decode_client_message(raw: str) -> ClientMessage:
     message_type = _CLIENT_MESSAGE_TYPES.get(kind)
     if message_type is None:
         raise ProtocolError(f"unknown client message type: {kind!r}")
+    if message_type in _TYPES_REQUIRING_TURN_ID:
+        turn_id = payload.get("turn_id")
+        if not isinstance(turn_id, int):
+            raise ProtocolError(f"{kind} requires an integer turn_id: {raw!r}")
+        return message_type(turn_id=turn_id)
     return message_type()
 
 
-def encode_transcript_partial(text: str) -> str:
-    return json.dumps({"type": "transcript_partial", "text": text})
+def encode_transcript_partial(text: str, turn_id: int) -> str:
+    return json.dumps({"type": "transcript_partial", "text": text, "turn_id": turn_id})
 
 
-def encode_transcript_final(text: str) -> str:
-    return json.dumps({"type": "transcript_final", "text": text})
+def encode_transcript_final(text: str, turn_id: int) -> str:
+    return json.dumps({"type": "transcript_final", "text": text, "turn_id": turn_id})
 
 
-def encode_response_text(text: str) -> str:
-    return json.dumps({"type": "response_text", "text": text})
+def encode_response_text(text: str, turn_id: int) -> str:
+    return json.dumps({"type": "response_text", "text": text, "turn_id": turn_id})
 
 
-def encode_turn_end() -> str:
-    return json.dumps({"type": "turn_end"})
+def encode_turn_end(turn_id: int) -> str:
+    return json.dumps({"type": "turn_end", "turn_id": turn_id})
 
 
-def encode_error(message: str) -> str:
-    return json.dumps({"type": "error", "message": message})
+def encode_error(message: str, turn_id: int) -> str:
+    return json.dumps({"type": "error", "message": message, "turn_id": turn_id})

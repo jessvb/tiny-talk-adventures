@@ -1,0 +1,24 @@
+name: TinyTalkApp
+options:
+  bundleIdPrefix: com.tinytalkadventures
+targets:
+  TinyTalkApp:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    settings:
+      SWIFT_VERSION: "6.0"
+    sources:
+      - TinyTalkApp
+    info:
+      path: TinyTalkApp/Info.plist
+      properties:
+        NSMicrophoneUsageDescription: "Tiny Talk Adventures needs the microphone to hear the story you're telling together."
+    dependencies:
+      - package: TinyTalkCore
+        product: TinyTalkCore
+      - package: TinyTalkCore
+        product: TinyTalkPlatform
+packages:
+  TinyTalkCore:
+    path: ../TinyTalkCore

@@ -174,6 +174,11 @@ Then, three terminals:
 ollama serve
 ```
 
+If this fails with `address already in use`, Ollama is already running as a
+background process (common if it's installed as a menu-bar app or login
+item) — that's fine, nothing more to do here. Confirm with
+`curl http://127.0.0.1:11434/`, which should reply `Ollama is running`.
+
 **Terminal 2 — the voice/dialog server:**
 
 ```bash
@@ -198,6 +203,106 @@ afplay /tmp/reply.wav
 ```
 
 Run the tests with `cd server && source .venv/bin/activate && pytest`.
+
+### iOS client
+
+#### Prerequisites
+
+- Your iPhone and your Mac must be on the **same WiFi network**. Cellular
+  data, a guest network, or a VPN on either device will prevent the phone
+  from reaching the Mac.
+- The server must already be running on the Mac (see "Running the server"
+  above — you need Terminal 1 and Terminal 2 up; you don't need the CLI
+  test client from Terminal 3 for this).
+- An Apple ID (free tier is fine) to sign the app for your device in Xcode.
+
+#### One-time setup
+
+```bash
+brew install xcodegen
+cd ios/TinyTalkApp
+xcodegen generate
+open TinyTalkApp.xcodeproj
+```
+
+In Xcode: select your iPhone as the run destination (not the Simulator —
+mic/VAD/AEC need real hardware), set your team under Signing & Capabilities
+so it can be installed via your free Apple ID, and Run. On first launch,
+grant microphone access when prompted — the app can't function without it
+and will show a clear on-screen error if you deny it (Settings > Privacy >
+Microphone to change your mind later).
+
+#### Finding your Mac's address
+
+The app needs your Mac's actual LAN IP, not its hostname and **not your
+router's address**. On the Mac:
+
+```bash
+ifconfig | grep "inet " | grep -v 127.0.0.1
+```
+
+This prints one or more lines like `inet 192.168.1.185 netmask ...` — use
+that IP. A common mistake: typing something like `192.168.1.1`, which is
+almost always your **router's** gateway address, not your Mac's — the app
+will connect to nothing and time out or show "disconnected from server".
+If you see more than one `inet` line (e.g. WiFi and Ethernet both active),
+use the one on the same subnet as your phone.
+
+#### Connecting
+
+In the app, enter `ws://<your-mac-ip>:8765` (matching `SERVER_PORT` from
+`server/tinytalk/config.py`, 8765 by default) as the server address and tap
+Connect. On success the state line changes from `idle` to reflect the
+conversation as it happens. The address is remembered between launches, so
+you only need to type it once per Mac.
+
+#### Troubleshooting
+
+- **"Error: disconnected from server", state stuck at `idle`:**
+  - Double-check the IP — this is by far the most common cause. Re-run the
+    `ifconfig` command above and compare it exactly to what's typed in the
+    app; a stale IP from last time you were on a different WiFi network
+    (e.g. a coffee shop) is a frequent trap.
+  - Confirm the server is actually running and listening:
+    `lsof -i :8765` on the Mac should show a `python3` process with
+    `LISTEN` state. If nothing's there, Terminal 2 isn't running or
+    crashed — check its output for errors.
+  - Confirm both devices are genuinely on the same WiFi network (not one
+    on 5GHz-only guest and one on the main network — some routers split
+    these into separate subnets that can't reach each other).
+  - macOS's firewall (System Settings > Network > Firewall) can silently
+    block incoming connections to the Python process — either allow it
+    when prompted, or temporarily disable the firewall to confirm this is
+    (or isn't) the cause.
+- **"could not start audio capture" / a permissions error:** you denied
+  the microphone prompt. Go to Settings > Privacy & Security > Microphone
+  on the phone, enable it for this app, and relaunch.
+- **"failed to load VAD model":** the bundled `silero_vad.onnx` file failed
+  to load — this shouldn't happen from a normal build (the file is
+  committed and bundled by `project.yml`), so if you hit this, it's worth
+  re-running `xcodegen generate` and a clean build
+  (Xcode: Product > Clean Build Folder) before digging further.
+- **Ollama-related errors in Terminal 2's output:** see the Ollama note in
+  "Running the server" above — `address already in use` when starting
+  Ollama separately usually just means it's already running.
+
+#### What to actually test
+
+1. **Happy path:** tap Connect, wait for `idle`, then talk. State should
+   move `idle` → `listening` while you're talking → `waitingForReply` once
+   you stop → `speaking` as the reply plays → back to `idle`. Check "Heard:"
+   and "Reply:" show real text each turn.
+2. **Barge-in — this is the actual point of this whole sub-project:**
+   while the agent is speaking, talk over it. Playback should stop audibly
+   *instantly*. Check the on-screen `VAD→stopped` latency list — that
+   number is the real, on-device answer to whether barge-in feels instant
+   enough for a child, which is something no amount of automated testing
+   or Mac-only simulation could tell you in advance.
+3. If barge-in doesn't fire, fires late, or falsely triggers on the
+   agent's own voice (a sign AEC isn't fully suppressing echo), that's
+   real signal — the VAD's probability threshold and hangover window in
+   `VoiceActivityDetector.swift` are untuned defaults specifically pending
+   this kind of on-device feedback. Expect to adjust them by ear.
 
 ## Repo layout
 

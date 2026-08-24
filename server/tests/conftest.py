@@ -68,19 +68,50 @@ class FakeLlm:
 
 
 class FakeTts:
-    """Emits one audio chunk per sentence, optionally slowly."""
+    """Emits one audio chunk per sentence, optionally slowly.
 
-    def __init__(self, delay: float = 0.0) -> None:
+    seconds_per_sentence, if set, sizes the emitted chunk's byte count to
+    match TTS_SAMPLE_RATE math (2 bytes/sample, PCM16 mono) for that many
+    seconds of audio -- independent of `delay`, which only affects how long
+    synthesize() itself takes to run (simulating slow synthesis), not how
+    much real-world PLAYBACK time the resulting bytes represent. A test
+    needs this knob to control what SessionRunner's byte-count-based
+    playback-duration ESTIMATE computes, since the default tiny placeholder
+    bytes below represent a negligible (sub-millisecond) duration no matter
+    how long `delay` makes synthesis itself take.
+    """
+
+    def __init__(
+        self,
+        delay: float = 0.0,
+        delays: list[float] | None = None,
+        seconds_per_sentence: float = 0.0,
+    ) -> None:
         self.delay = delay
+        # Per-call override for `delay`, indexed by call count -- lets a
+        # test give an EARLIER sentence a short delay (sent quickly) and a
+        # LATER one a long delay (keeps _run_turn()'s task genuinely in
+        # flight), which a single flat `delay` can't express.
+        self.delays = delays
+        self.seconds_per_sentence = seconds_per_sentence
         self.spoken: list[str] = []
         self.cancelled = False
+        self._call_count = 0
 
     async def synthesize(self, text: str) -> AsyncIterator[bytes]:
         try:
-            if self.delay:
-                await asyncio.sleep(self.delay)
+            call_delay = self.delay
+            if self.delays is not None:
+                call_delay = self.delays[self._call_count]
+            self._call_count += 1
+            if call_delay:
+                await asyncio.sleep(call_delay)
             self.spoken.append(text)
-            yield f"<audio:{text}>".encode()
+            if self.seconds_per_sentence:
+                byte_count = int(self.seconds_per_sentence * 2 * 24000)
+                yield b"\x00" * byte_count
+            else:
+                yield f"<audio:{text}>".encode()
         except asyncio.CancelledError:
             self.cancelled = True
             raise
