@@ -16,10 +16,10 @@
 
 /* Begin PBXFileReference section */
 		37382A8458DB818AE90B7993 /* TinyTalkAppApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TinyTalkAppApp.swift; sourceTree = "<group>"; };
-		5B3EC89E9EEAEF7DFA4CFC5C /* silero_vad.onnx */ = {isa = PBXFileReference; path = silero_vad.onnx; sourceTree = "<group>"; };
+		5B3EC89E9EEAEF7DFA4CFC5C /* silero_vad.onnx */ = {isa = PBXFileReference; lastKnownFileType = file; path = silero_vad.onnx; sourceTree = "<group>"; };
 		8C08E7257C99B1CA50C2F1EC /* TinyTalkCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = TinyTalkCore; path = ../TinyTalkCore; sourceTree = SOURCE_ROOT; };
 		8D0D3978AC2A2D53115B8379 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
-		997CEE22CFBE485E57B27FEF /* TinyTalkApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = TinyTalkApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		997CEE22CFBE485E57B27FEF /* TinyTalkApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TinyTalkApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B25F7304A173D34DB6F56120 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -104,8 +104,6 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
-				TargetAttributes = {
-				};
 			};
 			buildConfigurationList = E03726D8C548A70877D61D7B /* Build configuration list for PBXProject "TinyTalkApp" */;
 			developmentRegion = en;
@@ -275,6 +273,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = KLHAC4LYY3;
 				INFOPLIST_FILE = TinyTalkApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -293,6 +292,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = KLHAC4LYY3;
 				INFOPLIST_FILE = TinyTalkApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
