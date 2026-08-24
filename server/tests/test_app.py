@@ -52,7 +52,7 @@ async def test_transport_sends_text_and_binary_over_the_socket():
 
 async def test_handle_connection_drives_a_full_turn():
     websocket = FakeWebSocket(
-        ['{"type": "speech_start"}', b"\x01\x02", '{"type": "speech_end"}']
+        ['{"type": "speech_start", "turn_id": 1}', b"\x01\x02", '{"type": "speech_end"}']
     )
     stt = FakeStt()
 
@@ -91,7 +91,7 @@ async def test_engine_failure_during_dispatch_sends_an_error_frame_and_keeps_the
     # for turning that into an error frame instead of killing the
     # connection with no message sent to the client at all.
     websocket = FakeWebSocket(
-        ['{"type": "speech_start"}', b"\x01\x02", '{"type": "speech_end"}']
+        ['{"type": "speech_start", "turn_id": 1}', b"\x01\x02", '{"type": "speech_end"}']
     )
 
     def session_factory(transport):
