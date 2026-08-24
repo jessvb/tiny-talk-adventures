@@ -29,6 +29,14 @@ STT_HF_REPO = os.environ.get("TINYTALK_STT_REPO", "kyutai/stt-2.6b-en-mlx")
 
 KOKORO_LANG_CODE = os.environ.get("TINYTALK_TTS_LANG", "a")
 KOKORO_VOICE = os.environ.get("TINYTALK_TTS_VOICE", "af_heart")
+# Kokoro's own device auto-detection (kokoro/pipeline.py) only checks
+# torch.cuda.is_available() -- never MPS -- so on Apple Silicon it silently
+# falls back to CPU even though the GPU is available. Benchmarked on this
+# Mac with the real production code path: MPS ran ~1.8x faster than CPU for
+# a representative reply-length synthesis (1.11s vs 2.01s for 9.4s of
+# audio). Overridable in case a future non-Apple-Silicon host needs "cpu"
+# or "cuda" instead.
+KOKORO_DEVICE = os.environ.get("TINYTALK_TTS_DEVICE", "mps")
 
 SYSTEM_PROMPT = (
     "You are a warm, playful storyteller telling a story out loud with a young "
