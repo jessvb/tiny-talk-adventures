@@ -119,9 +119,12 @@ class StoryArc:
 
 - `config.STORY_TARGET_TURNS` defaults to **12** (one turn = one child
   utterance + one agent reply) — roughly matched to a young child's
-  attention span. Stage boundaries, as fractions of the target:
-  - `setup`: turns 1 through `ceil(0.2 * target)` (turns 1-3 at the default)
-  - `rising_action`: through `ceil(0.7 * target)` (turns 4-8)
+  attention span. Stage boundaries, as fractions of the target (`round`,
+  not `ceil` — verified these exact fractions reproduce the example turn
+  ranges below for the default of 12, unlike the fractions this spec
+  originally stated):
+  - `setup`: turns 1 through `round(target / 4)` (turns 1-3 at the default)
+  - `rising_action`: through `round(target * 2 / 3)` (turns 4-8)
   - `climax`: through `target` (turns 9-12)
   - `resolution`: turn `target + 1` through a grace ceiling of
     `target + 3` (turns 13-15) — after the ceiling, the *next* reply is
