@@ -8,12 +8,16 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import os
+import signal
 from typing import Callable
 
 import websockets
+from websockets.exceptions import ConnectionClosed
 
 from . import config
 from .engines import EngineError, LlmEngine, SttEngine, TtsEngine
+from .llm_groq import GroqLlm
 from .llm_ollama import OllamaLlm
 from .protocol import encode_error
 from .session import SessionRunner, Transport
@@ -28,16 +32,38 @@ class WebSocketTransport:
         self._websocket = websocket
 
     async def send_text(self, payload: str) -> None:
-        await self._websocket.send(payload)
+        await self._send(payload)
 
     async def send_bytes(self, payload: bytes) -> None:
-        await self._websocket.send(payload)
+        await self._send(payload)
+
+    async def _send(self, payload: str | bytes) -> None:
+        try:
+            await self._websocket.send(payload)
+        except ConnectionClosed:
+            # The client is already gone -- a network drop, the phone app
+            # backgrounded, or (most commonly, observed on real hardware)
+            # the server itself shutting down while an in-flight STT/LLM/TTS
+            # call for this connection was still running. There is nobody
+            # to receive this send either way. Swallowing it here, rather
+            # than letting it propagate, is what stops a single dead
+            # connection from producing a second, confusing failure on top
+            # of whatever already happened -- handle_connection's own
+            # `async for message in websocket` loop notices the closed
+            # connection and unwinds normally on its own.
+            logger.warning("could not send -- connection already closed")
 
 
 def build_session(
     transport: Transport, *, stt: SttEngine, llm: LlmEngine, tts: TtsEngine
 ) -> SessionRunner:
     return SessionRunner(transport=transport, stt=stt, llm=llm, tts=tts)
+
+
+def build_llm() -> LlmEngine:
+    if config.LLM_BACKEND == "groq":
+        return GroqLlm()
+    return OllamaLlm()
 
 
 async def handle_connection(
@@ -72,10 +98,11 @@ async def serve() -> None:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
     logger.info(
-        "listening on ws://%s:%s (model=%s)",
+        "listening on ws://%s:%s (llm_backend=%s, model=%s)",
         config.SERVER_HOST,
         config.SERVER_PORT,
-        config.OLLAMA_MODEL,
+        config.LLM_BACKEND,
+        config.GROQ_MODEL if config.LLM_BACKEND == "groq" else config.OLLAMA_MODEL,
     )
 
     # Built once and shared across every connection: each of these lazily
@@ -92,21 +119,72 @@ async def serve() -> None:
     # concurrently is a real memory-pressure risk on a 16GB Mac, traced to
     # Ollama's own inference rather than to engine construction here.
     stt = KyutaiStt()
-    llm = OllamaLlm()
+    llm = build_llm()
     tts = KokoroTts()
     session_factory = functools.partial(build_session, stt=stt, llm=llm, tts=tts)
-    handler = functools.partial(handle_connection, session_factory=session_factory)
+
+    # Tracks connection handler tasks currently in flight, so shutdown can
+    # wait for them to finish naturally instead of tearing the process down
+    # mid-computation. Confirmed on real hardware: Ctrl+C during an
+    # in-flight STT call (asyncio.to_thread, can run 5-20+ real seconds)
+    # does not stop that background thread -- ThreadPoolExecutor's own
+    # atexit handling makes the interpreter wait for it regardless,
+    # uncontrolled, and by the time it finishes the connection is usually
+    # already torn down, so the final send fails with a raw
+    # ConnectionClosedError -- observed to sometimes cascade into a native
+    # bus error crash. Waiting for it HERE, explicitly and visibly, is the
+    # same wait that was going to happen anyway, but keeps the connection
+    # alive long enough for that final send to actually succeed normally.
+    active_connections: set[asyncio.Task] = set()
+
+    async def handler(websocket) -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        active_connections.add(task)
+        try:
+            await handle_connection(websocket, session_factory=session_factory)
+        finally:
+            active_connections.discard(task)
+
+    shutdown_requested = asyncio.Event()
+
+    def on_sigint() -> None:
+        if shutdown_requested.is_set():
+            # Second Ctrl+C: the operator has explicitly asked not to wait.
+            # os._exit skips further Python-level cleanup (including
+            # ThreadPoolExecutor's own atexit wait) on purpose -- this is
+            # the deliberate "I know, stop now anyway" escape hatch.
+            logger.warning("second Ctrl+C -- forcing immediate exit")
+            os._exit(1)
+        logger.info("shutting down -- press Ctrl+C again to force immediate exit")
+        shutdown_requested.set()
+
+    asyncio.get_running_loop().add_signal_handler(signal.SIGINT, on_sigint)
 
     async with websockets.serve(
         handler, config.SERVER_HOST, config.SERVER_PORT, max_size=None
     ):
-        await asyncio.Future()
+        await shutdown_requested.wait()
+        logger.info("no longer accepting new connections")
+        if active_connections:
+            logger.info(
+                "waiting for %d in-flight connection(s) to finish "
+                "(an active STT/LLM/TTS call can take up to ~20s)",
+                len(active_connections),
+            )
+            await asyncio.gather(*active_connections, return_exceptions=True)
 
 
 def main() -> None:
     try:
         asyncio.run(serve())
     except KeyboardInterrupt:
+        # Only reachable if Ctrl+C lands before serve() registers its own
+        # SIGINT handler (e.g. during model loading at startup, before
+        # add_signal_handler runs) -- everything after that point is
+        # handled by on_sigint()/shutdown_requested instead. A plain
+        # message here beats an unhandled-KeyboardInterrupt traceback for
+        # that narrow window.
         logger.info("shutting down")
 
 

@@ -1,6 +1,9 @@
 from conftest import FakeLlm, FakeStt, FakeTts
-from tinytalk.app import WebSocketTransport, handle_connection
+from tinytalk import config
+from tinytalk.app import WebSocketTransport, build_llm, handle_connection
 from tinytalk.engines import EngineError
+from tinytalk.llm_groq import GroqLlm
+from tinytalk.llm_ollama import OllamaLlm
 from tinytalk.session import SessionRunner
 
 
@@ -38,6 +41,17 @@ class BoomStt:
 
     def reset(self) -> None:
         pass
+
+
+def test_build_llm_defaults_to_ollama(monkeypatch):
+    monkeypatch.setattr(config, "LLM_BACKEND", "ollama")
+    assert isinstance(build_llm(), OllamaLlm)
+
+
+def test_build_llm_switches_to_groq_when_configured(monkeypatch):
+    monkeypatch.setattr(config, "LLM_BACKEND", "groq")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "test-key")
+    assert isinstance(build_llm(), GroqLlm)
 
 
 async def test_transport_sends_text_and_binary_over_the_socket():

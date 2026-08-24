@@ -14,6 +14,17 @@ SERVER_PORT = int(os.environ.get("TINYTALK_PORT", "8765"))
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("TINYTALK_MODEL", "qwen3.5:9b")
 
+# "ollama" (default, local/private) or "groq" (hosted, for A/B-testing
+# whether LLM speed is the actual latency bottleneck -- see llm_groq.py's
+# module docstring). Swappable with no other code changes.
+LLM_BACKEND = os.environ.get("TINYTALK_LLM_BACKEND", "ollama")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_HOST = os.environ.get("GROQ_HOST", "https://api.groq.com")
+# Groq's free-tier model lineup changes over time -- check
+# https://console.groq.com for what's currently available before relying on
+# this default.
+GROQ_MODEL = os.environ.get("TINYTALK_GROQ_MODEL", "llama-3.1-8b-instant")
+
 STT_HF_REPO = os.environ.get("TINYTALK_STT_REPO", "kyutai/stt-2.6b-en-mlx")
 
 KOKORO_LANG_CODE = os.environ.get("TINYTALK_TTS_LANG", "a")
