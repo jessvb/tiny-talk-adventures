@@ -123,3 +123,21 @@ def test_evil_queen_fairy_tale_trope_stays_safe():
     # should be blocked.
     assert is_safe("The evil queen cast a spell on the princess.") is True
     assert is_safe("The evil witch lived in the dark forest.") is True
+
+
+def test_shooting_star_stays_safe():
+    assert is_safe("She wished upon a shooting star.") is True
+    assert is_safe("Two shooting stars streaked across the sky.") is True
+
+
+def test_shooting_a_weapon_is_still_unsafe():
+    assert is_safe("He was shooting at the target.") is False
+
+
+def test_safe_phrase_does_not_mask_a_separate_dangerous_use_of_the_same_word():
+    # The safe-phrase mask must only remove the exact safe substring --
+    # a genuinely dangerous SECOND use of "shooting" elsewhere in the
+    # same sentence must still be caught.
+    assert is_safe(
+        "He wished on a shooting star while shooting arrows at the target."
+    ) is False

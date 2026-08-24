@@ -106,9 +106,30 @@ _BLOCKED_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Known-safe phrases that would otherwise trip a blocked word above --
+# masked out of the text BEFORE the blocked-word check runs, so a
+# genuinely dangerous use of the same word elsewhere in the same
+# sentence (e.g. "wished on a shooting star while shooting arrows at
+# the target") still gets caught -- only the exact safe phrase is
+# removed, nothing else. More general and reusable than narrowing every
+# over-broad word into its own contextual phrases (see git history for
+# how "matches"/"lighter"/"evil" were each handled individually before
+# this existed) -- add a new entry here whenever a newly-added blocked
+# word turns out to have a common innocent usage.
+_SAFE_PHRASES = (
+    "shooting star",
+    "shooting stars",
+)
+
+_SAFE_PATTERN = re.compile(
+    r"\b(?:" + "|".join(re.escape(phrase) for phrase in _SAFE_PHRASES) + r")\b",
+    re.IGNORECASE,
+)
+
 
 def is_safe(text: str) -> bool:
-    return _BLOCKED_PATTERN.search(text) is None
+    masked = _SAFE_PATTERN.sub("", text)
+    return _BLOCKED_PATTERN.search(masked) is None
 
 
 def filter_reply(text: str) -> str:
