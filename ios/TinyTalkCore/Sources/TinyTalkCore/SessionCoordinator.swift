@@ -58,8 +58,17 @@ public actor SessionCoordinator {
 
     /// Roughly how much recently-captured mic audio to retain so it can be
     /// flushed as pre-roll the instant a turn/barge-in starts -- see
-    /// preRollBuffer's doc comment.
-    private static let preRollDurationSeconds: Double = 0.2
+    /// preRollBuffer's doc comment. Confirmed on-device that 200ms wasn't
+    /// generous enough: VoiceActivityDetector's onset debounce (attackChunks,
+    /// ~96ms) plus a child's natural breath/lead-in before their first word
+    /// routinely exceeded it, so the earliest part of that word had already
+    /// been evicted from the ring buffer by the time speechStart actually
+    /// fired -- reported on-device as the first word being cut off. 500ms
+    /// gives comfortable headroom above the debounce with no real downside
+    /// (a little extra leading silence in what's sent is harmless -- the
+    /// server's own STT already expects to pad with silence regardless, see
+    /// stt_kyutai.py's module doc comment).
+    private static let preRollDurationSeconds: Double = 0.5
     /// Matches RealAudioEngine.wireSampleRate / server MIC_SAMPLE_RATE
     /// (24kHz mono Int16 LE) -- see that file's doc comment. Only used here
     /// to size the pre-roll buffer's byte cap; not load-bearing for
