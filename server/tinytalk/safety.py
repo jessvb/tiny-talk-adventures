@@ -1,9 +1,16 @@
-"""Placeholder safety filter for LLM output.
+"""Deterministic safety filter for LLM output.
 
-STUB. This is a keyword denylist standing in for real safety scaffolding,
-which is a separate sub-project. It exists so the pipeline has the right
-shape — a checkpoint between the LLM and the child's ears — not because a
-denylist is adequate protection. Do not mistake this for the real thing.
+A word/phrase denylist across five categories, checked in one regex pass.
+This is deliberately NOT semantic content understanding -- it can miss
+paraphrased unsafe content and can false-positive on an unlucky
+substring -- but it is zero-latency and adds no model calls, which
+matters given STT+LLM+TTS already run concurrently under real memory
+pressure on the M1/16GB server (see the voice/dialog pipeline design
+spec's risks section). See
+docs/superpowers/specs/2026-08-24-story-generation-engine-design.md for
+the full rationale. Do not mistake this for the real thing -- it is a
+meaningfully broader net than the original 12-word stub, not exhaustive
+content moderation.
 """
 
 from __future__ import annotations
@@ -12,7 +19,7 @@ import re
 
 SAFE_FALLBACK = "Hmm, let's take the story somewhere else! What should happen next?"
 
-_BLOCKED_WORDS = (
+_VIOLENCE = (
     "blood",
     "gun",
     "guns",
@@ -25,11 +32,63 @@ _BLOCKED_WORDS = (
     "die",
     "dies",
     "died",
+    "fight",
+    "hurt",
+    "stab",
+    "shoot",
 )
+
+_FRIGHTENING = (
+    "monster attacking",
+    "terrifying",
+    "nightmare",
+    "screamed in terror",
+    "trapped forever",
+    "evil",
+    "demon",
+    "demons",
+)
+
+# Deliberately does NOT include "kiss" -- a fairy-tale kiss (true love's
+# kiss, a goodnight kiss) is a completely normal, wholesome element in
+# children's stories; blocking the bare word would over-trigger
+# constantly. See test_innocent_fairy_tale_kiss_stays_safe.
+_ADULT_THEMES = (
+    "drunk",
+    "alcohol",
+    "cigarette",
+    "naked",
+)
+
+_REAL_WORLD_DANGER = (
+    "matches",
+    "lighter",
+    "poison",
+    "drown",
+    "jump off a cliff",
+)
+
+_PROFANITY = (
+    "damn",
+    "hell",
+    "shit",
+    "fuck",
+    "ass",
+    "asshole",
+    "bitch",
+    "crap",
+    "bastard",
+    "piss",
+    "dick",
+    "whore",
+    "slut",
+)
+
+_ALL_BLOCKED = _VIOLENCE + _FRIGHTENING + _ADULT_THEMES + _REAL_WORLD_DANGER + _PROFANITY
 
 # Word boundaries keep "begun" and "knifemaker" from tripping the filter.
 _BLOCKED_PATTERN = re.compile(
-    r"\b(?:" + "|".join(re.escape(word) for word in _BLOCKED_WORDS) + r")\b",
+    r"\b(?:" + "|".join(re.escape(word) for word in _ALL_BLOCKED) + r")\b",
     re.IGNORECASE,
 )
 
