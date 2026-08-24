@@ -16,6 +16,13 @@ the child asks to stop (record_turn steers that turn's reply toward
 wrapping up), or the agent's own reply concludes naturally on its own
 (record_reply notices and marks the story done -- no extra prompting
 needed).
+
+Note on interrupts: if a story-concluding turn is interrupted before it
+completes normally (see session.py's _run_turn), is_done stays latched
+True (record_reply already ran before the interrupt could land), but the
+actual save+reset only happens at the end of a turn that completes
+normally -- so the save+reset is simply deferred to the next such turn,
+never lost or duplicated.
 """
 
 from __future__ import annotations
@@ -36,7 +43,8 @@ class Stage(Enum):
 
 _FORCED_GUIDANCE = (
     "This must be the last reply -- bring the story to a warm, complete "
-    "ending right now."
+    "ending right now. Do not ask what should happen next -- the story "
+    "is over."
 )
 
 _GUIDANCE: dict[Stage, str] = {
@@ -54,12 +62,9 @@ _GUIDANCE: dict[Stage, str] = {
     ),
     Stage.RESOLUTION: (
         "It's time to wrap up the story warmly and happily in this reply "
-        "or the next one."
+        "or the next one. If you conclude it now, do not ask what should "
+        "happen next."
     ),
-    # Only reachable if record_turn() is somehow called again after
-    # is_done is already true (not expected in normal use -- SessionRunner
-    # replaces this instance once done) -- kept so that path can't KeyError.
-    Stage.DONE: _FORCED_GUIDANCE,
 }
 
 _CHILD_STOP_PHRASES = (

@@ -33,9 +33,17 @@ _VIOLENCE = (
     "dies",
     "died",
     "fight",
+    "fights",
+    "fighting",
     "hurt",
+    "hurts",
+    "hurting",
     "stab",
+    "stabbed",
+    "stabbing",
     "shoot",
+    "shoots",
+    "shooting",
 )
 
 _FRIGHTENING = (
@@ -61,10 +69,16 @@ _ADULT_THEMES = (
 )
 
 _REAL_WORLD_DANGER = (
-    "matches",
-    "lighter",
+    "play with matches",
+    "playing with matches",
+    "played with matches",
+    "play with a lighter",
+    "playing with a lighter",
+    "played with a lighter",
     "poison",
     "drown",
+    "drowned",  # verb-form variants of "drown", same reasoning as _VIOLENCE below
+    "drowning",
     "jump off a cliff",
 )
 

@@ -63,3 +63,11 @@ def test_history_is_capped_at_max_turns():
     assert len(conversation.turns) == 4
     assert conversation.turns[0].text == "line 6"
     assert conversation.turns[-1].text == "line 9"
+
+
+def test_full_history_retains_entries_beyond_the_bounded_window():
+    conversation = Conversation(max_turns=4)
+    for i in range(10):
+        conversation.add_child(f"child says {i}")
+    assert len(conversation.turns) == 4  # bounded window
+    assert len(conversation.full_history) == 10  # unbounded archive

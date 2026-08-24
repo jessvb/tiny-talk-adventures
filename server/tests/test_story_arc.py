@@ -81,8 +81,9 @@ def test_turn_count_past_grace_ceiling_forces_guidance_then_marks_done():
 
     guidance = arc.record_turn("something happens")  # turn 16, past ceiling
     assert guidance == (
-        "This must be the last reply -- bring the story to a warm, "
-        "complete ending right now."
+        "This must be the last reply -- bring the story to a warm, complete "
+        "ending right now. Do not ask what should happen next -- the story "
+        "is over."
     )
     arc.record_reply("anything at all, even without a conclusion phrase")
     assert arc.is_done is True

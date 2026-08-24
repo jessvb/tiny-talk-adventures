@@ -101,6 +101,20 @@ def test_innocent_fairy_tale_kiss_stays_safe():
     assert is_safe("The prince gave the sleeping princess a gentle kiss.") is True
 
 
+def test_innocent_matches_and_lighter_usage_stays_safe():
+    # Same reasoning as the kiss/evil regression guards: "matches" and
+    # "lighter" have completely ordinary innocent meanings (a matching
+    # outfit, morning light) that must not trip the filter -- only the
+    # actual dangerous ACTION should.
+    assert is_safe("The sky grew lighter as morning came.") is True
+    assert is_safe("Her red mitten matches her hat!") is True
+
+
+def test_playing_with_matches_or_a_lighter_is_unsafe():
+    assert is_safe("He was playing with matches near the curtains.") is False
+    assert is_safe("She played with a lighter she found on the table.") is False
+
+
 def test_evil_queen_fairy_tale_trope_stays_safe():
     # Same reasoning as the kiss regression guard: "the evil queen"/
     # "the evil witch" are completely ordinary, wholesome fairy-tale
