@@ -19,9 +19,9 @@ from tinytalk.protocol import (
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ('{"type": "speech_start"}', SpeechStart()),
+        ('{"type": "speech_start", "turn_id": 3}', SpeechStart(turn_id=3)),
         ('{"type": "speech_end"}', SpeechEnd()),
-        ('{"type": "interrupt"}', Interrupt()),
+        ('{"type": "interrupt", "turn_id": 7}', Interrupt(turn_id=7)),
     ],
 )
 def test_decodes_each_client_message_type(raw, expected):
@@ -43,21 +43,39 @@ def test_decode_rejects_unknown_type():
         decode_client_message('{"type": "launch_rocket"}')
 
 
+@pytest.mark.parametrize("raw", ['{"type": "speech_start"}', '{"type": "interrupt"}'])
+def test_decode_rejects_speech_start_and_interrupt_missing_turn_id(raw):
+    with pytest.raises(ProtocolError, match="turn_id"):
+        decode_client_message(raw)
+
+
+@pytest.mark.parametrize(
+    "raw", ['{"type": "speech_start", "turn_id": "3"}', '{"type": "interrupt", "turn_id": 3.5}']
+)
+def test_decode_rejects_non_integer_turn_id(raw):
+    with pytest.raises(ProtocolError, match="turn_id"):
+        decode_client_message(raw)
+
+
 def test_encoders_produce_expected_payloads():
-    assert json.loads(encode_transcript_partial("a fox")) == {
+    assert json.loads(encode_transcript_partial("a fox", 1)) == {
         "type": "transcript_partial",
         "text": "a fox",
+        "turn_id": 1,
     }
-    assert json.loads(encode_transcript_final("a fox ran")) == {
+    assert json.loads(encode_transcript_final("a fox ran", 1)) == {
         "type": "transcript_final",
         "text": "a fox ran",
+        "turn_id": 1,
     }
-    assert json.loads(encode_response_text("Once upon a time")) == {
+    assert json.loads(encode_response_text("Once upon a time", 1)) == {
         "type": "response_text",
         "text": "Once upon a time",
+        "turn_id": 1,
     }
-    assert json.loads(encode_turn_end()) == {"type": "turn_end"}
-    assert json.loads(encode_error("ollama is not running")) == {
+    assert json.loads(encode_turn_end(1)) == {"type": "turn_end", "turn_id": 1}
+    assert json.loads(encode_error("ollama is not running", 1)) == {
         "type": "error",
         "message": "ollama is not running",
+        "turn_id": 1,
     }

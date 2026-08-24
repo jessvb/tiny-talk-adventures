@@ -10,7 +10,7 @@ final class ServerConnectionTests: XCTestCase {
     func testSendOnAFailedConnectionThrows() async {
         let connection = WebSocketServerConnection(url: URL(string: "ws://127.0.0.1:1")!)
         do {
-            try await connection.send(.speechStart)
+            try await connection.send(.speechStart(turnId: 1))
             XCTFail("expected send() to throw when the connection cannot be established")
         } catch {
             // Any thrown error is correct here -- the specific error type
