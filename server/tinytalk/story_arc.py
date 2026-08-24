@@ -17,6 +17,17 @@ wrapping up), or the agent's own reply concludes naturally on its own
 (record_reply notices and marks the story done -- no extra prompting
 needed).
 
+Per-stage guidance also steers toward a real narrative arc, not just a
+timer: SETUP instructs introducing a problem/challenge/conflict right
+away (confirmed by real on-device testing that without this, stories
+stayed conflict-free and unengaging), RISING_ACTION and CLIMAX keep
+developing it, and RESOLUTION/the forced ending both explicitly resolve
+it and instruct ending with the literal words "The end." -- both for the
+child's sense of closure and because "the end" is already one of
+_CONCLUSION_PHRASES below, making natural-conclusion detection far more
+reliable than hoping the model happens to phrase things that way on its
+own.
+
 Note on interrupts: if a story-concluding turn is interrupted before it
 completes normally (see session.py's _run_turn), is_done stays latched
 True (record_reply already ran before the interrupt could land), but the
@@ -42,28 +53,34 @@ class Stage(Enum):
 
 
 _FORCED_GUIDANCE = (
-    "This must be the last reply -- bring the story to a warm, complete "
-    "ending right now. Do not ask what should happen next -- the story "
-    "is over."
+    "This must be the last reply -- resolve the problem from earlier in "
+    "the story and bring it to a warm, complete ending right now. Do not "
+    "ask what should happen next -- the story is over. End your reply "
+    "with the words \"The end.\""
 )
 
 _GUIDANCE: dict[Stage, str] = {
     Stage.SETUP: (
         "You're at the start of the story -- introduce the setting and "
-        "characters, and get the adventure going."
+        "characters, and introduce a problem, challenge, or conflict for "
+        "them to face. Every good story needs something for the "
+        "characters to overcome -- don't wait to introduce it."
     ),
     Stage.RISING_ACTION: (
-        "The story is building -- keep it exciting and let the child's "
-        "ideas shape what happens next."
+        "The story is building -- keep developing the problem or "
+        "challenge from the start of the story, raise the stakes a "
+        "little, and let the child's ideas shape what happens next."
     ),
     Stage.CLIMAX: (
         "The story is nearing its big moment -- build toward an exciting "
-        "(but still gentle) high point."
+        "(but still gentle) turning point where the problem or challenge "
+        "comes to a head."
     ),
     Stage.RESOLUTION: (
-        "It's time to wrap up the story warmly and happily in this reply "
-        "or the next one. If you conclude it now, do not ask what should "
-        "happen next."
+        "It's time to resolve the problem from earlier in the story and "
+        "wrap up the story warmly and happily in this reply or the next "
+        "one. If you conclude it now, do not ask what should happen "
+        "next -- instead, end your reply with the words \"The end.\""
     ),
 }
 

@@ -40,8 +40,11 @@ KOKORO_DEVICE = os.environ.get("TINYTALK_TTS_DEVICE", "mps")
 
 # One turn = one child utterance + one agent reply. Roughly matched to a
 # young child's attention span -- see story_arc.py's module docstring for
-# how this drives narrative staging.
-STORY_TARGET_TURNS = int(os.environ.get("TINYTALK_STORY_TARGET_TURNS", "12"))
+# how this drives narrative staging. Lowered from 12 to 7 after real
+# on-device testing: even 12 felt too long, and a 15-turn real session
+# never reached the old grace ceiling of 15 (forcing only kicks in at
+# target+4), so the story just never concluded.
+STORY_TARGET_TURNS = int(os.environ.get("TINYTALK_STORY_TARGET_TURNS", "7"))
 
 SYSTEM_PROMPT = (
     "You are a warm, playful storyteller telling a story out loud with a young "
