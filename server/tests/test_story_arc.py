@@ -10,13 +10,13 @@ def test_new_arc_starts_at_setup_stage_and_is_not_done():
 
 
 def test_stage_progresses_through_all_boundaries_for_default_target():
-    # target_turns=12: setup 1-3, rising_action 4-8, climax 9-12,
-    # resolution 13-15.
+    # target_turns=7: setup 1-2, rising_action 3-5, climax 6-7,
+    # resolution 8-10.
     arc = StoryArc()
     expected = (
-        [Stage.SETUP] * 3
-        + [Stage.RISING_ACTION] * 5
-        + [Stage.CLIMAX] * 4
+        [Stage.SETUP] * 2
+        + [Stage.RISING_ACTION] * 3
+        + [Stage.CLIMAX] * 2
         + [Stage.RESOLUTION] * 3
     )
     for turn_number, expected_stage in enumerate(expected, start=1):
@@ -37,6 +37,33 @@ def test_record_turn_returns_guidance_matching_current_stage():
     arc = StoryArc()
     guidance = arc.record_turn("we walked into the forest")
     assert "start of the story" in guidance.lower()
+
+
+def test_setup_guidance_instructs_introducing_a_conflict_right_away():
+    # Real on-device testing found stories had no conflict/tension at
+    # all -- SETUP must explicitly tell the model to introduce a
+    # problem/challenge, not just describe the setting.
+    arc = StoryArc()
+    guidance = arc.record_turn("we walked into the forest")
+    assert any(word in guidance.lower() for word in ("problem", "challenge", "conflict"))
+
+
+def test_resolution_and_forced_guidance_both_instruct_ending_with_the_end():
+    # Real on-device testing found stories never reliably concluded --
+    # instructing the model to literally say "The end." both gives the
+    # child a clear sense of closure and makes _CONCLUSION_PATTERN's
+    # natural-conclusion detection far more reliable (it's already one of
+    # _CONCLUSION_PHRASES).
+    arc = StoryArc(target_turns=1)  # grace ceiling = 4; turn 2+ is already resolution
+    arc.record_turn("something happens")  # turn 1
+    resolution_guidance = arc.record_turn("something happens")  # turn 2
+    assert arc.stage is Stage.RESOLUTION
+    assert '"the end.' in resolution_guidance.lower()
+
+    arc.record_turn("something happens")  # turn 3
+    arc.record_turn("something happens")  # turn 4 -- last turn within the grace ceiling
+    forced_guidance = arc.record_turn("something happens")  # turn 5 -- past the ceiling
+    assert '"the end.' in forced_guidance.lower()
 
 
 @pytest.mark.parametrize(
@@ -73,17 +100,18 @@ def test_agent_reply_without_conclusion_phrase_does_not_set_is_done():
 
 
 def test_turn_count_past_grace_ceiling_forces_guidance_then_marks_done():
-    arc = StoryArc()  # target=12, grace ceiling=15
-    for _ in range(15):
+    arc = StoryArc()  # target=7, grace ceiling=10
+    for _ in range(10):
         arc.record_turn("something happens")
         arc.record_reply("something else happens, with no trigger phrase")
     assert arc.is_done is False  # still within the grace ceiling
 
-    guidance = arc.record_turn("something happens")  # turn 16, past ceiling
+    guidance = arc.record_turn("something happens")  # turn 11, past ceiling
     assert guidance == (
-        "This must be the last reply -- bring the story to a warm, complete "
-        "ending right now. Do not ask what should happen next -- the story "
-        "is over."
+        "This must be the last reply -- resolve the problem from earlier "
+        "in the story and bring it to a warm, complete ending right now. "
+        "Do not ask what should happen next -- the story is over. End "
+        "your reply with the words \"The end.\""
     )
     arc.record_reply("anything at all, even without a conclusion phrase")
     assert arc.is_done is True
