@@ -57,10 +57,10 @@ async def handle_connection(
                     await session.handle_text(message)
             except EngineError as exc:
                 logger.error("engine failure handling message: %s", exc)
-                await transport.send_text(encode_error(str(exc)))
+                await transport.send_text(encode_error(str(exc), session.current_turn_id))
             except Exception:  # noqa: BLE001 - one bad frame must not kill the socket
                 logger.exception("unexpected failure handling message")
-                await transport.send_text(encode_error("internal error"))
+                await transport.send_text(encode_error("internal error", session.current_turn_id))
         await session.wait_for_turn()
     finally:
         await session.aclose()
