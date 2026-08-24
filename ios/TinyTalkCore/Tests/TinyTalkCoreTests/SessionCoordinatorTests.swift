@@ -14,13 +14,14 @@ final class SessionCoordinatorTests: XCTestCase {
         vad.fire(.speechEnd)
         try? await Task.sleep(nanoseconds: 5_000_000)
 
+        connection.emit(.message(.responseText("hi", turnId: 1)))
         connection.emit(.audio(Data([1, 2, 3])))
-        connection.emit(.message(.turnEnd))
+        connection.emit(.message(.turnEnd(turnId: 1)))
         try? await Task.sleep(nanoseconds: 20_000_000)
 
         let state = await coordinator.state
         XCTAssertEqual(state, .idle)
-        XCTAssertEqual(connection.sentMessages, [.speechStart, .speechEnd])
+        XCTAssertEqual(connection.sentMessages, [.speechStart(turnId: 1), .speechEnd])
         XCTAssertEqual(audio.played, [Data([1, 2, 3])])
 
         runLoop.cancel()
@@ -63,6 +64,7 @@ final class SessionCoordinatorTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 5_000_000)
         vad.fire(.speechEnd)
         try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.message(.responseText("hi", turnId: 1)))
         connection.emit(.audio(Data([1, 2, 3]))) // drives state to .speaking
         try? await Task.sleep(nanoseconds: 5_000_000)
 
@@ -105,11 +107,14 @@ final class SessionCoordinatorTests: XCTestCase {
         // Emit several chunks and a turnEnd back-to-back, with nothing
         // draining them yet (runTurn is about to block inside chunk 1's
         // 50ms play() call) -- these all land in the per-turn stream's
-        // buffer before runTurn ever looks at them.
+        // buffer before runTurn ever looks at them. consumeServerEvents()
+        // still forwards all of these (turn 1 hasn't been superseded yet
+        // at the moment it reads them, well before the barge-in below).
+        connection.emit(.message(.responseText("hi", turnId: 1)))
         connection.emit(.audio(Data([1])))
         connection.emit(.audio(Data([2])))
         connection.emit(.audio(Data([3])))
-        connection.emit(.message(.turnEnd))
+        connection.emit(.message(.turnEnd(turnId: 1)))
         try? await Task.sleep(nanoseconds: 10_000_000) // let play() start on chunk 1, well before its 50ms delay elapses
 
         // From here on, drop the delay to 0. This isolates the bug this
@@ -140,14 +145,15 @@ final class SessionCoordinatorTests: XCTestCase {
         XCTAssertTrue(audio.played.isEmpty, "no buffered chunk from the OLD turn may reach play() after the interrupt discarded it")
         XCTAssertTrue(audio.playWasCancelled, "chunk 1's in-flight play() must have observed genuine cancellation")
 
-        // Drive the new turn to completion and confirm it was not
+        // Drive the new turn (turn 2) to completion and confirm it was not
         // corrupted: pre-fix, the stale turn's buffered turnEnd could get
         // applied to the live machine and unconditionally nil out the NEW
         // turn's turnContinuation, silently orphaning it from all further
         // server events (so the assertions below would see it stuck,
         // never reaching .idle, and never playing chunk 9).
+        connection.emit(.message(.responseText("hi again", turnId: 2)))
         connection.emit(.audio(Data([9])))
-        connection.emit(.message(.turnEnd))
+        connection.emit(.message(.turnEnd(turnId: 2)))
         try? await Task.sleep(nanoseconds: 30_000_000)
 
         let finalState = await coordinator.state
@@ -174,6 +180,7 @@ final class SessionCoordinatorTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 5_000_000)
         vad.fire(.speechEnd)
         try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.message(.responseText("hi", turnId: 1)))
         connection.emit(.audio(Data([9, 9, 9])))
         try? await Task.sleep(nanoseconds: 10_000_000) // let play() start, well before its 50ms delay finishes
 
@@ -234,6 +241,7 @@ final class SessionCoordinatorTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 5_000_000)
         vad.fire(.speechEnd)
         try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.message(.responseText("hi", turnId: 1)))
         connection.emit(.audio(Data([1, 2, 3]))) // state is now .speaking
 
         try? await Task.sleep(nanoseconds: 10_000_000)
@@ -256,17 +264,18 @@ final class SessionCoordinatorTests: XCTestCase {
         let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
         let runLoop = Task { await coordinator.start() }
 
-        vad.fire(.speechStart)
+        vad.fire(.speechStart) // turn 1
         try? await Task.sleep(nanoseconds: 5_000_000)
         vad.fire(.speechEnd)
         try? await Task.sleep(nanoseconds: 5_000_000)
-        vad.fire(.speechStart) // interrupt before any reply
+        vad.fire(.speechStart) // interrupt before any reply -- turn 2
         try? await Task.sleep(nanoseconds: 5_000_000)
 
         vad.fire(.speechEnd)
         try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.message(.responseText("hi", turnId: 2)))
         connection.emit(.audio(Data([5])))
-        connection.emit(.message(.turnEnd))
+        connection.emit(.message(.turnEnd(turnId: 2)))
         try? await Task.sleep(nanoseconds: 20_000_000)
 
         let state = await coordinator.state
@@ -314,7 +323,7 @@ final class SessionCoordinatorTests: XCTestCase {
         vad.fire(.speechEnd)
         try? await Task.sleep(nanoseconds: 5_000_000)
 
-        connection.emit(.message(.error("Ollama is not running")))
+        connection.emit(.message(.error("Ollama is not running", turnId: 1)))
         try? await Task.sleep(nanoseconds: 10_000_000)
 
         let state = await coordinator.state
@@ -335,6 +344,7 @@ final class SessionCoordinatorTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 5_000_000)
         vad.fire(.speechEnd)
         try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.message(.responseText("hi", turnId: 1)))
         connection.emit(.audio(Data([1])))
         try? await Task.sleep(nanoseconds: 10_000_000)
 
@@ -384,7 +394,7 @@ final class SessionCoordinatorTests: XCTestCase {
         vad.fire(.speechStart)
         try? await Task.sleep(nanoseconds: 20_000_000)
 
-        XCTAssertEqual(connection.sentMessages, [.speechStart])
+        XCTAssertEqual(connection.sentMessages, [.speechStart(turnId: 1)])
         XCTAssertEqual(connection.sentAudio, [Data([1]), Data([2]), Data([3])], "buffered pre-roll audio must be flushed, in capture order, right after speech_start")
 
         runLoop.cancel()
@@ -404,6 +414,7 @@ final class SessionCoordinatorTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 5_000_000)
         vad.fire(.speechEnd)
         try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.message(.responseText("hi", turnId: 1)))
         connection.emit(.audio(Data([9, 9, 9]))) // drives state to .speaking
         try? await Task.sleep(nanoseconds: 5_000_000)
 
@@ -415,7 +426,7 @@ final class SessionCoordinatorTests: XCTestCase {
         vad.fire(.speechStart) // the barge-in
         try? await Task.sleep(nanoseconds: 20_000_000)
 
-        XCTAssertEqual(connection.sentMessages.last, .interrupt)
+        XCTAssertEqual(connection.sentMessages.last, .interrupt(turnId: 2))
         XCTAssertEqual(Array(connection.sentAudio.suffix(2)), [Data([7]), Data([8])], "pre-roll captured just before the barge-in must be flushed right after the interrupt control frame")
 
         runLoop.cancel()
@@ -431,23 +442,27 @@ final class SessionCoordinatorTests: XCTestCase {
         let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
         let runLoop = Task { await coordinator.start() }
 
-        // Cap is 24_000 * 2 bytes/sec * 0.2s = 9600 bytes. Four 4000-byte
-        // chunks (16000 bytes total) exceed that, so the oldest ones must
+        // Cap is 24_000 * 2 bytes/sec * 0.5s = 24000 bytes. Six 5000-byte
+        // chunks (30000 bytes total) exceed that, so the oldest ones must
         // be evicted, leaving only the most recent chunks whose combined
-        // size fits under the cap.
-        let chunk1 = Data(repeating: 1, count: 4000)
-        let chunk2 = Data(repeating: 2, count: 4000)
-        let chunk3 = Data(repeating: 3, count: 4000)
-        let chunk4 = Data(repeating: 4, count: 4000)
+        // size fits under the cap (chunks 3-6: 20000 bytes).
+        let chunk1 = Data(repeating: 1, count: 5000)
+        let chunk2 = Data(repeating: 2, count: 5000)
+        let chunk3 = Data(repeating: 3, count: 5000)
+        let chunk4 = Data(repeating: 4, count: 5000)
+        let chunk5 = Data(repeating: 5, count: 5000)
+        let chunk6 = Data(repeating: 6, count: 5000)
         await coordinator.captureAudio(chunk1)
         await coordinator.captureAudio(chunk2)
         await coordinator.captureAudio(chunk3)
         await coordinator.captureAudio(chunk4)
+        await coordinator.captureAudio(chunk5)
+        await coordinator.captureAudio(chunk6)
 
         vad.fire(.speechStart)
         try? await Task.sleep(nanoseconds: 20_000_000)
 
-        XCTAssertEqual(connection.sentAudio, [chunk3, chunk4], "the oldest chunks (1 and 2) must have been evicted once the ~200ms byte cap was exceeded")
+        XCTAssertEqual(connection.sentAudio, [chunk3, chunk4, chunk5, chunk6], "the oldest chunks (1 and 2) must have been evicted once the ~500ms byte cap was exceeded")
 
         runLoop.cancel()
     }
@@ -537,7 +552,7 @@ final class SessionCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(
             connection.sentLog,
-            [.message(.speechStart), .audio(Data([1])), .audio(Data([2])), .audio(Data([3]))],
+            [.message(.speechStart(turnId: 1)), .audio(Data([1])), .audio(Data([2])), .audio(Data([3]))],
             "control frame must go out first, then pre-roll in capture order, then the chunk captured during the flush window -- nothing reordered ahead of the control frame or the earlier pre-roll"
         )
 
@@ -558,6 +573,7 @@ final class SessionCoordinatorTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 5_000_000)
         vad.fire(.speechEnd)
         try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.message(.responseText("hi", turnId: 1)))
         connection.emit(.audio(Data([9, 9, 9]))) // drives state to .speaking
         try? await Task.sleep(nanoseconds: 5_000_000)
 
@@ -568,7 +584,7 @@ final class SessionCoordinatorTests: XCTestCase {
         connection.sendMessageDelayNanos = 40_000_000
         connection.sendAudioDelayNanos = 15_000_000
 
-        vad.fire(.speechStart) // the barge-in -> interrupt()
+        vad.fire(.speechStart) // the barge-in -> interrupt(), turn 2
         try? await Task.sleep(nanoseconds: 10_000_000) // interrupt()'s control-frame send is now in flight
 
         // The race: a concurrent captureAudio() call while `interrupt`'s
@@ -578,14 +594,14 @@ final class SessionCoordinatorTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 150_000_000)
 
         let log = connection.sentLog
-        guard let interruptIndex = log.firstIndex(of: .message(.interrupt)) else {
+        guard let interruptIndex = log.firstIndex(of: .message(.interrupt(turnId: 2))) else {
             XCTFail("interrupt control frame was never sent")
             runLoop.cancel()
             return
         }
         XCTAssertEqual(
             Array(log[interruptIndex...]),
-            [.message(.interrupt), .audio(Data([7])), .audio(Data([8])), .audio(Data([10]))],
+            [.message(.interrupt(turnId: 2)), .audio(Data([7])), .audio(Data([8])), .audio(Data([10]))],
             "interrupt control frame must go out first, then pre-roll in capture order, then the chunk captured during the flush window"
         )
 
@@ -606,18 +622,293 @@ final class SessionCoordinatorTests: XCTestCase {
         let runLoop = Task { await coordinator.start() }
 
         // .listening, but before speech_end -- no turn is active yet, so
-        // turnContinuation is nil.
+        // turnContinuation is nil. currentTurnId is already 1, though (set
+        // synchronously by handleSpeechStart before its control-frame
+        // send), which is what lets this error's turn_id match.
         vad.fire(.speechStart)
         try? await Task.sleep(nanoseconds: 5_000_000)
 
         let stateBeforeError = await coordinator.state
         XCTAssertEqual(stateBeforeError, .listening)
 
-        connection.emit(.message(.error("stt feed failed")))
+        connection.emit(.message(.error("stt feed failed", turnId: 1)))
         try? await Task.sleep(nanoseconds: 10_000_000)
 
         let errorMessage = await coordinator.lastErrorMessage
         XCTAssertEqual(errorMessage, "stt feed failed", "an error frame arriving outside an active turn must still be surfaced, not silently dropped")
+
+        runLoop.cancel()
+    }
+
+    /// The actual point of turn_id: a reply that arrives for a turn the
+    /// client has already abandoned must be discarded, not misattributed to
+    /// whatever turn happens to be active when it arrives. Confirmed on
+    /// real hardware to otherwise either misattribute the reply to the
+    /// wrong turn or drop it entirely -- see Protocol.swift's doc comment.
+    func testStaleReplyForAnAbandonedTurnIsDiscardedNotMisattributed() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart) // turn 1
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        // Before turn 1's server reply ever arrives, the child barges in
+        // and starts a whole new utterance -- turn 2.
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        // Turn 1's reply finally shows up late, tagged with the OLD turn_id.
+        // Simulates the server having fallen behind (a multi-second STT
+        // call) and only now finishing what it started for turn 1.
+        connection.emit(.message(.transcriptFinal("turn one's words", turnId: 1)))
+        connection.emit(.message(.responseText("turn one's reply", turnId: 1)))
+        connection.emit(.audio(Data([1, 1, 1])))
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertTrue(audio.played.isEmpty, "turn 1's stale audio must not be played once turn 2 is active")
+        let lastReplyAfterStaleReply = await coordinator.lastReply
+        XCTAssertEqual(lastReplyAfterStaleReply, "", "turn 1's stale reply text must not be surfaced as if it were current")
+        let stateAfterStaleReply = await coordinator.state
+        XCTAssertEqual(stateAfterStaleReply, .waitingForReply, "turn 2 must still be genuinely waiting -- the stale turnEnd must not have silently ended it")
+
+        // Turn 2's real reply, correctly tagged, must still work normally.
+        connection.emit(.message(.transcriptFinal("turn two's words", turnId: 2)))
+        connection.emit(.message(.responseText("turn two's reply", turnId: 2)))
+        connection.emit(.audio(Data([2, 2, 2])))
+        connection.emit(.message(.turnEnd(turnId: 2)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(audio.played, [Data([2, 2, 2])], "turn 2's real reply must play normally, unaffected by the discarded stale one")
+        let lastReplyAfterRealReply = await coordinator.lastReply
+        XCTAssertEqual(lastReplyAfterRealReply, "turn two's reply")
+        let finalState = await coordinator.state
+        XCTAssertEqual(finalState, .idle)
+
+        runLoop.cancel()
+    }
+
+    /// waitingDittyAudio defaults to nil specifically so every OTHER test
+    /// in this file (which doesn't pass it) stays completely unaffected --
+    /// these are the only tests that opt in to exercise the feature itself.
+    func testWaitingDittyLoopsWhileWaitingForReplyAndStopsWhenRealAudioArrives() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        audio.playDelayNanos = 5_000_000 // paces the loop so it iterates a few times, not thousands
+        let vad = FakeVAD()
+        let dittyAudio = Data([0xAA, 0xBB])
+        let coordinator = SessionCoordinator(
+            connection: connection, audio: audio, vad: vad, waitingDittyAudio: dittyAudio
+        )
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        // No reply arrives yet -- let the ditty loop run for a while.
+        try? await Task.sleep(nanoseconds: 30_000_000)
+
+        let playedWhileWaiting = audio.played
+        XCTAssertFalse(playedWhileWaiting.isEmpty, "the ditty should have looped at least once while waiting for a reply")
+        XCTAssertTrue(
+            playedWhileWaiting.allSatisfy { $0 == dittyAudio },
+            "only ditty audio should have played so far -- no real reply audio has arrived yet"
+        )
+
+        connection.emit(.message(.responseText("hi", turnId: 1)))
+        connection.emit(.audio(Data([1, 2, 3])))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        // The loop must have genuinely stopped, not just paused -- confirm
+        // no MORE ditty chunks appear even after waiting again.
+        let countRightAfterRealAudio = audio.played.count
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(
+            audio.played.count, countRightAfterRealAudio,
+            "the ditty loop must have stopped -- no further chunks should appear once real audio starts"
+        )
+        XCTAssertEqual(audio.played.last, Data([1, 2, 3]))
+
+        runLoop.cancel()
+    }
+
+    func testWaitingDittyStopsOnInterruptBeforeAnyReplyArrives() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        audio.playDelayNanos = 5_000_000
+        let vad = FakeVAD()
+        let dittyAudio = Data([0xAA, 0xBB])
+        let coordinator = SessionCoordinator(
+            connection: connection, audio: audio, vad: vad, waitingDittyAudio: dittyAudio
+        )
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 20_000_000) // ditty looping, no reply yet
+
+        vad.fire(.speechStart) // the barge-in, before any reply arrived
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        let countRightAfterInterrupt = audio.played.count
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(
+            audio.played.count, countRightAfterInterrupt,
+            "the ditty loop must stop on interrupt, even though no reply ever arrived to stop it the other way"
+        )
+
+        runLoop.cancel()
+    }
+
+    func testWaitingDittyStopsOnEmptyReplyWithNoAudio() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        audio.playDelayNanos = 5_000_000
+        let vad = FakeVAD()
+        let dittyAudio = Data([0xAA, 0xBB])
+        let coordinator = SessionCoordinator(
+            connection: connection, audio: audio, vad: vad, waitingDittyAudio: dittyAudio
+        )
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 20_000_000) // ditty looping
+
+        // Empty transcript path: turn_end with no response_text/audio at all.
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        let countRightAfterTurnEnd = audio.played.count
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(
+            audio.played.count, countRightAfterTurnEnd,
+            "the ditty loop must stop once the turn ends, even when no reply audio ever arrived"
+        )
+
+        runLoop.cancel()
+    }
+
+    /// The mute button's whole point: while muted, captured mic audio must
+    /// never reach the VAD at all, not just be withheld from the server --
+    /// see SessionCoordinator.isMuted's doc comment for why that's a
+    /// deliberate design choice (a real barge-in can only ever start from a
+    /// VAD-observed speechStart, so starving the VAD of audio is what
+    /// actually prevents it, in the real app where a real VAD reacts to
+    /// feed() calls). This test drives captureAudio() directly (like
+    /// testCaptureAudioFeedsVADEvenWhileSpeaking does), not vad.fire(),
+    /// since fire() bypasses captureAudio() entirely and would prove
+    /// nothing about muting.
+    func testMutedAudioNeverReachesVADOrServerAndUnmutingRestoresBoth() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        await coordinator.setMuted(true)
+
+        // Muted while idle: must not even reach the VAD (so it can never
+        // decide to fire speechStart from this audio).
+        await coordinator.captureAudio(Data([1]))
+        XCTAssertTrue(vad.fed.isEmpty, "muted audio must not reach the VAD while idle")
+
+        // Muted while .listening (a real utterance already in flight): must
+        // also not be uploaded to the server.
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        await coordinator.captureAudio(Data([2]))
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        XCTAssertTrue(vad.fed.isEmpty, "muted audio must not reach the VAD while listening")
+        XCTAssertTrue(connection.sentAudio.isEmpty, "muted audio must not be uploaded to the server")
+
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        // Unmuting must restore normal behavior for audio captured from
+        // this point on.
+        await coordinator.setMuted(false)
+        connection.emit(.message(.responseText("hi", turnId: 1)))
+        connection.emit(.audio(Data([9]))) // drives state to .speaking
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        await coordinator.captureAudio(Data([3]))
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        XCTAssertEqual(vad.fed, [Data([3])], "unmuted audio must reach the VAD again")
+
+        runLoop.cancel()
+    }
+
+    /// Follow-up feature request: muting mid-utterance must actually stop
+    /// listening, not leave the state machine stuck in .listening forever
+    /// (which is what would happen without this -- captureAudio() stops
+    /// feeding the VAD the instant isMuted flips true, so the VAD could
+    /// never observe the silence hangover needed to fire speechEnd on its
+    /// own). setMuted(true) reuses handleSpeechEnd() directly, so this
+    /// finalizes the in-progress utterance exactly like a natural
+    /// VAD-observed silence would: the server gets a real speech_end and
+    /// the turn proceeds normally.
+    func testMutingWhileListeningStopsListeningAndFinalizesTheTurn() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        let stateWhileListening = await coordinator.state
+        XCTAssertEqual(stateWhileListening, .listening)
+
+        await coordinator.setMuted(true)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        XCTAssertEqual(connection.sentMessages, [.speechStart(turnId: 1), .speechEnd], "muting mid-utterance must send a real speech_end, finalizing whatever was captured so far")
+        let stateAfterMute = await coordinator.state
+        XCTAssertEqual(stateAfterMute, .waitingForReply, "muting must actually stop listening, not leave the state machine stuck in .listening")
+
+        // The turn started by the mute-triggered speechEnd must still
+        // complete normally.
+        connection.emit(.message(.responseText("hi", turnId: 1)))
+        connection.emit(.audio(Data([1, 2, 3])))
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let finalState = await coordinator.state
+        XCTAssertEqual(finalState, .idle)
+        XCTAssertEqual(audio.played, [Data([1, 2, 3])])
+
+        runLoop.cancel()
+    }
+
+    /// Muting while NOT .listening (e.g. idle, or already waitingForReply/
+    /// speaking) must be a pure no-op as far as the state machine and wire
+    /// protocol are concerned -- handleSpeechEnd()'s own state guard
+    /// handles this, but worth a direct regression test since setMuted(_:)
+    /// now unconditionally calls it.
+    func testMutingWhileNotListeningDoesNotSendSpeechEndOrChangeState() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        await coordinator.setMuted(true)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        XCTAssertTrue(connection.sentMessages.isEmpty, "muting while idle must not send anything to the server")
+        let state = await coordinator.state
+        XCTAssertEqual(state, .idle)
 
         runLoop.cancel()
     }
