@@ -25,7 +25,17 @@ public enum WaitingDitty {
         let notes: [Double] = [523.25, 659.25, 783.99, 1046.50]
         let noteDuration = 0.18
         let gapDuration = 0.35
-        let amplitude = 0.25
+        // Lowered from 0.25 after real on-device testing found the ditty
+        // came through very loud, and its perceived loudness didn't track
+        // the phone's media volume control -- likely because this app's
+        // AVAudioSession runs in .voiceChat mode (needed for AEC/barge-in,
+        // see AudioEngine.swift), which iOS treats like call audio and
+        // routes through a separate "call volume" stream rather than the
+        // normal media-volume stream the on-screen/Control Center slider
+        // controls. That routing can't change without giving up AEC, so
+        // this directly lowers the source signal instead -- a quieter
+        // ditty is quieter regardless of which volume stream it's on.
+        let amplitude = 0.08
 
         var samples: [Int16] = []
         for frequency in notes {
