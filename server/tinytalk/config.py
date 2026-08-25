@@ -12,17 +12,18 @@ SERVER_HOST = os.environ.get("TINYTALK_HOST", "0.0.0.0")
 SERVER_PORT = int(os.environ.get("TINYTALK_PORT", "8765"))
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-# Lowered from qwen3.5:9b (~6.6GB) to qwen3.5:4b after real on-device
-# testing confirmed severe swap thrashing (Activity Monitor: red memory
-# pressure, large swap) running STT+LLM+TTS together on the M1/16GB --
-# ~180s to the LLM's first token, not genuine compute time. Deliberately
-# NOT a "-mlx" tagged variant: confirmed (2026-08) Ollama's MLX backend
-# still hard-requires 32GB unified memory regardless of model size, so an
-# MLX model would not get that backend's acceleration on this machine --
-# this runs on the same Metal/llama.cpp backend already in use, just with
-# a smaller model. Same Qwen 3.5 family as before for consistency; expect
-# to revisit if reply quality doesn't hold up for this use case.
-OLLAMA_MODEL = os.environ.get("TINYTALK_MODEL", "qwen3.5:4b")
+# Back to qwen3.5:9b (2026-08-25) now that OLLAMA_THINK=False is the real
+# fix for the memory-pressure/latency saga -- see that setting's own
+# comment. 9b's replies were confirmed better-reasoned than 4b's on real
+# on-device testing, "good enough for now" per the household's own
+# judgment, and now that thinking is off, 9b's peak memory-pressure
+# window is short (one quick reply, not minutes of reasoning tokens) --
+# the earlier severe swap thrashing was mostly a symptom of thinking-mode
+# generation duration, not model size alone. Deliberately NOT a "-mlx"
+# tagged variant: confirmed (2026-08) Ollama's MLX backend still
+# hard-requires 32GB unified memory regardless of model size, so this
+# stays on the same Metal/llama.cpp backend already in use.
+OLLAMA_MODEL = os.environ.get("TINYTALK_MODEL", "qwen3.5:9b")
 # Ollama's own default is 5 minutes, after which it unloads the model and
 # the NEXT request has to reload it from disk (multiple GB) before it can
 # generate a single token -- under real memory pressure from STT+TTS
