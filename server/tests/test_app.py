@@ -177,6 +177,35 @@ async def test_reconnecting_after_a_disconnect_mid_turn_replays_the_buffered_rep
     assert audio_frames, "the reply's audio must be replayed too, not just its text"
 
 
+async def test_a_third_connection_does_not_get_the_same_reply_replayed_again():
+    # Real bug, found on real hardware: a reply that already replayed
+    # successfully to a reconnect kept sitting in the buffer (only a new
+    # turn starting ever cleared it), so a LATER, unrelated reconnect --
+    # with nothing new to say -- silently got the same old reply replayed
+    # at it again.
+    first_socket = FakeWebSocket(
+        ['{"type": "speech_start", "turn_id": 1}', b"\x01\x02", '{"type": "speech_end"}']
+    )
+    session = SessionRunner(
+        transport=WebSocketTransport(first_socket),
+        stt=FakeStt(),
+        llm=FakeLlm(),
+        tts=FakeTts(),
+        system_prompt="be kind",
+    )
+    await handle_connection(first_socket, session=session)
+    await session.wait_for_turn()
+
+    second_socket = FakeWebSocket([])
+    await handle_connection(second_socket, session=session)
+    assert second_socket.sent, "sanity check: the first reconnect should have gotten the replay"
+
+    third_socket = FakeWebSocket([])
+    await handle_connection(third_socket, session=session)
+
+    assert third_socket.sent == [], "nothing left to replay -- the second connection already consumed it"
+
+
 async def test_engine_failure_during_dispatch_sends_an_error_frame_and_keeps_the_socket_open():
     # A speech_end that triggers an STT failure (e.g. KyutaiStt.finish()
     # raising EngineError) is not guarded inside SessionRunner itself --

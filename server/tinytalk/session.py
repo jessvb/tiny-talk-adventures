@@ -182,9 +182,23 @@ class SessionRunner:
         far, after which the turn's own live sends continue seamlessly (the
         shared lock makes the two mutually exclusive, so ordering is
         preserved either way). A no-op if nothing is buffered -- e.g. a
-        fresh session, or a turn already superseded by a new utterance."""
+        fresh session, or a turn already superseded by a new utterance.
+
+        Consumes the buffer: once resent here, it's cleared, so a LATER,
+        unrelated reconnect (e.g. the child backgrounds again long after
+        already hearing this reply in full) doesn't get the same old reply
+        replayed at them again out of nowhere. Real bug, found on real
+        hardware: a turn that played out completely on a still-open
+        connection left its buffer populated indefinitely (only a new turn
+        starting ever cleared it), so ANY later reconnect -- including one
+        with nothing to resume -- silently re-sent it. Harmless to the
+        turn_id-mismatch discard on a client that isn't resuming, but pure
+        waste, and genuinely wrong on a client that IS resuming a
+        DIFFERENT, newer turn than whatever's still sitting in the buffer.
+        """
         async with self._transport_lock:
-            for kind, payload in self._turn_replay_buffer:
+            buffered, self._turn_replay_buffer = self._turn_replay_buffer, []
+            for kind, payload in buffered:
                 if kind == "text":
                     await self._transport.send_text(payload)
                 else:

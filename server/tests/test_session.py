@@ -456,6 +456,30 @@ async def test_replay_last_turn_is_a_no_op_when_nothing_is_buffered(transport):
     assert transport.types() == []
 
 
+async def test_replay_last_turn_only_replays_once_not_on_every_later_reconnect(transport):
+    # Real bug, found on real hardware: a turn that played out completely
+    # on a still-open connection (the child heard the whole reply live)
+    # left its buffer populated indefinitely -- only a NEW turn starting
+    # ever cleared it -- so a LATER, unrelated reconnect (long after
+    # already hearing it) silently replayed the same old reply again.
+    # replay_last_turn() must consume the buffer, not just read it.
+    other_transport = FakeTransport()
+    session = make_session(transport)
+
+    await run_full_turn(session)
+    session.rebind_transport(other_transport)
+    await session.replay_last_turn()
+    assert other_transport.types() == ["response_text", "turn_end"]
+
+    yet_another_transport = FakeTransport()
+    session.rebind_transport(yet_another_transport)
+    await session.replay_last_turn()
+
+    assert yet_another_transport.types() == [], (
+        "nothing left to replay -- the first replay already consumed the buffer"
+    )
+
+
 async def test_a_new_turn_clears_the_previous_turns_replay_buffer(transport):
     llm = FakeLlm()
     session = make_session(transport, llm=llm)
