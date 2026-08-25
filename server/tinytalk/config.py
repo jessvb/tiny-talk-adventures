@@ -12,7 +12,17 @@ SERVER_HOST = os.environ.get("TINYTALK_HOST", "0.0.0.0")
 SERVER_PORT = int(os.environ.get("TINYTALK_PORT", "8765"))
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("TINYTALK_MODEL", "qwen3.5:9b")
+# Lowered from qwen3.5:9b (~6.6GB) to qwen3.5:4b after real on-device
+# testing confirmed severe swap thrashing (Activity Monitor: red memory
+# pressure, large swap) running STT+LLM+TTS together on the M1/16GB --
+# ~180s to the LLM's first token, not genuine compute time. Deliberately
+# NOT a "-mlx" tagged variant: confirmed (2026-08) Ollama's MLX backend
+# still hard-requires 32GB unified memory regardless of model size, so an
+# MLX model would not get that backend's acceleration on this machine --
+# this runs on the same Metal/llama.cpp backend already in use, just with
+# a smaller model. Same Qwen 3.5 family as before for consistency; expect
+# to revisit if reply quality doesn't hold up for this use case.
+OLLAMA_MODEL = os.environ.get("TINYTALK_MODEL", "qwen3.5:4b")
 # Ollama's own default is 5 minutes, after which it unloads the model and
 # the NEXT request has to reload it from disk (multiple GB) before it can
 # generate a single token -- under real memory pressure from STT+TTS

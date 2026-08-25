@@ -94,11 +94,19 @@ provide — containers there run inside a Linux VM with no Metal passthrough.)
 4. **Ollama** — local LLM runtime:
    ```
    brew install ollama
-   ollama pull qwen3.5:9b
+   ollama pull qwen3.5:4b
    ```
    Note: Ollama's newer MLX backend (added March 2026) needs 32GB unified
    memory. On this 16GB M1, Ollama will use its default Metal backend
    instead — that's expected, not a misconfiguration.
+
+   qwen3.5:4b (not the larger 9b) is the default as of real on-device
+   testing that found running STT+LLM+TTS together on this 16GB Mac
+   caused severe swap thrashing with the 9b model (confirmed via Activity
+   Monitor: red memory pressure, large swap) — ~180s to the LLM's first
+   token, not genuine compute time. If you have more headroom (e.g. a
+   32GB+ Mac) `qwen3.5:9b` is worth trying via `TINYTALK_MODEL=qwen3.5:9b`
+   for better reply quality.
 5. **Kyutai STT** (MLX build) — already declared in `server/pyproject.toml`;
    no manual installation needed. It will be installed automatically in step 3
    of "Running the server" below when you run `pip install -e ".[dev]"` inside

@@ -54,7 +54,10 @@ async def test_stream_reply_yields_content_chunks_in_order():
         assert payload["messages"][0]["role"] == "system"
         return httpx.Response(200, text="\n".join(lines))
 
-    llm = OllamaLlm(transport=httpx.MockTransport(handler))
+    # Explicit model=, not the config default -- keeps this test's
+    # assertion independent of whatever config.OLLAMA_MODEL happens to be
+    # set to.
+    llm = OllamaLlm(model="qwen3.5:9b", transport=httpx.MockTransport(handler))
     messages = [{"role": "system", "content": "be kind"}, {"role": "user", "content": "hi"}]
 
     chunks = [chunk async for chunk in llm.stream_reply(messages)]
