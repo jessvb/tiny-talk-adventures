@@ -51,6 +51,10 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     /// confirmed on-device necessary to recover from voice processing's
     /// graph rebuild silently invalidating the input tap.
     private var configChangeObserver: NSObjectProtocol?
+    /// See the outputVolume observer set up in init() -- kept alive for
+    /// this instance's whole lifetime (NSKeyValueObservation stops
+    /// observing the moment it deallocates).
+    private var outputVolumeObserver: NSKeyValueObservation?
 
     public init() throws {
         let session = AVAudioSession.sharedInstance()
@@ -123,6 +127,25 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         // is the confirmed-working connection format; pcmDataToBuffer
         // converts the Int16 wire bytes to Float32 before scheduling.
         engine.connect(playerNode, to: engine.mainMixerNode, format: playbackConnectionFormat)
+
+        // .voiceChat mode (needed above for AEC) routes playback through a
+        // separate "call audio" volume domain that does NOT automatically
+        // follow the hardware volume buttons for a plain, non-CallKit app --
+        // confirmed on real hardware as both the waiting ditty being too
+        // loud regardless of the media volume slider (worked around
+        // separately by lowering its own baked-in amplitude -- see
+        // WaitingDitty.swift) and, more generally, playback over headphones
+        // not responding to the volume buttons at all. AVAudioSession's
+        // outputVolume property itself DOES still update live as the
+        // buttons are pressed even though .voiceChat mode doesn't apply it
+        // automatically -- observing it and applying it to playerNode's own
+        // volume directly is the standard workaround for a voice-processing
+        // session that still needs to respect the user's volume control.
+        playerNode.volume = session.outputVolume
+        outputVolumeObserver = session.observe(\.outputVolume, options: [.new]) { [weak playerNode] _, change in
+            guard let playerNode, let newValue = change.newValue else { return }
+            playerNode.volume = newValue
+        }
     }
 
     /// Explicitly requests microphone permission and awaits the user's

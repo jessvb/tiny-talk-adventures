@@ -38,11 +38,6 @@ final class AppModel: ObservableObject {
     /// handling) -- neither of those should be silently overridden by
     /// auto-reconnecting the next time the app becomes active again.
     private var shouldReconnectOnForeground = false
-    /// Mirrors the coordinator's activeTurnId, updated by startPollingState()
-    /// at the same cadence as `state` -- see handleAppBackgrounded()'s doc
-    /// comment for why this is polled ahead of time rather than read
-    /// on-demand at the moment of backgrounding.
-    private var lastKnownTurnId = 0
     /// Set by handleAppBackgrounded() when the backgrounded turn was still
     /// live (.waitingForReply or .speaking) -- handleAppForegrounded() hands
     /// this to connect(resumingTurnId:) so the reply that was in flight (or
@@ -185,19 +180,28 @@ final class AppModel: ObservableObject {
     /// If a reply was in flight or already spoken when this happened
     /// (.waitingForReply or .speaking), the SERVER keeps generating/holding
     /// it regardless of this disconnect (see the server's
-    /// SessionRunner.handle_disconnect()) -- capturing lastKnownTurnId here
-    /// is what lets handleAppForegrounded() ask for it back instead of the
-    /// child returning to a silently-abandoned turn. Deliberately kept
-    /// synchronous (no actor round-trip to read fresh state) rather than
-    /// async: iOS gives an app only a short, unreliable window to run code
-    /// once backgrounding starts, and lastKnownTurnId/state are already
-    /// kept current by startPollingState() at a 100ms cadence, so a fresh
-    /// read here would risk not completing in time for no real accuracy
-    /// gain.
-    func handleAppBackgrounded() {
-        guard isConnected else { return }
+    /// SessionRunner.handle_disconnect()) -- capturing the coordinator's
+    /// activeTurnId here is what lets handleAppForegrounded() ask for it
+    /// back instead of the child returning to a silently-abandoned turn
+    /// (previously read from `state`/a polled turn id refreshed only every
+    /// 100ms by startPollingState() -- close enough for UI display, but a
+    /// real gap for a one-shot decision made right as a turn transitions
+    /// into .waitingForReply, which is exactly when backgrounding is most
+    /// likely to happen: confirmed on-device as the resumed ditty
+    /// sometimes silently not coming back at all, consistent with this
+    /// race occasionally losing the turn id and falling back to a plain,
+    /// memory-less reconnect). Async now, reading the coordinator's actual
+    /// live state directly -- an actor property read is microseconds, well
+    /// within the window iOS gives an app to react to being backgrounded.
+    func handleAppBackgrounded() async {
+        guard isConnected, let coordinator else { return }
         shouldReconnectOnForeground = true
-        pendingResumeTurnId = (state == .waitingForReply || state == .speaking) ? lastKnownTurnId : nil
+        let liveState = await coordinator.state
+        if liveState == .waitingForReply || liveState == .speaking {
+            pendingResumeTurnId = await coordinator.activeTurnId
+        } else {
+            pendingResumeTurnId = nil
+        }
         disconnect()
     }
 
@@ -233,7 +237,6 @@ final class AppModel: ObservableObject {
                 let errorMessage = await coordinator.lastErrorMessage
                 let closed = await coordinator.isClosed
                 let muted = await coordinator.isMuted
-                let turnId = await coordinator.activeTurnId
                 // Returns "should this loop stop" as the closure's result,
                 // rather than mutating a captured local var, since
                 // MainActor.run's body is @Sendable and Swift 6 strict
@@ -246,7 +249,6 @@ final class AppModel: ObservableObject {
                     self.lastTranscript = transcript
                     self.lastReply = reply
                     self.isMicMuted = muted
-                    self.lastKnownTurnId = turnId
                     // Only overwrite with a real server error -- a nil here
                     // just means "no server error yet," and must not erase
                     // a client-side error (e.g. audio capture failing to
@@ -351,7 +353,7 @@ struct ContentView: View {
         .onChange(of: scenePhase) { newPhase in
             switch newPhase {
             case .background:
-                model.handleAppBackgrounded()
+                Task { await model.handleAppBackgrounded() }
             case .active:
                 Task { await model.handleAppForegrounded() }
             default:
