@@ -126,15 +126,19 @@ final class AppModel: ObservableObject {
     }
 
     /// Lets the child/parent mute the mic -- e.g. to prevent an accidental
-    /// barge-in while waiting for a reply. Toggles local UI state directly
-    /// (rather than polling it back from the coordinator, the way state/
-    /// transcript/etc. are) since this button is the only thing that ever
-    /// changes it -- there's no async server-driven update to reconcile.
+    /// barge-in while waiting for a reply, or to unmute during that same
+    /// window if they want to speak up anyway. Does NOT set isMicMuted
+    /// directly: SessionCoordinator now also flips its own isMuted
+    /// automatically (muted for the whole .waitingForReply window, unmuted
+    /// the instant real reply audio starts), so this button is no longer
+    /// the only thing that changes it -- isMicMuted has to be polled back
+    /// from the coordinator (see startPollingState()) like state/
+    /// transcript/etc. already are, or it would drift out of sync with
+    /// (and could visually contradict) an in-flight automatic change.
     func toggleMute() {
-        isMicMuted.toggle()
         let coordinatorToUpdate = coordinator
-        let muted = isMicMuted
-        Task { await coordinatorToUpdate?.setMuted(muted) }
+        let newValue = !isMicMuted
+        Task { await coordinatorToUpdate?.setMuted(newValue) }
     }
 
     private func startPollingState() {
@@ -149,6 +153,7 @@ final class AppModel: ObservableObject {
                 let reply = await coordinator.lastReply
                 let errorMessage = await coordinator.lastErrorMessage
                 let closed = await coordinator.isClosed
+                let muted = await coordinator.isMuted
                 // Returns "should this loop stop" as the closure's result,
                 // rather than mutating a captured local var, since
                 // MainActor.run's body is @Sendable and Swift 6 strict
@@ -160,6 +165,7 @@ final class AppModel: ObservableObject {
                     self.latencyHistory = history
                     self.lastTranscript = transcript
                     self.lastReply = reply
+                    self.isMicMuted = muted
                     // Only overwrite with a real server error -- a nil here
                     // just means "no server error yet," and must not erase
                     // a client-side error (e.g. audio capture failing to

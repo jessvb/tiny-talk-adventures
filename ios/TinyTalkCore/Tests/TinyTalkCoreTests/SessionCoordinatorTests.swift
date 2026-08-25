@@ -1020,7 +1020,12 @@ final class SessionCoordinatorTests: XCTestCase {
     /// a standing manual mute (e.g. a parent stepping away) must still
     /// apply even once auto-mute itself would have cleared on reaching
     /// .speaking.
-    func testManualMuteStillAppliesEvenAfterAutoUnmuteOnSpeaking() async {
+    /// The actual point of sharing one flag instead of OR-ing a separate
+    /// auto-mute on top: a child/parent must be able to press the SAME
+    /// mute button during an automatically-muted .waitingForReply window
+    /// and have it genuinely work, e.g. to speak up and redirect the story
+    /// while it's still thinking.
+    func testPressingMuteButtonDuringAutoMutedWaitingForReplyGenuinelyUnmutes() async {
         let connection = FakeConnection()
         let audio = FakeAudio()
         let vad = FakeVAD()
@@ -1032,20 +1037,55 @@ final class SessionCoordinatorTests: XCTestCase {
         vad.fire(.speechEnd)
         try? await Task.sleep(nanoseconds: 5_000_000)
 
-        await coordinator.setMuted(true) // manual mute on top of the automatic one already in effect
+        let stateWhileWaiting = await coordinator.state
+        XCTAssertEqual(stateWhileWaiting, .waitingForReply)
+        let mutedBeforeUnmute = await coordinator.isMuted
+        XCTAssertTrue(mutedBeforeUnmute, "auto-mute should have engaged on entering .waitingForReply")
+
+        await coordinator.setMuted(false) // the child/parent presses the button to unmute
+        let mutedAfterUnmute = await coordinator.isMuted
+        XCTAssertFalse(mutedAfterUnmute)
+
+        await coordinator.captureAudio(Data([1]))
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        XCTAssertEqual(
+            vad.fed, [Data([1])],
+            "pressing the mute button during .waitingForReply must genuinely unmute -- one shared flag, not a separate auto-mute the button can't override"
+        )
+
+        runLoop.cancel()
+    }
+
+    /// The accepted flip side of sharing one flag: reaching .speaking
+    /// always auto-unmutes, even overriding a mute the child/parent set
+    /// during the wait -- documented as intentional in isMuted's doc
+    /// comment (nothing is being captured yet at the moment this
+    /// override happens; they can re-mute if they still want it muted
+    /// once the reply starts).
+    func testAutoUnmuteOnSpeakingOverridesAManualMuteSetDuringTheWait() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        await coordinator.setMuted(true) // redundant with auto-mute, but exercises the manual path too
 
         connection.emit(.message(.responseText("hi", turnId: 1)))
-        connection.emit(.audio(Data([9]))) // drives state to .speaking, clearing AUTO-mute
+        connection.emit(.audio(Data([9]))) // drives state to .speaking, which auto-unmutes
         try? await Task.sleep(nanoseconds: 5_000_000)
 
         let stateWhileSpeaking = await coordinator.state
         XCTAssertEqual(stateWhileSpeaking, .speaking)
-
-        await coordinator.captureAudio(Data([5]))
-        try? await Task.sleep(nanoseconds: 5_000_000)
-        XCTAssertTrue(
-            vad.fed.isEmpty,
-            "a manual mute must still block capture even after auto-unmute would otherwise have kicked in"
+        let mutedWhileSpeaking = await coordinator.isMuted
+        XCTAssertFalse(
+            mutedWhileSpeaking,
+            "auto-unmute on reaching .speaking overrides a mute set during the wait -- one shared flag, last write wins, by design"
         )
 
         runLoop.cancel()

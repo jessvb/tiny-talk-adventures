@@ -127,39 +127,34 @@ public actor SessionCoordinator {
     /// flushPreRoll()'s doc comment for how it's cleared safely.
     private var isFlushing = false
 
-    /// True while the child/parent has muted the mic via the UI. Checked
-    /// first thing in captureAudio(), before audio ever reaches the VAD --
-    /// this is a deliberate "mute" (matching the mental model of a video-
-    /// call mute button), not merely a barge-in suppressor: while muted, no
-    /// new speechStart can be detected either, not just interrupts of an
-    /// in-flight reply. That's the whole point of exposing it as a plain
-    /// mute toggle rather than a narrower "block interrupts" flag -- it's
-    /// simpler to explain to a parent and impossible to misread from the
-    /// UI. Muting mid-.listening utterance is handled explicitly by
-    /// setMuted(_:) below: since captureAudio() stops feeding the VAD the
-    /// instant this flips true, the VAD would otherwise never observe the
-    /// silence hangover needed to fire speechEnd on its own, leaving the
-    /// state machine stuck in .listening forever.
-    private var isMuted = false
-    /// True automatically for the whole .waitingForReply window (set in
-    /// handleSpeechEnd(), cleared the moment real reply audio starts
-    /// playing in runTurn()'s .audio case) -- prevents barge-in for the
-    /// exact window the manual mute button's own doc comment already
-    /// described as its main use case, without the child needing to
-    /// remember to press it before every question. A completely separate
-    /// flag from isMuted (see effectiveMute below), not a replacement for
-    /// it: isMuted is a standing choice the child/parent made and must
-    /// keep applying regardless of what state the session moves through;
-    /// isAutoMuted is scoped to exactly one state and must never leak into
-    /// any other, so cleared on every path out of .waitingForReply
-    /// (reaching .speaking, an empty-reply turnEnd, an error, or a
-    /// disconnect) -- see runTurn() and interrupt().
-    private var isAutoMuted = false
-    /// What captureAudio() actually gates on -- either kind of mute blocks
-    /// mic audio from reaching the VAD or the server; a manual mute must
-    /// still win even during a .waitingForReply window (or after it ends),
-    /// so this is a plain OR, not a replacement of one flag by the other.
-    private var effectiveMute: Bool { isMuted || isAutoMuted }
+    /// True while the mic is muted -- checked first thing in captureAudio(),
+    /// before audio ever reaches the VAD. A deliberate "mute" (matching the
+    /// mental model of a video-call mute button), not merely a barge-in
+    /// suppressor: while muted, no new speechStart can be detected either,
+    /// not just interrupts of an in-flight reply. That's the whole point of
+    /// exposing it as a plain mute toggle rather than a narrower "block
+    /// interrupts" flag -- it's simpler to explain to a parent and
+    /// impossible to misread from the UI.
+    ///
+    /// This is the ONE flag both the UI's mute button AND this actor's own
+    /// automatic mute/unmute (see handleSpeechEnd()/runTurn() -- muted for
+    /// the whole .waitingForReply window, unmuted the instant real reply
+    /// audio starts) write to, deliberately -- not two separate flags OR'd
+    /// together. A parent/child pressing the button DURING an
+    /// automatically-muted .waitingForReply window must genuinely unmute
+    /// (e.g. to speak up and redirect the story while it's still thinking),
+    /// not be silently overridden by the automatic behavior; sharing one
+    /// flag is what makes that possible, at the cost of the automatic
+    /// unmute-on-.speaking/-on-turn-end paths overriding a *manual* mute
+    /// the child pressed moments earlier -- accepted since automatic
+    /// unmuting only ever happens at points where nothing is being
+    /// captured yet anyway (the child would need to speak AGAIN, at which
+    /// point they could re-press the button if they still want it muted).
+    ///
+    /// Exposed read-only (not just private) so the UI can mirror the
+    /// actual current state rather than only knowing what IT last set --
+    /// necessary now that this can also change from inside this actor.
+    public private(set) var isMuted = false
 
     public init(
         connection: any ServerConnecting,
@@ -192,7 +187,7 @@ public actor SessionCoordinator {
     /// speech/silence decisions are two independent streams from two
     /// different sources.
     public func captureAudio(_ pcm: Data) async {
-        guard !effectiveMute else { return }
+        guard !isMuted else { return }
         vad.feed(pcm)
         // isFlushing overrides an already-.listening state on purpose -- see
         // its doc comment: a control-frame-send-then-flush sequence is in
@@ -338,11 +333,11 @@ public actor SessionCoordinator {
                 // This is the real disconnect path -- runTurn()'s own
                 // .closed case is unreachable in practice, since this
                 // handler intercepts .closed before it could ever be
-                // forwarded into turnContinuation. Reset here, not there,
-                // so this coordinator's own state stays consistent for
-                // whatever brief window remains before the UI observes
+                // forwarded into turnContinuation. Auto-unmute here, not
+                // there, so this coordinator's own state stays consistent
+                // for whatever brief window remains before the UI observes
                 // isClosed and discards it (see isClosed's doc comment).
-                isAutoMuted = false
+                await setMuted(false)
                 turnContinuation?.finish()
                 turnContinuation = nil
                 turnTask?.cancel()
@@ -432,10 +427,15 @@ public actor SessionCoordinator {
     private func handleSpeechEnd() async {
         guard machine.state == .listening else { return }
         guard (try? machine.handle(.speechEnd)) != nil else { return }
-        // machine.state is .waitingForReply from this point on -- see
-        // isAutoMuted's doc comment. Set here (not e.g. in captureAudio())
-        // since this is the one place that transition actually happens.
-        isAutoMuted = true
+        // machine.state is .waitingForReply from this point on -- "press
+        // the mute button" for the child, same as isMuted's doc comment
+        // describes, so a manual unmute during this window genuinely
+        // works (one shared flag, not a separate auto-mute OR'd on top).
+        // setMuted(true) itself calls back into handleSpeechEnd() -- safe,
+        // not infinite: machine.state is already .waitingForReply by the
+        // time that nested call runs, so its own top guard immediately
+        // no-ops it.
+        await setMuted(true)
         try? await connection.send(.speechEnd)
         let (turnStream, continuation) = AsyncStream<ServerConnectionEvent>.makeStream()
         turnContinuation = continuation
@@ -476,27 +476,28 @@ public actor SessionCoordinator {
                     stopWaitingDitty()
                     guard (try? machine.handle(.audioChunkReceived)) != nil else { return }
                     // machine.state is .speaking from this point on --
-                    // auto-unmute the instant real reply audio starts, so
-                    // barge-in works normally once there's something to
-                    // barge in on. A standing manual mute (isMuted) still
-                    // applies regardless -- see effectiveMute.
-                    isAutoMuted = false
+                    // "press the mute button" again to auto-unmute the
+                    // instant real reply audio starts, so barge-in works
+                    // normally once there's something to barge in on. If
+                    // the child already manually unmuted themselves during
+                    // the wait, this is a harmless no-op (already false).
+                    await setMuted(false)
                 }
                 await audio.play(pcm)
             case .message(.turnEnd(_)):
                 // Covers the empty-reply case: no .audio event ever
                 // arrives, so this is the only place left to stop a
                 // still-looping ditty for this turn -- and, for the same
-                // reason, the only place left to clear isAutoMuted if
-                // .speaking was never reached.
+                // reason, the only place left to auto-unmute if .speaking
+                // was never reached (the "waiting" is over either way).
                 stopWaitingDitty()
-                isAutoMuted = false
+                await setMuted(false)
                 _ = try? machine.handle(.turnEnd)
                 turnContinuation = nil
                 return
             case .message(.error(let text, _)):
                 stopWaitingDitty()
-                isAutoMuted = false
+                await setMuted(false)
                 lastErrorMessage = text
                 // Mirrors the server's own behavior: end the turn
                 // immediately rather than waiting for a turn_end the
@@ -514,7 +515,7 @@ public actor SessionCoordinator {
                 continue
             case .closed:
                 stopWaitingDitty()
-                isAutoMuted = false
+                await setMuted(false)
                 return
             }
         }
