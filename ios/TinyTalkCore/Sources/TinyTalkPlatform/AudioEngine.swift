@@ -55,7 +55,23 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     public init() throws {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker])
+            // .allowBluetoothA2DP: without this, iOS never routes playback
+            // to a Bluetooth device at all -- confirmed the reported
+            // "audio doesn't go through Bluetooth headphones" wasn't
+            // phone-specific, it's this. A2DP (not the plain .allowBluetooth
+            // HFP option) specifically routes OUTPUT to the headphones while
+            // leaving mic INPUT on the phone's own built-in mic -- keeps the
+            // capture path this whole app's VAD/AEC tuning was done against
+            // unchanged, and sidesteps HFP's much lower audio quality
+            // (narrowband, mono) that a lot of kids' Bluetooth headphones
+            // would otherwise impose on the TTS voice. Also makes AEC less
+            // load-bearing when active, not more: echo cancellation exists
+            // here to stop the phone's OWN speaker output from leaking into
+            // the phone's OWN mic -- with headphones, that leakage path
+            // doesn't exist in the first place.
+            try session.setCategory(
+                .playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothA2DP]
+            )
             try session.setActive(true)
         } catch {
             throw AudioEngineError.sessionConfigurationFailed(error)
