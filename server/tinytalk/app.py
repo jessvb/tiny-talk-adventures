@@ -110,11 +110,17 @@ async def serve() -> None:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
     logger.info(
-        "listening on ws://%s:%s (llm_backend=%s, model=%s)",
+        "listening on ws://%s:%s (llm_backend=%s, model=%s, think=%s)",
         config.SERVER_HOST,
         config.SERVER_PORT,
         config.LLM_BACKEND,
         config.GROQ_MODEL if config.LLM_BACKEND == "groq" else config.OLLAMA_MODEL,
+        # Groq doesn't have a "thinking" toggle in this codebase; only
+        # meaningful for the Ollama backend, but always shown for
+        # visibility -- confirming this at a glance (rather than only via
+        # request-body inspection) is exactly what would have saved a
+        # round of real debugging on 2026-08-25.
+        config.OLLAMA_THINK if config.LLM_BACKEND == "ollama" else "n/a",
     )
 
     # Built once and shared across every connection: each of these lazily

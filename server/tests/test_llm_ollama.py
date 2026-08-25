@@ -95,6 +95,36 @@ async def test_keep_alive_can_be_overridden_per_instance():
     [chunk async for chunk in llm.stream_reply([{"role": "user", "content": "hi"}])]
 
 
+async def test_stream_reply_sends_think_false_by_default(monkeypatch):
+    # qwen3.5 defaults to "thinking" mode -- confirmed on real hardware
+    # (2026-08-25, `ollama run qwen3.5:4b` directly) to spend 100+ lines
+    # and ~3m19s on internal reasoning before ever producing the actual
+    # reply, for a single short prompt. This app only needs 1-3 plain
+    # spoken sentences per turn, so thinking must be off by default, sent
+    # on every request (not something set once at Ollama server startup).
+    monkeypatch.setattr(config, "OLLAMA_THINK", False)
+    seen_think = "not set"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal seen_think
+        seen_think = json.loads(request.content)["think"]
+        return httpx.Response(200, text=chat_line("", done=True))
+
+    llm = OllamaLlm(transport=httpx.MockTransport(handler))
+    [chunk async for chunk in llm.stream_reply([{"role": "user", "content": "hi"}])]
+
+    assert seen_think is False
+
+
+async def test_think_can_be_overridden_per_instance():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["think"] is True
+        return httpx.Response(200, text=chat_line("", done=True))
+
+    llm = OllamaLlm(think=True, transport=httpx.MockTransport(handler))
+    [chunk async for chunk in llm.stream_reply([{"role": "user", "content": "hi"}])]
+
+
 async def test_stream_reply_raises_engine_error_when_ollama_is_down():
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)

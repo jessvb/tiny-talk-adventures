@@ -32,6 +32,16 @@ OLLAMA_MODEL = os.environ.get("TINYTALK_MODEL", "qwen3.5:4b")
 # happening. "30m" keeps the model warm across a realistic gap between a
 # child's turns without pinning the memory forever if the app sits idle.
 OLLAMA_KEEP_ALIVE = os.environ.get("TINYTALK_OLLAMA_KEEP_ALIVE", "30m")
+# qwen3.5 defaults to "thinking" mode -- a long internal chain-of-thought
+# (confirmed 2026-08-25 via `ollama run qwen3.5:4b` directly, bypassing
+# this app entirely: 100+ lines of thinking output, ~3m19s wall clock,
+# for a single short prompt) before it ever produces the actual reply.
+# This was the real root cause of the multi-minute/empty-reply latency,
+# not (only) memory pressure -- turning it off is a request-level flag,
+# not a different model. This app only ever needs 1-3 plain spoken
+# sentences per turn (see SYSTEM_PROMPT); the story doesn't benefit from
+# deep reasoning, so thinking is off by default.
+OLLAMA_THINK = os.environ.get("TINYTALK_OLLAMA_THINK", "false").strip().lower() == "true"
 
 # "ollama" (default, local/private) or "groq" (hosted, for A/B-testing
 # whether LLM speed is the actual latency bottleneck -- see llm_groq.py's
