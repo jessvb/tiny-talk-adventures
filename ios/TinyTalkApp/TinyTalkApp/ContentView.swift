@@ -29,6 +29,15 @@ final class AppModel: ObservableObject {
     /// single long-lived consumer task drains the stream strictly in order.
     private var micStreamContinuation: AsyncStream<Data>.Continuation?
     private var micConsumerTask: Task<Void, Never>?
+    /// True only when this app itself disconnected because it was
+    /// backgrounded WHILE actually connected -- see
+    /// handleAppBackgrounded()/handleAppForegrounded(). Distinguishes
+    /// "reconnect automatically, the user didn't ask for this" from a
+    /// disconnect the user chose themselves (tapped Disconnect) or one
+    /// the server side already caused (startPollingState()'s `closed`
+    /// handling) -- neither of those should be silently overridden by
+    /// auto-reconnecting the next time the app becomes active again.
+    private var shouldReconnectOnForeground = false
 
     init() {
         serverAddress = UserDefaults.standard.string(forKey: "serverAddress") ?? "ws://192.168.1.1:8765"
@@ -141,6 +150,37 @@ final class AppModel: ObservableObject {
         Task { await coordinatorToUpdate?.setMuted(newValue) }
     }
 
+    /// Called when the app is backgrounded (phone locked, user switches
+    /// apps, etc.) -- real on-device testing found the connection just
+    /// dying uncleanly in this situation (iOS suspends the app; the mic/
+    /// WebSocket/audio session don't get a chance to tear down properly,
+    /// and by the time the app is reopened it's sitting in a stale,
+    /// half-dead "Connected" state until the user notices and manually
+    /// disconnects/reconnects). Disconnecting up front here, the instant
+    /// backgrounding starts, is what makes that graceful instead of a
+    /// silent failure discovered later. A no-op if not currently
+    /// connected (nothing to tear down, and nothing to remember to
+    /// restore on return).
+    func handleAppBackgrounded() {
+        guard isConnected else { return }
+        shouldReconnectOnForeground = true
+        disconnect()
+    }
+
+    /// Called when the app returns to the foreground. Only reconnects if
+    /// handleAppBackgrounded() is what caused the prior disconnect --
+    /// never overrides a disconnect the user chose themselves, or one the
+    /// server side already caused. Reuses connect() as-is, so this gets
+    /// exactly the same permission/error handling a manual reconnect
+    /// would (e.g. if the Mac server or WiFi genuinely isn't reachable
+    /// anymore, this surfaces the same clear error connect() already
+    /// produces, rather than pretending to succeed).
+    func handleAppForegrounded() async {
+        guard shouldReconnectOnForeground else { return }
+        shouldReconnectOnForeground = false
+        await connect()
+    }
+
     private func startPollingState() {
         // Simple observation bridge from the actor's state to SwiftUI.
         // Fine for a bare-bones harness; not a pattern to scale up later.
@@ -199,6 +239,7 @@ final class AppModel: ObservableObject {
 
 struct ContentView: View {
     @StateObject private var model = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         VStack(spacing: 16) {
@@ -257,5 +298,24 @@ struct ContentView: View {
             Spacer()
         }
         .padding()
+        // Single-value closure (not the two-value oldValue/newValue form,
+        // which needs iOS 17+ -- this project's deployment target is 16,
+        // see project.yml) -- no need to compare against a previous
+        // phase anyway, since handleAppForegrounded() already guards
+        // internally on whether IT was the one that disconnected. Only
+        // .background (not the momentary .inactive that happens e.g.
+        // pulling down Control Center) triggers a disconnect -- reacting
+        // to .inactive too would disconnect/reconnect on every brief
+        // interruption, far more disruptive than the problem this fixes.
+        .onChange(of: scenePhase) { newPhase in
+            switch newPhase {
+            case .background:
+                model.handleAppBackgrounded()
+            case .active:
+                Task { await model.handleAppForegrounded() }
+            default:
+                break
+            }
+        }
     }
 }
