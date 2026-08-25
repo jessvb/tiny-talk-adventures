@@ -39,16 +39,28 @@ class OllamaLlm:
         model: str = config.OLLAMA_MODEL,
         host: str = config.OLLAMA_HOST,
         *,
+        keep_alive: str | None = None,
         transport: httpx.BaseTransport | None = None,
         timeout: float = 120.0,
     ) -> None:
+        # keep_alive resolved here, not bound as `= config.OLLAMA_KEEP_ALIVE`
+        # in the signature -- a signature default would freeze it at first
+        # import instead of picking up a test's monkeypatched config value,
+        # the same class-definition-time-binding bug GroqLlm's constructor
+        # was deliberately written to avoid for its own parameters.
         self._model = model
         self._host = host.rstrip("/")
+        self._keep_alive = keep_alive if keep_alive is not None else config.OLLAMA_KEEP_ALIVE
         self._transport = transport
         self._timeout = timeout
 
     async def stream_reply(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
-        body = {"model": self._model, "messages": messages, "stream": True}
+        body = {
+            "model": self._model,
+            "messages": messages,
+            "stream": True,
+            "keep_alive": self._keep_alive,
+        }
         try:
             async with httpx.AsyncClient(
                 timeout=self._timeout, transport=self._transport

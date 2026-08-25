@@ -13,6 +13,15 @@ SERVER_PORT = int(os.environ.get("TINYTALK_PORT", "8765"))
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("TINYTALK_MODEL", "qwen3.5:9b")
+# Ollama's own default is 5 minutes, after which it unloads the model and
+# the NEXT request has to reload it from disk (multiple GB) before it can
+# generate a single token -- under real memory pressure from STT+TTS
+# competing for the same machine's RAM, Ollama can evict it far more
+# aggressively than that. A sudden multi-minute reply, distinct from
+# normal (even if slow) token-generation speed, is the signature of this
+# happening. "30m" keeps the model warm across a realistic gap between a
+# child's turns without pinning the memory forever if the app sits idle.
+OLLAMA_KEEP_ALIVE = os.environ.get("TINYTALK_OLLAMA_KEEP_ALIVE", "30m")
 
 # "ollama" (default, local/private) or "groq" (hosted, for A/B-testing
 # whether LLM speed is the actual latency bottleneck -- see llm_groq.py's

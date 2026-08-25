@@ -3,6 +3,7 @@ import json
 import httpx
 import pytest
 
+from tinytalk import config
 from tinytalk.engines import EngineError
 from tinytalk.llm_ollama import OllamaLlm, parse_chat_line
 
@@ -58,6 +59,37 @@ async def test_stream_reply_yields_content_chunks_in_order():
 
     chunks = [chunk async for chunk in llm.stream_reply(messages)]
     assert chunks == ["Once ", "upon ", "a time."]
+
+
+async def test_stream_reply_sends_keep_alive_so_ollama_does_not_unload_the_model(monkeypatch):
+    # Ollama's default 5-minute keep_alive (and real behavior under memory
+    # pressure, which can be far more aggressive) means the model can get
+    # unloaded between a child's turns -- the next request then has to
+    # reload several GB from disk before it can generate a single token,
+    # producing a multi-minute reply that has nothing to do with genuine
+    # inference speed. This must be sent on every request, not just set
+    # once at Ollama server startup.
+    monkeypatch.setattr(config, "OLLAMA_KEEP_ALIVE", "30m")
+    seen_keep_alive = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal seen_keep_alive
+        seen_keep_alive = json.loads(request.content)["keep_alive"]
+        return httpx.Response(200, text=chat_line("", done=True))
+
+    llm = OllamaLlm(transport=httpx.MockTransport(handler))
+    [chunk async for chunk in llm.stream_reply([{"role": "user", "content": "hi"}])]
+
+    assert seen_keep_alive == "30m"
+
+
+async def test_keep_alive_can_be_overridden_per_instance():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["keep_alive"] == "-1"
+        return httpx.Response(200, text=chat_line("", done=True))
+
+    llm = OllamaLlm(keep_alive="-1", transport=httpx.MockTransport(handler))
+    [chunk async for chunk in llm.stream_reply([{"role": "user", "content": "hi"}])]
 
 
 async def test_stream_reply_raises_engine_error_when_ollama_is_down():
