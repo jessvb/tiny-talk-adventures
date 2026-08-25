@@ -88,6 +88,18 @@ async def handle_connection(
                 logger.exception("unexpected failure handling message")
                 await transport.send_text(encode_error("internal error", session.current_turn_id))
         await session.wait_for_turn()
+    except ConnectionClosed:
+        # `async for message in websocket` itself raises this when the
+        # connection drops abnormally mid-read (e.g. a keepalive ping
+        # timeout after the phone app backgrounds, or a WiFi hiccup) rather
+        # than via a clean close handshake -- distinct from
+        # WebSocketTransport._send's own ConnectionClosed handling, which
+        # only covers outgoing sends. A normal real-world occurrence, not a
+        # bug: the finally below still runs the exact same session cleanup
+        # as a clean disconnect. Caught here so it doesn't propagate as an
+        # unhandled exception and produce a scary traceback in the logs
+        # for something expected.
+        logger.info("connection dropped abnormally (not a clean close)")
     finally:
         await session.aclose()
         logger.info("client disconnected")

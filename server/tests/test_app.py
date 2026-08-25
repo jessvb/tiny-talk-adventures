@@ -5,6 +5,7 @@ from tinytalk.engines import EngineError
 from tinytalk.llm_groq import GroqLlm
 from tinytalk.llm_ollama import OllamaLlm
 from tinytalk.session import SessionRunner
+from websockets.exceptions import ConnectionClosedError
 
 
 class FakeWebSocket:
@@ -23,6 +24,21 @@ class FakeWebSocket:
 
     async def send(self, payload: str | bytes) -> None:
         self.sent.append(payload)
+
+
+class AbruptlyClosingWebSocket(FakeWebSocket):
+    """Raises ConnectionClosedError partway through iteration -- simulates
+    a keepalive ping timeout or WiFi drop, distinct from a clean close
+    handshake (which FakeWebSocket's generator already covers by just
+    running out of items)."""
+
+    def __aiter__(self):
+        async def generate():
+            for item in self._incoming:
+                yield item
+            raise ConnectionClosedError(None, None)
+
+        return generate()
 
 
 class BoomStt:
@@ -124,3 +140,25 @@ async def test_engine_failure_during_dispatch_sends_an_error_frame_and_keeps_the
     assert any(
         '"type": "error"' in frame and "stt exploded" in frame for frame in text_frames
     )
+
+
+async def test_abrupt_disconnect_is_handled_without_an_unhandled_exception():
+    # A keepalive ping timeout or WiFi drop raises ConnectionClosedError
+    # out of `async for message in websocket` itself, not just out of a
+    # send -- this must not propagate as an unhandled exception (which
+    # would otherwise produce a scary traceback in the logs for what is,
+    # in real-world mobile usage, an expected occurrence).
+    websocket = AbruptlyClosingWebSocket(
+        ['{"type": "speech_start", "turn_id": 1}', b"\x01\x02"]
+    )
+    stt = FakeStt()
+
+    def session_factory(transport):
+        return SessionRunner(
+            transport=transport, stt=stt, llm=FakeLlm(), tts=FakeTts(), system_prompt="be kind"
+        )
+
+    await handle_connection(websocket, session_factory=session_factory)  # must not raise
+
+    # Cleanup still ran exactly as it would on a clean disconnect.
+    assert stt.resets == 1
