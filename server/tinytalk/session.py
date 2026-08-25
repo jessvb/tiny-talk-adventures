@@ -34,6 +34,25 @@ from .story_arc import StoryArc
 
 logger = logging.getLogger(__name__)
 
+# Shown to the LLM (appended to the per-turn guidance) whenever STT heard
+# something -- the VAD's amplitude threshold fired, so a turn genuinely
+# started -- but transcribed no recognizable words: background noise,
+# fabric rustling against the mic, a bump. Real on-device testing found
+# this genuinely happens, and the old behavior (silently ending the turn
+# with no reply at all) read as the app breaking rather than mishearing.
+# Deliberately doesn't ask the model to say "I didn't understand you" or
+# similar -- from the child's perspective nothing went wrong, there's
+# just nothing new to react to, so the natural move is to nudge the story
+# forward using what's already happened, same as picking back up after a
+# pause.
+_STT_FAILURE_GUIDANCE = (
+    "You didn't hear anything new from the child just now -- it might "
+    "have been background noise. Don't mention this or ask them to "
+    "repeat themselves. Instead, gently continue the story yourself "
+    "using what's already happened, and end with an easy, inviting "
+    "question so they have a natural opening to jump back in."
+)
+
 
 class Transport(Protocol):
     async def send_text(self, payload: str) -> None: ...
@@ -199,11 +218,11 @@ class SessionRunner:
             )
             return
         await self._transport.send_text(encode_transcript_final(transcript, turn_id))
-        if not transcript.strip():
-            self._transition(Event.RESPONSE_READY)
-            self._transition(Event.TTS_DONE)
-            await self._transport.send_text(encode_turn_end(turn_id))
-            return
+        # An empty transcript still becomes a real turn (see
+        # _STT_FAILURE_GUIDANCE) rather than ending in silence -- the VAD
+        # already decided this was a genuine utterance attempt (that's how
+        # execution reached here at all), STT just couldn't make out
+        # words in it.
         self._spoken = []
         self._turn_task = asyncio.create_task(self._run_turn(transcript, turn_id))
 
@@ -269,8 +288,10 @@ class SessionRunner:
         # synthesis is the bottleneck before deciding what to optimize.
         turn_start = time.monotonic()
         try:
-            self._conversation.add_child(transcript)
+            self._conversation.add_child(transcript)  # no-op if transcript is empty
             guidance = self._story_arc.record_turn(transcript)
+            if not transcript.strip():
+                guidance = f"{guidance}\n\n{_STT_FAILURE_GUIDANCE}"
             messages = self._conversation.to_messages(
                 self._system_prompt + "\n\n" + guidance
             )

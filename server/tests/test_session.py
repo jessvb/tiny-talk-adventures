@@ -336,15 +336,34 @@ async def test_malformed_control_frame_is_reported_without_killing_the_session(t
     assert session.state is State.IDLE
 
 
-async def test_empty_transcript_ends_the_turn_without_calling_the_llm(transport):
-    llm = FakeLlm()
+async def test_empty_transcript_still_gets_a_graceful_llm_reply_instead_of_silence(transport):
+    # Real on-device bug: the VAD can fire on background noise/rustling
+    # long enough to start a turn, but STT then transcribes nothing --
+    # previously this ended the turn with dead silence, no reply at all.
+    llm = FakeLlm(chunks=["Just then, "])
     session = make_session(transport, stt=FakeStt(transcript="   "), llm=llm)
 
     await run_full_turn(session)
 
-    assert llm.calls == []
+    assert len(llm.calls) == 1, "an empty transcript must still get a real LLM reply, not silence"
+    system_message = llm.calls[0][0]
+    assert system_message["role"] == "system"
+    assert "didn't hear anything new" in system_message["content"]
+    # No fake child utterance was added to history for the empty transcript.
+    assert not any(turn.speaker == "child" for turn in session.conversation.turns)
     assert session.state is State.IDLE
-    assert "turn_end" in transport.types()
+    assert transport.types() == ["transcript_final", "response_text", "turn_end"]
+    assert transport.messages_of_type("transcript_final")[0]["text"] == "   "
+
+
+async def test_empty_transcript_does_not_add_a_child_turn_to_conversation_history(transport):
+    llm = FakeLlm(chunks=["Just then, "])
+    session = make_session(transport, stt=FakeStt(transcript=""), llm=llm)
+
+    await run_full_turn(session)
+
+    speakers = [turn.speaker for turn in session.conversation.turns]
+    assert speakers == ["agent"], "an empty transcript must not be recorded as a child turn"
 
 
 async def test_aclose_cancels_an_in_flight_turn(transport):
