@@ -18,6 +18,15 @@ public enum SessionEvent: Sendable, Equatable {
     case turnEnd
     case interrupt
     case disconnected
+    /// Reconnecting after a backgrounding-triggered disconnect that landed
+    /// mid-turn (the server was still generating a reply, or had already
+    /// finished one nobody heard) -- see SessionCoordinator.resume(). Lands
+    /// in .waitingForReply regardless of whether the app was backgrounded
+    /// while waiting or while already speaking: either way the server
+    /// replays the reply from its start (see replay_last_turn() on the
+    /// server), so the client re-enters exactly where a normal turn would
+    /// be right after speech_end.
+    case resumed
 }
 
 public enum InvalidTransition: Error, Equatable {
@@ -39,6 +48,7 @@ private let transitions: [TransitionKey: SessionState] = [
     TransitionKey(state: .listening, event: .interrupt): .listening,
     TransitionKey(state: .waitingForReply, event: .interrupt): .listening,
     TransitionKey(state: .speaking, event: .interrupt): .listening,
+    TransitionKey(state: .idle, event: .resumed): .waitingForReply,
     TransitionKey(state: .idle, event: .disconnected): .idle,
     TransitionKey(state: .listening, event: .disconnected): .idle,
     TransitionKey(state: .waitingForReply, event: .disconnected): .idle,

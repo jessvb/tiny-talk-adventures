@@ -58,6 +58,12 @@ public actor SessionCoordinator {
     private var currentTurnId = 0
 
     public var state: SessionState { machine.state }
+    /// Read-only mirror of currentTurnId -- AppModel polls this (alongside
+    /// state) so that if the app is backgrounded, it already knows which
+    /// turn to resume without needing an extra actor round-trip during the
+    /// narrow window iOS gives an app to react to being backgrounded. See
+    /// resume().
+    public var activeTurnId: Int { currentTurnId }
     public var latencyHistory: [InterruptLatency] { latencyLogger.history }
     /// Latest transcript_final/response_text/error text from the server,
     /// for a UI (e.g. the iOS client's poll loop) to surface -- see
@@ -437,6 +443,43 @@ public actor SessionCoordinator {
         // no-ops it.
         await setMuted(true)
         try? await connection.send(.speechEnd)
+        let (turnStream, continuation) = AsyncStream<ServerConnectionEvent>.makeStream()
+        turnContinuation = continuation
+        turnTask = Task { [weak self] in
+            await self?.runTurn(turnStream)
+        }
+        startWaitingDitty()
+    }
+
+    /// Re-enters .waitingForReply for a turn that was already in flight (or
+    /// already complete) on the server when this app was backgrounded --
+    /// call right after creating a fresh coordinator for a reconnect that
+    /// followed a backgrounding-triggered disconnect, and BEFORE calling
+    /// start(): this sets currentTurnId and starts turnTask listening on
+    /// turnContinuation before consumeServerEvents() (started by start())
+    /// exists to forward anything into it, so nothing the server replays
+    /// can be discarded as stale for arriving "too early". A no-op if this
+    /// coordinator is not freshly-.idle (only ever called on a fresh one in
+    /// practice).
+    ///
+    /// turnId must be whatever turn_id was active when the disconnect
+    /// happened (AppModel polls activeTurnId for exactly this) -- the
+    /// server stamps every replayed event with that same id, and
+    /// consumeServerEvents() discards anything whose turn_id doesn't match
+    /// currentTurnId.
+    ///
+    /// Deliberately identical whether the disconnect happened while
+    /// .waitingForReply or already .speaking: the server always replays a
+    /// held reply from its start (see replay_last_turn() on the server), so
+    /// there is nothing state-specific left to resume into -- both cases
+    /// are "wait for the reply to (re)arrive from the top."
+    public func resume(turnId: Int) async {
+        guard (try? machine.handle(.resumed)) != nil else { return }
+        currentTurnId = turnId
+        // "Press the mute button" for the wait, same as handleSpeechEnd() --
+        // there is nothing new to say until this replayed/resumed turn
+        // finishes.
+        await setMuted(true)
         let (turnStream, continuation) = AsyncStream<ServerConnectionEvent>.makeStream()
         turnContinuation = continuation
         turnTask = Task { [weak self] in

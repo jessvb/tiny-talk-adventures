@@ -379,9 +379,11 @@ async def test_aclose_cancels_an_in_flight_turn(transport):
 
 
 async def test_aclose_resets_stt_so_a_dropped_connection_cannot_leak_audio(transport):
-    # Engines are shared across connections in production (app.py) for
-    # loading cost reasons; a dropped connection must not leave stale
-    # buffered audio in the STT engine for the next connection to inherit.
+    # aclose() is for full session teardown (e.g. server shutdown), not an
+    # ordinary reconnect-expected disconnect -- see handle_disconnect()
+    # for that path. Engines are shared across connections in production
+    # (app.py) for loading cost reasons, so even a final teardown must not
+    # leave stale buffered audio in the STT engine behind.
     stt = FakeStt()
     session = make_session(transport, stt=stt)
 
@@ -391,6 +393,92 @@ async def test_aclose_resets_stt_so_a_dropped_connection_cannot_leak_audio(trans
 
     assert stt.resets == 1
     assert stt.fed == []
+
+
+async def test_handle_disconnect_mid_utterance_resets_stt_and_returns_to_idle(transport):
+    # A disconnect landing while still LISTENING (before speech_end ever
+    # arrived) means STT's own per-utterance reset -- normally triggered
+    # by finish() -- never fired. Unlike aclose(), this is the path an
+    # ordinary WebSocket drop takes (app.py's handle_connection), and it
+    # must still leave the session able to start a fresh utterance once
+    # the client reconnects.
+    stt = FakeStt()
+    session = make_session(transport, stt=stt)
+
+    await session.handle_text(SPEECH_START)
+    await session.handle_audio(b"\x01\x02")
+    await session.handle_disconnect()
+
+    assert stt.resets == 1
+    assert stt.fed == []
+    assert session.state is State.IDLE
+
+    # The session must be able to start a genuinely new utterance afterward.
+    await session.handle_text(SPEECH_START)
+    assert session.state is State.LISTENING
+
+
+async def test_handle_disconnect_while_waiting_for_reply_lets_the_turn_keep_running(transport):
+    # The core behavior this whole feature exists for: backgrounding the
+    # iOS app while waiting for a reply disconnects the client, but the
+    # reply must keep generating rather than being cancelled -- see
+    # replay_last_turn() for how it reaches the child later.
+    tts = FakeTts(delay=0.05)
+    session = make_session(transport, tts=tts)
+
+    await session.handle_text(SPEECH_START)
+    await session.handle_text(SPEECH_END)
+    await session.handle_disconnect()
+
+    assert tts.cancelled is False
+    await session.wait_for_turn()
+    assert transport.types() == ["transcript_final", "response_text", "turn_end"]
+    assert session.state is State.IDLE
+
+
+async def test_replay_last_turn_resends_the_buffered_reply_on_a_fresh_transport(transport):
+    other_transport = FakeTransport()
+    session = make_session(transport)
+
+    await run_full_turn(session)
+    session.rebind_transport(other_transport)
+    await session.replay_last_turn()
+
+    assert other_transport.types() == ["response_text", "turn_end"]
+    assert other_transport.audio == transport.audio
+
+
+async def test_replay_last_turn_is_a_no_op_when_nothing_is_buffered(transport):
+    session = make_session(transport)
+
+    await session.replay_last_turn()  # must not raise
+
+    assert transport.types() == []
+
+
+async def test_a_new_turn_clears_the_previous_turns_replay_buffer(transport):
+    llm = FakeLlm()
+    session = make_session(transport, llm=llm)
+
+    await run_full_turn(session)
+
+    other_transport = FakeTransport()
+    session.rebind_transport(other_transport)
+
+    llm.chunks = ["A dragon then!"]
+    await session.handle_text('{"type": "speech_start", "turn_id": 2}')
+    await session.handle_audio(b"\x03\x04")
+    await session.handle_text(SPEECH_END)
+    await session.wait_for_turn()
+
+    # A fresh reconnect at this point must replay only the SECOND turn, not
+    # a stale copy of the first one prepended to it.
+    yet_another_transport = FakeTransport()
+    session.rebind_transport(yet_another_transport)
+    await session.replay_last_turn()
+
+    assert yet_another_transport.messages_of_type("response_text")[0]["text"] == "A dragon then!"
+    assert len(yet_another_transport.messages_of_type("response_text")) == 1
 
 
 async def test_speech_start_mid_turn_is_treated_as_an_interrupt(transport):

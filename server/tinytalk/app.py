@@ -6,11 +6,9 @@ Binary frames are mic audio; text frames are JSON control messages.
 from __future__ import annotations
 
 import asyncio
-import functools
 import logging
 import os
 import signal
-from typing import Callable
 
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -54,6 +52,20 @@ class WebSocketTransport:
             logger.warning("could not send -- connection already closed")
 
 
+class NullTransport:
+    """Placeholder transport for the brief window between server startup and
+    the first real connection -- SessionRunner requires a transport at
+    construction time, but nothing can be in flight to send before any
+    client has ever connected. rebind_transport() replaces this with a real
+    WebSocketTransport on first connect and it is never used again."""
+
+    async def send_text(self, payload: str) -> None:  # pragma: no cover - unreachable
+        pass
+
+    async def send_bytes(self, payload: bytes) -> None:  # pragma: no cover - unreachable
+        pass
+
+
 def build_session(
     transport: Transport, *, stt: SttEngine, llm: LlmEngine, tts: TtsEngine
 ) -> SessionRunner:
@@ -69,11 +81,19 @@ def build_llm() -> LlmEngine:
 async def handle_connection(
     websocket,
     *,
-    session_factory: Callable[[Transport], SessionRunner],
+    session: SessionRunner,
 ) -> None:
+    """One call per WebSocket connection, but `session` is shared across all
+    of them (see serve()) -- a reconnect after the phone app was backgrounded
+    rebinds the SAME session onto the new socket rather than starting fresh,
+    so an in-flight or just-finished turn can still reach the child."""
     transport = WebSocketTransport(websocket)
-    session = session_factory(transport)
+    session.rebind_transport(transport)
     logger.info("client connected")
+    # Deliver anything left over from before this connection existed --
+    # a turn that finished (or made partial progress) while nobody was
+    # connected to hear it. A no-op if there's nothing buffered.
+    await session.replay_last_turn()
     try:
         async for message in websocket:
             try:
@@ -87,20 +107,6 @@ async def handle_connection(
             except Exception:  # noqa: BLE001 - one bad frame must not kill the socket
                 logger.exception("unexpected failure handling message")
                 await transport.send_text(encode_error("internal error", session.current_turn_id))
-        # Deliberately NOT session.wait_for_turn() here -- this used to
-        # await the in-flight turn to finish NATURALLY once the loop ends
-        # (i.e. once the client disconnects), rather than cancelling it.
-        # Confirmed on real hardware as a real bug, not just wasted
-        # compute: backgrounding the app while waiting for a reply
-        # disconnects the client (see the iOS client's scenePhase
-        # handling), but the OLD in-flight turn kept running regardless --
-        # a full LLM generation plus TTS synthesis (potentially 10s of
-        # seconds under real memory pressure) for a reply nobody would
-        # ever receive, every send silently failing and logging "could
-        # not send -- connection already closed" over and over. The
-        # `finally` block's aclose() already cancels any in-flight turn
-        # correctly (via _cancel_turn) -- reaching it immediately, instead
-        # of waiting here first, is what actually stops the wasted work.
     except ConnectionClosed:
         # `async for message in websocket` itself raises this when the
         # connection drops abnormally mid-read (e.g. a keepalive ping
@@ -114,7 +120,12 @@ async def handle_connection(
         # for something expected.
         logger.info("connection dropped abnormally (not a clean close)")
     finally:
-        await session.aclose()
+        # Deliberately session.handle_disconnect(), not session.aclose():
+        # an in-flight turn (e.g. the child backgrounded the app while
+        # waiting for a reply) must be left running, not cancelled -- see
+        # handle_disconnect()'s docstring. The session survives; only this
+        # one connection is going away.
+        await session.handle_disconnect()
         logger.info("client disconnected")
 
 
@@ -144,28 +155,39 @@ async def serve() -> None:
     # and KokoroTts both cache their model on first use per-instance, so a
     # new instance always pays that cost again). Sharing is safe because
     # none of the three carry cross-utterance state except KyutaiStt's
-    # buffer, which SessionRunner.aclose() resets on every disconnect. See
-    # the design spec's "Open questions / risks" for the separate, larger
-    # finding this benchmarking surfaced: running all three models
-    # concurrently is a real memory-pressure risk on a 16GB Mac, traced to
-    # Ollama's own inference rather than to engine construction here.
+    # buffer, which SessionRunner.handle_disconnect() resets when a
+    # disconnect lands mid-utterance. See the design spec's "Open questions
+    # / risks" for the separate, larger finding this benchmarking surfaced:
+    # running all three models concurrently is a real memory-pressure risk
+    # on a 16GB Mac, traced to Ollama's own inference rather than to engine
+    # construction here.
     stt = KyutaiStt()
     llm = build_llm()
     tts = KokoroTts()
-    session_factory = functools.partial(build_session, stt=stt, llm=llm, tts=tts)
+    # One SessionRunner for the server's whole lifetime, not one per
+    # connection -- see session.py's module docstring. This is what lets a
+    # reply survive the phone app being backgrounded and reconnecting:
+    # rebind_transport()/replay_last_turn() move it onto each new
+    # connection in turn, rather than a fresh, memory-less session starting
+    # over every time.
+    session = build_session(NullTransport(), stt=stt, llm=llm, tts=tts)
 
     # Tracks connection handler tasks currently in flight, so shutdown can
-    # wait for them to finish naturally instead of tearing the process down
-    # mid-computation. Confirmed on real hardware: Ctrl+C during an
-    # in-flight STT call (asyncio.to_thread, can run 5-20+ real seconds)
-    # does not stop that background thread -- ThreadPoolExecutor's own
-    # atexit handling makes the interpreter wait for it regardless,
-    # uncontrolled, and by the time it finishes the connection is usually
-    # already torn down, so the final send fails with a raw
-    # ConnectionClosedError -- observed to sometimes cascade into a native
-    # bus error crash. Waiting for it HERE, explicitly and visibly, is the
-    # same wait that was going to happen anyway, but keeps the connection
-    # alive long enough for that final send to actually succeed normally.
+    # wait for them to finish naturally instead of tearing an actively-
+    # connected client down mid-computation. Confirmed on real hardware:
+    # Ctrl+C during an in-flight STT call (asyncio.to_thread, can run
+    # 5-20+ real seconds) does not stop that background thread --
+    # ThreadPoolExecutor's own atexit handling makes the interpreter wait
+    # for it regardless, uncontrolled, and by the time it finishes the
+    # connection is usually already torn down, so the final send fails with
+    # a raw ConnectionClosedError -- observed to sometimes cascade into a
+    # native bus error crash. Waiting for it HERE, explicitly and visibly,
+    # is the same wait that was going to happen anyway, but keeps the
+    # connection alive long enough for that final send to actually succeed
+    # normally. This no longer covers an in-flight *turn* left running for
+    # an already-disconnected client (handle_disconnect() deliberately
+    # doesn't wait for those) -- the explicit session.aclose() below covers
+    # that instead.
     active_connections: set[asyncio.Task] = set()
 
     async def handler(websocket) -> None:
@@ -173,7 +195,7 @@ async def serve() -> None:
         assert task is not None
         active_connections.add(task)
         try:
-            await handle_connection(websocket, session_factory=session_factory)
+            await handle_connection(websocket, session=session)
         finally:
             active_connections.discard(task)
 
@@ -204,6 +226,11 @@ async def serve() -> None:
                 len(active_connections),
             )
             await asyncio.gather(*active_connections, return_exceptions=True)
+        # A turn left running for an already-disconnected client (see
+        # handle_disconnect()) isn't tied to any connection task, so the
+        # gather above doesn't wait for it -- cancel it explicitly here
+        # rather than abandoning it mid-computation as the process exits.
+        await session.aclose()
 
 
 def main() -> None:

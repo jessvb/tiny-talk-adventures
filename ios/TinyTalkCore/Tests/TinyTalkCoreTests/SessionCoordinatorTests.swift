@@ -1090,4 +1090,105 @@ final class SessionCoordinatorTests: XCTestCase {
 
         runLoop.cancel()
     }
+
+    /// resume() is what a fresh coordinator calls after reconnecting from a
+    /// backgrounding-triggered disconnect (see ContentView.swift's
+    /// AppModel.connect(resumingTurnId:)) -- the server replays the whole
+    /// reply for that turn_id from its start (see the server's
+    /// replay_last_turn()), and this coordinator must land exactly where a
+    /// normal turn would: .waitingForReply, muted, ready to play whatever
+    /// arrives and reach .idle on turn_end.
+    func testResumeEntersWaitingForReplyMutedAndPlaysTheReplayedReply() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+
+        await coordinator.resume(turnId: 7)
+
+        let stateAfterResume = await coordinator.state
+        XCTAssertEqual(stateAfterResume, .waitingForReply)
+        let mutedAfterResume = await coordinator.isMuted
+        XCTAssertTrue(mutedAfterResume, "resuming should mute the mic for the wait, same as a normal speechEnd")
+
+        // start() is only launched AFTER resume() returns -- mirrors
+        // AppModel.connect(resumingTurnId:)'s required ordering, and proves
+        // resume() itself doesn't depend on consumeServerEvents() already
+        // running.
+        let runLoop = Task { await coordinator.start() }
+
+        connection.emit(.message(.responseText("the fox found a key", turnId: 7)))
+        connection.emit(.audio(Data([5, 6, 7])))
+        connection.emit(.message(.turnEnd(turnId: 7)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let finalState = await coordinator.state
+        XCTAssertEqual(finalState, .idle)
+        let reply = await coordinator.lastReply
+        XCTAssertEqual(reply, "the fox found a key")
+        XCTAssertEqual(audio.played, [Data([5, 6, 7])])
+        let mutedAfterTurnEnd = await coordinator.isMuted
+        XCTAssertFalse(mutedAfterTurnEnd)
+
+        runLoop.cancel()
+    }
+
+    /// Regression guard for the ordering requirement in resume()'s doc
+    /// comment: events emitted on the connection BEFORE start() is ever
+    /// called (simulating the server replaying instantly on connect,
+    /// possibly before consumeServerEvents() has been scheduled to run)
+    /// must not be lost or misattributed -- AsyncStream buffers them, and
+    /// resume() having already set currentTurnId before start() runs is
+    /// what keeps them from being discarded as stale once they are read.
+    func testResumeDoesNotLoseEventsEmittedBeforeStartIsCalled() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+
+        await coordinator.resume(turnId: 3)
+        // Emitted before start() -- exercises AsyncStream's own buffering,
+        // not the coordinator's.
+        connection.emit(.message(.responseText("already generated", turnId: 3)))
+        connection.emit(.audio(Data([1])))
+        connection.emit(.message(.turnEnd(turnId: 3)))
+
+        let runLoop = Task { await coordinator.start() }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let finalState = await coordinator.state
+        XCTAssertEqual(finalState, .idle)
+        let reply = await coordinator.lastReply
+        XCTAssertEqual(reply, "already generated")
+        XCTAssertEqual(audio.played, [Data([1])])
+
+        runLoop.cancel()
+    }
+
+    /// A stale replay for a turn_id the client no longer cares about (e.g.
+    /// this coordinator was actually created to resume a LATER turn) must
+    /// be discarded like any other turn_id mismatch -- resume() participates
+    /// in the same currentTurnId gating as a normal turn, not a bypass of it.
+    func testResumeWithMismatchedTurnIdDiscardsTheReplayedEvents() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+
+        await coordinator.resume(turnId: 5)
+        let runLoop = Task { await coordinator.start() }
+
+        connection.emit(.message(.responseText("wrong turn", turnId: 4)))
+        connection.emit(.audio(Data([9])))
+        connection.emit(.message(.turnEnd(turnId: 4)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let reply = await coordinator.lastReply
+        XCTAssertEqual(reply, "", "a reply for a different turn_id must be discarded, not applied")
+        XCTAssertTrue(audio.played.isEmpty)
+        let state = await coordinator.state
+        XCTAssertEqual(state, .waitingForReply, "still waiting -- nothing matching turn_id 5 ever arrived")
+
+        runLoop.cancel()
+    }
 }

@@ -38,12 +38,24 @@ final class AppModel: ObservableObject {
     /// handling) -- neither of those should be silently overridden by
     /// auto-reconnecting the next time the app becomes active again.
     private var shouldReconnectOnForeground = false
+    /// Mirrors the coordinator's activeTurnId, updated by startPollingState()
+    /// at the same cadence as `state` -- see handleAppBackgrounded()'s doc
+    /// comment for why this is polled ahead of time rather than read
+    /// on-demand at the moment of backgrounding.
+    private var lastKnownTurnId = 0
+    /// Set by handleAppBackgrounded() when the backgrounded turn was still
+    /// live (.waitingForReply or .speaking) -- handleAppForegrounded() hands
+    /// this to connect(resumingTurnId:) so the reply that was in flight (or
+    /// already finished but never heard) can be resumed/replayed instead of
+    /// starting a silent fresh session. nil for a backgrounding that
+    /// happened while .idle or .listening, where there is nothing to resume.
+    private var pendingResumeTurnId: Int?
 
     init() {
         serverAddress = UserDefaults.standard.string(forKey: "serverAddress") ?? "ws://192.168.1.1:8765"
     }
 
-    func connect() async {
+    func connect(resumingTurnId: Int? = nil) async {
         UserDefaults.standard.set(serverAddress, forKey: "serverAddress")
         guard let url = URL(string: serverAddress) else {
             lastErrorMessage = "invalid server address"
@@ -70,6 +82,14 @@ final class AppModel: ObservableObject {
 
         let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad, waitingDittyAudio: WaitingDitty.audio)
         self.coordinator = coordinator
+        // Must happen BEFORE start() below: resume() sets up turnTask/
+        // currentTurnId synchronously so that once consumeServerEvents()
+        // (started by start()) begins reading connection.events(), nothing
+        // the server replays for this turn_id can be discarded as stale for
+        // arriving before anything was listening for it.
+        if let resumingTurnId {
+            await coordinator.resume(turnId: resumingTurnId)
+        }
         runLoop = Task { await coordinator.start() }
 
         let (micStream, micContinuation) = AsyncStream<Data>.makeStream()
@@ -161,9 +181,23 @@ final class AppModel: ObservableObject {
     /// silent failure discovered later. A no-op if not currently
     /// connected (nothing to tear down, and nothing to remember to
     /// restore on return).
+    ///
+    /// If a reply was in flight or already spoken when this happened
+    /// (.waitingForReply or .speaking), the SERVER keeps generating/holding
+    /// it regardless of this disconnect (see the server's
+    /// SessionRunner.handle_disconnect()) -- capturing lastKnownTurnId here
+    /// is what lets handleAppForegrounded() ask for it back instead of the
+    /// child returning to a silently-abandoned turn. Deliberately kept
+    /// synchronous (no actor round-trip to read fresh state) rather than
+    /// async: iOS gives an app only a short, unreliable window to run code
+    /// once backgrounding starts, and lastKnownTurnId/state are already
+    /// kept current by startPollingState() at a 100ms cadence, so a fresh
+    /// read here would risk not completing in time for no real accuracy
+    /// gain.
     func handleAppBackgrounded() {
         guard isConnected else { return }
         shouldReconnectOnForeground = true
+        pendingResumeTurnId = (state == .waitingForReply || state == .speaking) ? lastKnownTurnId : nil
         disconnect()
     }
 
@@ -174,11 +208,16 @@ final class AppModel: ObservableObject {
     /// exactly the same permission/error handling a manual reconnect
     /// would (e.g. if the Mac server or WiFi genuinely isn't reachable
     /// anymore, this surfaces the same clear error connect() already
-    /// produces, rather than pretending to succeed).
+    /// produces, rather than pretending to succeed). Passing
+    /// pendingResumeTurnId through is what turns this from a fresh, memory-
+    /// less reconnect into a resume of whatever the server was still
+    /// holding for the child.
     func handleAppForegrounded() async {
         guard shouldReconnectOnForeground else { return }
         shouldReconnectOnForeground = false
-        await connect()
+        let resumingTurnId = pendingResumeTurnId
+        pendingResumeTurnId = nil
+        await connect(resumingTurnId: resumingTurnId)
     }
 
     private func startPollingState() {
@@ -194,6 +233,7 @@ final class AppModel: ObservableObject {
                 let errorMessage = await coordinator.lastErrorMessage
                 let closed = await coordinator.isClosed
                 let muted = await coordinator.isMuted
+                let turnId = await coordinator.activeTurnId
                 // Returns "should this loop stop" as the closure's result,
                 // rather than mutating a captured local var, since
                 // MainActor.run's body is @Sendable and Swift 6 strict
@@ -206,6 +246,7 @@ final class AppModel: ObservableObject {
                     self.lastTranscript = transcript
                     self.lastReply = reply
                     self.isMicMuted = muted
+                    self.lastKnownTurnId = turnId
                     // Only overwrite with a real server error -- a nil here
                     // just means "no server error yet," and must not erase
                     // a client-side error (e.g. audio capture failing to
