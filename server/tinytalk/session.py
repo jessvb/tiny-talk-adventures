@@ -139,7 +139,13 @@ class SessionRunner:
             )
 
     async def wait_for_turn(self) -> None:
-        """Await the in-flight turn. Used by tests and on disconnect."""
+        """Await the in-flight turn to finish naturally. Test-only --
+        app.py's handle_connection deliberately does NOT call this on
+        disconnect (a real bug, since fixed): waiting here lets an
+        in-flight LLM/TTS call run to full, wasteful completion for a
+        client that already disconnected, instead of it being cancelled
+        promptly. See aclose()/_cancel_turn() for the real disconnect
+        path."""
         if self._turn_task is not None:
             await asyncio.gather(self._turn_task, return_exceptions=True)
 

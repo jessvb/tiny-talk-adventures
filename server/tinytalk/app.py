@@ -87,7 +87,20 @@ async def handle_connection(
             except Exception:  # noqa: BLE001 - one bad frame must not kill the socket
                 logger.exception("unexpected failure handling message")
                 await transport.send_text(encode_error("internal error", session.current_turn_id))
-        await session.wait_for_turn()
+        # Deliberately NOT session.wait_for_turn() here -- this used to
+        # await the in-flight turn to finish NATURALLY once the loop ends
+        # (i.e. once the client disconnects), rather than cancelling it.
+        # Confirmed on real hardware as a real bug, not just wasted
+        # compute: backgrounding the app while waiting for a reply
+        # disconnects the client (see the iOS client's scenePhase
+        # handling), but the OLD in-flight turn kept running regardless --
+        # a full LLM generation plus TTS synthesis (potentially 10s of
+        # seconds under real memory pressure) for a reply nobody would
+        # ever receive, every send silently failing and logging "could
+        # not send -- connection already closed" over and over. The
+        # `finally` block's aclose() already cancels any in-flight turn
+        # correctly (via _cancel_turn) -- reaching it immediately, instead
+        # of waiting here first, is what actually stops the wasted work.
     except ConnectionClosed:
         # `async for message in websocket` itself raises this when the
         # connection drops abnormally mid-read (e.g. a keepalive ping
