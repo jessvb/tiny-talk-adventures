@@ -456,13 +456,19 @@ async def test_replay_last_turn_is_a_no_op_when_nothing_is_buffered(transport):
     assert transport.types() == []
 
 
-async def test_replay_last_turn_only_replays_once_not_on_every_later_reconnect(transport):
-    # Real bug, found on real hardware: a turn that played out completely
-    # on a still-open connection (the child heard the whole reply live)
-    # left its buffer populated indefinitely -- only a NEW turn starting
-    # ever cleared it -- so a LATER, unrelated reconnect (long after
-    # already hearing it) silently replayed the same old reply again.
-    # replay_last_turn() must consume the buffer, not just read it.
+async def test_replay_last_turn_can_replay_to_multiple_reconnects_in_a_row(transport):
+    # Deliberate: replay_last_turn() does NOT consume the buffer. Real bug,
+    # found on real hardware, from an earlier version that DID consume it:
+    # a reconnect that itself dies quickly (e.g. the child backgrounding
+    # the app twice in a row) would use up the one replay attempt without
+    # the child ever actually hearing it -- silently losing the reply for
+    # good, since no later connection would get a turn at it. There is no
+    # reliable server-side signal for "the child genuinely heard this" (a
+    # send not raising doesn't mean it reached a live listener), so it's
+    # safer to keep replaying on every reconnect until a genuinely new
+    # utterance starts (see test_a_new_turn_clears_the_previous_turns_replay_buffer)
+    # than to risk losing a reply the child is actively still trying to
+    # catch up on.
     other_transport = FakeTransport()
     session = make_session(transport)
 
@@ -475,8 +481,9 @@ async def test_replay_last_turn_only_replays_once_not_on_every_later_reconnect(t
     session.rebind_transport(yet_another_transport)
     await session.replay_last_turn()
 
-    assert yet_another_transport.types() == [], (
-        "nothing left to replay -- the first replay already consumed the buffer"
+    assert yet_another_transport.types() == ["response_text", "turn_end"], (
+        "a second reconnect (e.g. the first one died before the child could "
+        "actually hear it) must still get the reply replayed"
     )
 
 

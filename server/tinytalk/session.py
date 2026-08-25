@@ -171,6 +171,7 @@ class SessionRunner:
         mid-turn -- the still-running turn task's own sends (guarded by
         _transport_lock, same as replay_last_turn()) will start reaching
         the new connection as soon as this returns."""
+        logger.info("transport rebound (session state=%s)", self._machine.state.name)
         self._transport = transport
 
     async def replay_last_turn(self) -> None:
@@ -184,21 +185,36 @@ class SessionRunner:
         preserved either way). A no-op if nothing is buffered -- e.g. a
         fresh session, or a turn already superseded by a new utterance.
 
-        Consumes the buffer: once resent here, it's cleared, so a LATER,
-        unrelated reconnect (e.g. the child backgrounds again long after
-        already hearing this reply in full) doesn't get the same old reply
-        replayed at them again out of nowhere. Real bug, found on real
-        hardware: a turn that played out completely on a still-open
-        connection left its buffer populated indefinitely (only a new turn
-        starting ever cleared it), so ANY later reconnect -- including one
-        with nothing to resume -- silently re-sent it. Harmless to the
-        turn_id-mismatch discard on a client that isn't resuming, but pure
-        waste, and genuinely wrong on a client that IS resuming a
-        DIFFERENT, newer turn than whatever's still sitting in the buffer.
+        Deliberately does NOT clear the buffer after replaying -- an
+        earlier version did, on the theory that a reply already fully
+        heard live shouldn't be replayed again to some later, unrelated
+        reconnect (real annoyance, confirmed on real hardware). That
+        traded a mild annoyance for a worse bug, also confirmed on real
+        hardware: a connection that itself dies quickly after reconnecting
+        (e.g. the child backgrounding the app twice in a row) would
+        consume the ONE replay attempt without ever actually getting to
+        hear it, silently losing the reply for good -- no other connection
+        would ever get a turn at it. There is no reliable server-side
+        signal for "the child genuinely heard this" (a send not raising
+        does not mean it reached a live listener -- see WebSocketTransport
+        -- so a connection can go quiet for a long time before the server
+        even notices it is gone). Given that, losing a reply the child is
+        actively still trying to catch up on is worse than occasionally
+        replaying one they already heard, so this only ever gets
+        forgotten once a genuinely new utterance starts (see
+        _finish_listening's buffer reset) -- the one unambiguous signal
+        that the child is not waiting on this reply anymore.
         """
         async with self._transport_lock:
-            buffered, self._turn_replay_buffer = self._turn_replay_buffer, []
-            for kind, payload in buffered:
+            if not self._turn_replay_buffer:
+                logger.debug("replay_last_turn: nothing buffered")
+                return
+            logger.info(
+                "replaying %d buffered item(s) for turn_id=%s to the new connection",
+                len(self._turn_replay_buffer),
+                self._current_turn_id,
+            )
+            for kind, payload in self._turn_replay_buffer:
                 if kind == "text":
                     await self._transport.send_text(payload)
                 else:
@@ -226,6 +242,12 @@ class SessionRunner:
         speech_end/stt.finish() ever ran) means STT's own per-utterance
         reset -- normally triggered by finish() -- never fired, which would
         otherwise leak partial audio into whatever the child says next."""
+        logger.info(
+            "handling disconnect (session state=%s, turn in flight=%s, replay buffer=%d item(s))",
+            self._machine.state.name,
+            self._turn_task is not None and not self._turn_task.done(),
+            len(self._turn_replay_buffer),
+        )
         if self._machine.state is State.LISTENING:
             self._stt.reset()
             self._transition(Event.ABANDON)

@@ -177,12 +177,16 @@ async def test_reconnecting_after_a_disconnect_mid_turn_replays_the_buffered_rep
     assert audio_frames, "the reply's audio must be replayed too, not just its text"
 
 
-async def test_a_third_connection_does_not_get_the_same_reply_replayed_again():
-    # Real bug, found on real hardware: a reply that already replayed
-    # successfully to a reconnect kept sitting in the buffer (only a new
-    # turn starting ever cleared it), so a LATER, unrelated reconnect --
-    # with nothing new to say -- silently got the same old reply replayed
-    # at it again.
+async def test_a_third_connection_still_gets_the_reply_replayed_if_the_second_died_fast():
+    # Real bug, found on real hardware: an EARLIER version consumed the
+    # replay buffer on first use, so a reconnect that itself died quickly
+    # (e.g. the child backgrounding the app twice in a row, each time
+    # before the reply could actually finish playing) burned the one
+    # replay attempt without the child ever hearing it -- silently losing
+    # the reply for good. The buffer must survive across as many flaky
+    # reconnects as it takes, forgotten only once a genuinely new
+    # utterance starts (see test_a_new_turn_clears_the_previous_turns_replay_buffer
+    # in test_session.py).
     first_socket = FakeWebSocket(
         ['{"type": "speech_start", "turn_id": 1}', b"\x01\x02", '{"type": "speech_end"}']
     )
@@ -203,7 +207,10 @@ async def test_a_third_connection_does_not_get_the_same_reply_replayed_again():
     third_socket = FakeWebSocket([])
     await handle_connection(third_socket, session=session)
 
-    assert third_socket.sent == [], "nothing left to replay -- the second connection already consumed it"
+    assert third_socket.sent, (
+        "the third connection must still get the reply -- the second one dying "
+        "fast must not have burned the only replay attempt"
+    )
 
 
 async def test_engine_failure_during_dispatch_sends_an_error_frame_and_keeps_the_socket_open():
