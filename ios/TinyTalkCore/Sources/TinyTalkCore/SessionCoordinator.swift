@@ -474,8 +474,12 @@ public actor SessionCoordinator {
     /// there is nothing state-specific left to resume into -- both cases
     /// are "wait for the reply to (re)arrive from the top."
     public func resume(turnId: Int) async {
-        guard (try? machine.handle(.resumed)) != nil else { return }
+        guard (try? machine.handle(.resumed)) != nil else {
+            print("SessionCoordinator: resume(turnId: \(turnId)) ignored -- not fresh/.idle (state=\(machine.state))")
+            return
+        }
         currentTurnId = turnId
+        print("SessionCoordinator: resumed into .waitingForReply for turn_id=\(turnId)")
         // "Press the mute button" for the wait, same as handleSpeechEnd() --
         // there is nothing new to say until this replayed/resumed turn
         // finishes.

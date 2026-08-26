@@ -1,6 +1,7 @@
 import SwiftUI
 import TinyTalkCore
 import TinyTalkPlatform
+import UIKit
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -83,7 +84,10 @@ final class AppModel: ObservableObject {
         // the server replays for this turn_id can be discarded as stale for
         // arriving before anything was listening for it.
         if let resumingTurnId {
+            print("AppModel: resuming turn_id=\(resumingTurnId)")
             await coordinator.resume(turnId: resumingTurnId)
+        } else {
+            print("AppModel: fresh connect, no turn to resume")
         }
         runLoop = Task { await coordinator.start() }
 
@@ -187,21 +191,31 @@ final class AppModel: ObservableObject {
     /// 100ms by startPollingState() -- close enough for UI display, but a
     /// real gap for a one-shot decision made right as a turn transitions
     /// into .waitingForReply, which is exactly when backgrounding is most
-    /// likely to happen: confirmed on-device as the resumed ditty
-    /// sometimes silently not coming back at all, consistent with this
-    /// race occasionally losing the turn id and falling back to a plain,
-    /// memory-less reconnect). Async now, reading the coordinator's actual
-    /// live state directly -- an actor property read is microseconds, well
-    /// within the window iOS gives an app to react to being backgrounded.
+    /// likely to happen). Switching this to an async, live actor read
+    /// (rather than the stale polled value) was NOT sufficient on its own
+    /// -- confirmed on real hardware (server logs showing a replayed reply
+    /// discarded because the client's turn id was still 0, i.e. resume()
+    /// was never even called) that the two actor reads below can still
+    /// lose the race against iOS actually suspending the app, despite each
+    /// individually being microseconds of work. beginBackgroundTask is
+    /// Apple's own mechanism for "let this short critical section finish
+    /// before suspending" -- requesting it here removes the guesswork
+    /// about whether there's enough time, rather than hoping the OS
+    /// schedules this Task promptly enough on its own.
     func handleAppBackgrounded() async {
         guard isConnected, let coordinator else { return }
         shouldReconnectOnForeground = true
+
+        let backgroundTaskId = UIApplication.shared.beginBackgroundTask(withName: "handleAppBackgrounded")
+        defer { UIApplication.shared.endBackgroundTask(backgroundTaskId) }
+
         let liveState = await coordinator.state
         if liveState == .waitingForReply || liveState == .speaking {
             pendingResumeTurnId = await coordinator.activeTurnId
         } else {
             pendingResumeTurnId = nil
         }
+        print("AppModel: backgrounded while \(liveState) -- pendingResumeTurnId=\(String(describing: pendingResumeTurnId))")
         disconnect()
     }
 
@@ -221,6 +235,7 @@ final class AppModel: ObservableObject {
         shouldReconnectOnForeground = false
         let resumingTurnId = pendingResumeTurnId
         pendingResumeTurnId = nil
+        print("AppModel: foregrounded -- reconnecting with resumingTurnId=\(String(describing: resumingTurnId))")
         await connect(resumingTurnId: resumingTurnId)
     }
 
