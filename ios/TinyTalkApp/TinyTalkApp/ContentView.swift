@@ -103,7 +103,7 @@ final class AppModel: ObservableObject {
             // micContinuation is a value type (AsyncStream.Continuation is a
             // struct), so capturing it here does not retain `self` or the
             // coordinator -- no weak-capture is needed or possible.
-            try audio.startCapturing { pcm in
+            try await audio.startCapturing { pcm in
                 micContinuation.yield(pcm)
             }
         } catch {

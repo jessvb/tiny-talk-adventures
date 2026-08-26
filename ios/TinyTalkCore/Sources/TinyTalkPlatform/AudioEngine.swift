@@ -175,7 +175,7 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     /// uses. Exact tap buffer size and the real-time-thread -> caller
     /// hand-off mechanism are tuned during on-device testing in Task 8;
     /// AVAudioConverter is the right tool for the format conversion itself.
-    public func startCapturing(onAudioCaptured: @escaping @Sendable (Data) -> Void) throws {
+    public func startCapturing(onAudioCaptured: @escaping @Sendable (Data) -> Void) async throws {
         self.onAudioCaptured = onAudioCaptured
 
         // Confirmed on-device (real iPhone 13 Pro): enabling voice
@@ -202,7 +202,29 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             self?.rebuildCaptureTap()
         }
 
-        try installCaptureTapAndStart()
+        // A plain single `try installCaptureTapAndStart()` here used to be
+        // fatal on the very first attempt: right after a backgrounding-
+        // triggered reconnect, the input format can genuinely still be
+        // invalid (see installCaptureTapAndStart()'s own format-validity
+        // guard) for a brief window while the route settles -- confirmed
+        // on real hardware as a "could not start audio capture" error that
+        // gave up and disconnected immediately, even though the SAME
+        // condition resolves itself moments later for the
+        // AVAudioEngineConfigurationChange-driven retries in
+        // rebuildCaptureTap() below. This is that same retry, just for the
+        // very first attempt, which has no notification to fall back on.
+        var lastError: Error?
+        for attempt in 1...8 {
+            do {
+                try installCaptureTapAndStart()
+                return
+            } catch {
+                lastError = error
+                print("RealAudioEngine: startCapturing attempt \(attempt)/8 failed: \(error)")
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+        }
+        throw lastError!
     }
 
     /// (Re)installs the mic tap against the input node's CURRENT format and
@@ -337,8 +359,18 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
 
     public func play(_ pcm: Data) async {
         guard let buffer = pcmDataToBuffer(pcm) else { return }
-        if !engine.isRunning {
-            try? engine.start()
+        guard await ensureEngineRunning() else {
+            // Giving up and returning here (rather than scheduling the
+            // buffer anyway) is deliberate: playerNode.play() with the
+            // engine not actually running never fires scheduleBuffer's
+            // completion handler (confirmed on real hardware: "Engine is
+            // not running... Cannot play yet!", with the awaiting
+            // continuation left hanging forever) -- which wedges whichever
+            // caller is awaiting this play() call permanently. The
+            // waiting-ditty's own retry loop (`while !Task.isCancelled {
+            // await audio.play(...) }`) will simply call play() again.
+            print("RealAudioEngine: engine never started -- dropping this play() call rather than hanging forever")
+            return
         }
         await withCheckedContinuation { continuation in
             playerNode.scheduleBuffer(buffer) {
@@ -348,6 +380,29 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
                 playerNode.play()
             }
         }
+    }
+
+    /// Retries engine.start() a handful of times with a short delay between
+    /// attempts, rather than one attempt with its error silently discarded
+    /// (the previous behavior). Confirmed on real hardware: right after a
+    /// backgrounding-triggered reconnect, engine.start() can genuinely fail
+    /// -- not just throw and succeed moments later on its own -- while the
+    /// audio route is still settling (the same class of issue as
+    /// installCaptureTapAndStart()'s transiently-invalid-format guard, here
+    /// on the playback side). A handful of short retries gives the route a
+    /// real chance to settle before play() gives up on this buffer.
+    private func ensureEngineRunning() async -> Bool {
+        if engine.isRunning { return true }
+        for attempt in 1...8 {
+            do {
+                try engine.start()
+                return true
+            } catch {
+                print("RealAudioEngine: engine.start() attempt \(attempt)/8 failed: \(error)")
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+        }
+        return false
     }
 
     /// Converts wire-format (24kHz mono Int16 LE) bytes into an
