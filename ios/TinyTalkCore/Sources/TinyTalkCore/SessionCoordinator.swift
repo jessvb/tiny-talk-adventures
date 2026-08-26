@@ -473,6 +473,20 @@ public actor SessionCoordinator {
     /// held reply from its start (see replay_last_turn() on the server), so
     /// there is nothing state-specific left to resume into -- both cases
     /// are "wait for the reply to (re)arrive from the top."
+    ///
+    /// Deliberately does NOT start the waiting ditty itself -- see
+    /// startResumedWaitingDitty(), which the caller (AppModel.connect(
+    /// resumingTurnId:)) invokes separately, only after mic capture has
+    /// been started. Confirmed on real hardware: calling play() (and so
+    /// engine.start()) before the mic capture pipeline has ever configured
+    /// RealAudioEngine's input side reliably fails with an input/output
+    /// sample-rate mismatch inside CoreAudio's voice-processing unit --
+    /// every retry attempt failed identically, unlike the transient
+    /// "route still settling" case RealAudioEngine's own retries already
+    /// handle. This method still sets currentTurnId and starts turnTask
+    /// listening on turnContinuation synchronously, before start() is
+    /// called, for the reason described above -- only the ditty's first
+    /// play() call needed to move later.
     public func resume(turnId: Int) async {
         guard (try? machine.handle(.resumed)) != nil else {
             print("SessionCoordinator: resume(turnId: \(turnId)) ignored -- not fresh/.idle (state=\(machine.state))")
@@ -489,6 +503,17 @@ public actor SessionCoordinator {
         turnTask = Task { [weak self] in
             await self?.runTurn(turnStream)
         }
+    }
+
+    /// Starts the waiting-ditty loop for a turn resume() already set up --
+    /// split out for ordering reasons only, see resume()'s doc comment.
+    /// Guards on still being .waitingForReply since, by the time the
+    /// caller gets around to calling this (after mic capture has started,
+    /// which can itself take a couple of seconds under real hardware's own
+    /// retry logic), the resumed reply may have already arrived and moved
+    /// playback past the point where a ditty makes sense.
+    public func startResumedWaitingDitty() {
+        guard machine.state == .waitingForReply else { return }
         startWaitingDitty()
     }
 

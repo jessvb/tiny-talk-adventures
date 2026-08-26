@@ -1191,4 +1191,64 @@ final class SessionCoordinatorTests: XCTestCase {
 
         runLoop.cancel()
     }
+
+    /// resume() deliberately does NOT start the waiting ditty itself --
+    /// confirmed on real hardware that calling play() (and so
+    /// engine.start()) before mic capture has ever configured
+    /// RealAudioEngine's input side reliably fails with an input/output
+    /// sample-rate mismatch. startResumedWaitingDitty() is the separate
+    /// call AppModel makes only after mic capture has started.
+    func testResumeDoesNotStartTheDittyOnItsOwn() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let ditty = Data([1, 1, 1])
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad, waitingDittyAudio: ditty)
+
+        await coordinator.resume(turnId: 1)
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertTrue(audio.played.isEmpty, "resume() alone must not play anything yet")
+    }
+
+    func testStartResumedWaitingDittyStartsItAfterResume() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let ditty = Data([1, 1, 1])
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad, waitingDittyAudio: ditty)
+
+        await coordinator.resume(turnId: 1)
+        await coordinator.startResumedWaitingDitty()
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertTrue(audio.played.contains(ditty), "the ditty should be looping once explicitly started")
+    }
+
+    /// If the resumed reply has already fully arrived by the time the
+    /// caller gets around to starting the ditty (mic capture's own retry
+    /// logic can take a couple of seconds on real hardware), there is
+    /// nothing left to wait for -- starting the ditty at that point would
+    /// just be a spurious chime after (or during) the real reply.
+    func testStartResumedWaitingDittyIsANoOpIfTheTurnAlreadyFinished() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let ditty = Data([1, 1, 1])
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad, waitingDittyAudio: ditty)
+
+        await coordinator.resume(turnId: 1)
+        let runLoop = Task { await coordinator.start() }
+        connection.emit(.message(.responseText("hi", turnId: 1)))
+        connection.emit(.audio(Data([9])))
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        await coordinator.startResumedWaitingDitty()
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertFalse(audio.played.contains(ditty), "no ditty once the resumed turn has already ended")
+
+        runLoop.cancel()
+    }
 }

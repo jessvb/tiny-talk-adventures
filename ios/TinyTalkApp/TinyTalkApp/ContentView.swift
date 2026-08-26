@@ -82,7 +82,10 @@ final class AppModel: ObservableObject {
         // currentTurnId synchronously so that once consumeServerEvents()
         // (started by start()) begins reading connection.events(), nothing
         // the server replays for this turn_id can be discarded as stale for
-        // arriving before anything was listening for it.
+        // arriving before anything was listening for it. Deliberately does
+        // NOT start the waiting ditty yet -- see the startResumedWaitingDitty()
+        // call further down, and resume()'s own doc comment, for why that
+        // has to wait until after mic capture has configured the engine.
         if let resumingTurnId {
             print("AppModel: resuming turn_id=\(resumingTurnId)")
             await coordinator.resume(turnId: resumingTurnId)
@@ -117,6 +120,17 @@ final class AppModel: ObservableObject {
             lastErrorMessage = "could not start audio capture: \(error.localizedDescription). Check Settings > Privacy > Microphone."
             disconnect()
             return
+        }
+
+        // Only now -- after startCapturing() has configured
+        // RealAudioEngine's input side -- is it safe to start the waiting
+        // ditty (the first thing that calls play()/engine.start()).
+        // Confirmed on real hardware: calling play() any earlier than this
+        // reliably fails with an input/output sample-rate mismatch inside
+        // CoreAudio's voice-processing unit, every single retry attempt,
+        // regardless of how long play()'s own retry loop waits.
+        if resumingTurnId != nil {
+            await coordinator.startResumedWaitingDitty()
         }
 
         isConnected = true
