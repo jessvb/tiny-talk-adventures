@@ -221,6 +221,31 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         // this returns), which is exactly why using the wrong one was
         // invisible until voice processing was enabled above.
         let hardwareFormat = inputNode.outputFormat(forBus: 0)
+        // Confirmed reachable on real hardware (observed under Xcode's
+        // debugger, where a slower-attached process widens the window, but
+        // nothing about the mechanism is Xcode-specific): a rapid run of
+        // AVAudioEngineConfigurationChange notifications -- e.g. voice
+        // processing's graph rebuild landing back-to-back with a genuine
+        // route change -- can report a transiently invalid 0Hz/0-channel
+        // format for the input node BETWEEN two valid ones, while the route
+        // is still being renegotiated. AVAudioConverter's initializer does
+        // NOT reject this format (confirmed: it succeeded here), but
+        // installTap(format:) does -- via an uncaught Objective-C
+        // NSException, not a Swift error, so `try` cannot catch it and the
+        // process crashes outright ('required condition is false:
+        // IsFormatSampleRateAndChannelCountValid'). Checking explicitly and
+        // bailing out via a normal Swift error is what turns that crash
+        // into a safe no-op: another AVAudioEngineConfigurationChange
+        // notification reliably follows once the route actually settles,
+        // and rebuildCaptureTap() retries then.
+        guard hardwareFormat.sampleRate > 0, hardwareFormat.channelCount > 0 else {
+            throw AudioEngineError.captureStartFailed(
+                NSError(domain: "RealAudioEngine", code: 2, userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "input hardware format not yet valid (\(hardwareFormat)) -- route still settling",
+                ])
+            )
+        }
         guard let converter = AVAudioConverter(from: hardwareFormat, to: wireFormat) else {
             throw AudioEngineError.captureStartFailed(
                 NSError(domain: "RealAudioEngine", code: 1, userInfo: [
