@@ -166,6 +166,19 @@ this README assumes the venv is active. If you see `command not found` for
 something Python-related, the venv is probably not active — run the
 activation command above.
 
+**Optional: animal facts API key.** Real animal facts get woven into the
+story when the child mentions a known animal (fox, elephant, dolphin, and
+others — see `server/tinytalk/animal_facts.py`), fetched from a free
+[API Ninjas](https://api-ninjas.com) account (100 requests/hour free tier).
+Sign up, then export the key before starting the server:
+
+```bash
+export ANIMAL_FACTS_API_KEY=your-key-here
+```
+
+Without it, animal fact lookups silently no-op — the story still works
+fine, it just never gets fact-grounding for the animals it mentions.
+
 Then, three terminals:
 
 **Terminal 1 — Ollama:**
