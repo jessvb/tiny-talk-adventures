@@ -34,8 +34,6 @@ def test_find_new_animal_does_not_match_substrings():
     assert find_new_animal("the foxglove flowers bloomed", set()) is None
 
 
-import json
-
 from tinytalk.animal_facts import _load_cache, _save_cache
 
 
@@ -115,7 +113,6 @@ def test_extract_facts_returns_empty_list_when_no_characteristics():
 
 
 import httpx
-import pytest
 
 from tinytalk import config
 from tinytalk.animal_facts import _fetch_facts_from_api
@@ -186,6 +183,8 @@ async def test_fetch_facts_from_api_returns_none_for_a_non_object_record(monkeyp
     assert facts is None
 
 
+import random
+
 from tinytalk.animal_facts import get_fact
 
 
@@ -246,6 +245,7 @@ async def test_get_fact_does_not_cache_on_api_failure(tmp_path, monkeypatch):
 
 
 async def test_get_fact_picks_randomly_among_multiple_cached_facts(tmp_path, monkeypatch):
+    random.seed(0)  # otherwise ~0.09% of runs draw the same fact all 20 times by chance
     monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "test-key")
     cache_path = tmp_path / "animal_facts.json"
     _save_cache({"fox": ["fact one", "fact two", "fact three"]}, cache_path)

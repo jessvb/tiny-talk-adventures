@@ -179,7 +179,7 @@ _API_HOST = "https://api.api-ninjas.com"
 async def _fetch_facts_from_api(
     canonical_name: str,
     *,
-    transport: httpx.BaseTransport | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
     timeout: float = 4.0,
 ) -> list[str] | None:
     """Calls API Ninjas' Animals endpoint for canonical_name. Returns a
@@ -229,7 +229,7 @@ async def get_fact(
     canonical_name: str,
     *,
     cache_path: Path | None = None,
-    transport: httpx.BaseTransport | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
 ) -> str | None:
     """Returns one random fact about canonical_name, or None if none is
     available. Checks the on-disk cache first; on a miss, calls the API
@@ -258,8 +258,8 @@ async def get_fact(
 
 
 _WEAVE_IN_TEMPLATE = (
-    "The story just mentioned a {animal}. Weave this real fact about "
-    "{animal}s naturally into what happens next, as part of the action -- "
+    "The story just mentioned a {animal}. Weave this real fact about the "
+    "{animal} naturally into what happens next, as part of the action -- "
     "don't just state it as trivia: {fact}"
 )
 

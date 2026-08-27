@@ -566,6 +566,10 @@ async def test_reaching_story_done_saves_and_resets_conversation_and_arc(transpo
     # no memory of the finished one.
     assert session.conversation.turns == ()
     assert session._story_arc.is_done is False, "the story arc must be a fresh instance, not the same already-done one"
+    # The turn's transcript ("tell me about a fox", FakeStt's default) mentions
+    # an animal, so a non-reset tracker would still have _any_animal_mentioned
+    # set to True here.
+    assert session._animal_facts._any_animal_mentioned is False, "the animal fact tracker must be a fresh instance too"
 
 
 async def test_interrupting_a_concluding_turn_defers_save_and_reset_to_the_next_completed_turn(transport, monkeypatch):
