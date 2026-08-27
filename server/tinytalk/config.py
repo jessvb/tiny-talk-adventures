@@ -25,6 +25,12 @@ GROQ_HOST = os.environ.get("GROQ_HOST", "https://api.groq.com")
 # this default.
 GROQ_MODEL = os.environ.get("TINYTALK_GROQ_MODEL", "llama-3.1-8b-instant")
 
+# Free sign-up at https://api-ninjas.com (100 requests/hour free tier) --
+# used only on the first-ever mention of a given animal; every later
+# mention, in any story, is an instant local cache lookup with no network
+# call. See animal_facts.py.
+ANIMAL_FACTS_API_KEY = os.environ.get("ANIMAL_FACTS_API_KEY", "")
+
 STT_HF_REPO = os.environ.get("TINYTALK_STT_REPO", "kyutai/stt-2.6b-en-mlx")
 
 KOKORO_LANG_CODE = os.environ.get("TINYTALK_TTS_LANG", "a")
