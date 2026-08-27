@@ -162,6 +162,27 @@ def test_filter_replaces_reproduction_content_with_fallback():
     assert filter_reply("Foxes are mating right now.") == SAFE_FALLBACK
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Let's talk about sex.",
+        "That website has sexual content.",
+        "He was watching porn.",
+        "That's a porno movie.",
+        "It's a pornography site.",
+        "The image was pornographic.",
+        "She was nude in the painting.",
+        "The statue depicts nudity.",
+        "The scene was erotic.",
+        "He started to masturbate.",
+        "Masturbation is a private act.",
+        "She had an orgasm.",
+    ],
+)
+def test_explicit_sexual_content_is_unsafe(text):
+    assert is_safe(text) is False
+
+
 def test_bare_mate_and_breed_nouns_are_not_blocked():
     # "mate" and "breed" were trimmed from _REPRODUCTION: the gerund/verb/
     # adjective forms (mating, breeding, pregnant, ...) already cover real

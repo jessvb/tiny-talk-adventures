@@ -82,9 +82,11 @@ _REAL_WORLD_DANGER = (
     "jump off a cliff",
 )
 
-# Real animal facts mention this far more often than ordinary story
-# dialogue ever does -- confirmed, while designing this feature, that
-# none of the existing five categories had any coverage for it.
+# Real animal facts mention mating/breeding/pregnancy far more often than
+# ordinary story dialogue ever does -- confirmed, while designing this
+# feature, that none of the existing five categories had any coverage for
+# it. Also covers explicit sexual content/terminology, which has no
+# legitimate place in a story for a young child regardless of source.
 _REPRODUCTION = (
     "mating",
     "breeding",
@@ -94,6 +96,18 @@ _REPRODUCTION = (
     "reproduces",
     "reproducing",
     "reproduction",
+    "sex",
+    "sexual",
+    "porn",
+    "porno",
+    "pornography",
+    "pornographic",
+    "nude",
+    "nudity",
+    "erotic",
+    "masturbate",
+    "masturbation",
+    "orgasm",
 )
 
 _PROFANITY = (
