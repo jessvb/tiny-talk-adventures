@@ -132,12 +132,14 @@ def transport() -> FakeTransport:
 
 
 @pytest.fixture(autouse=True)
-def isolated_animal_facts_cache(tmp_path, monkeypatch):
-    """Redirects the on-disk animal facts cache to an isolated temp path
-    for every test in the suite -- without this, a pre-existing "fox"
-    cache entry on a developer's machine (from running the real server)
-    would silently change what tests using the default transcript
-    ("tell me about a fox") send to the LLM."""
+def isolated_animal_facts(tmp_path, monkeypatch):
+    """Redirects the animal facts cache and disables the real API key for
+    every test in the suite -- without this, a developer's real
+    ANIMAL_FACTS_API_KEY env var would make tests using the default
+    transcript ("tell me about a fox") take the live-API code path instead
+    of the intended cache-miss/no-key path, both slowing the suite and
+    (if the key is real) burning API quota."""
     path = tmp_path / "animal_facts.json"
     monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", path)
+    monkeypatch.setattr("tinytalk.config.ANIMAL_FACTS_API_KEY", "")
     return path
