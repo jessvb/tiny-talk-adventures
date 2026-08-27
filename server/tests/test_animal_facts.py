@@ -112,3 +112,61 @@ def test_extract_facts_drops_unsafe_candidates():
 
 def test_extract_facts_returns_empty_list_when_no_characteristics():
     assert _extract_facts({"name": "Fox"}) == []
+
+
+import httpx
+import pytest
+
+from tinytalk import config
+from tinytalk.animal_facts import _fetch_facts_from_api
+
+
+async def test_fetch_facts_from_api_returns_extracted_facts(monkeypatch):
+    monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["name"] == "fox"
+        assert request.headers["X-Api-Key"] == "test-key"
+        return httpx.Response(
+            200,
+            json=[{"characteristics": {"diet": "Omnivore"}}],
+        )
+
+    facts = await _fetch_facts_from_api("fox", transport=httpx.MockTransport(handler))
+    assert facts == ["its diet is Omnivore"]
+
+
+async def test_fetch_facts_from_api_returns_empty_list_for_no_matches(monkeypatch):
+    monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[])
+
+    facts = await _fetch_facts_from_api("nonexistent", transport=httpx.MockTransport(handler))
+    assert facts == []
+
+
+async def test_fetch_facts_from_api_returns_none_on_non_200(monkeypatch):
+    monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text="rate limited")
+
+    facts = await _fetch_facts_from_api("fox", transport=httpx.MockTransport(handler))
+    assert facts is None
+
+
+async def test_fetch_facts_from_api_returns_none_on_network_error(monkeypatch):
+    monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    facts = await _fetch_facts_from_api("fox", transport=httpx.MockTransport(handler))
+    assert facts is None
+
+
+async def test_fetch_facts_from_api_returns_none_without_an_api_key(monkeypatch):
+    monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "")
+    facts = await _fetch_facts_from_api("fox")
+    assert facts is None

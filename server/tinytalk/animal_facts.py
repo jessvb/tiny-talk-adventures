@@ -171,3 +171,49 @@ def _extract_facts(record: dict) -> list[str]:
         else:
             logger.info("dropping unsafe animal fact candidate: %r", fact)
     return facts
+
+
+_API_HOST = "https://api.api-ninjas.com"
+
+
+async def _fetch_facts_from_api(
+    canonical_name: str,
+    *,
+    transport: httpx.BaseTransport | None = None,
+    timeout: float = 4.0,
+) -> list[str] | None:
+    """Calls API Ninjas' Animals endpoint for canonical_name. Returns a
+    list of safety-filtered fact strings extracted from the first
+    matching record -- possibly empty, if the API found the animal but
+    had no usable characteristics (this IS safe to cache, since it's a
+    definitive answer). Returns None on any failure: missing API key,
+    network error, timeout, non-200, or an unexpected response shape --
+    distinct from an empty list, since a failure must NOT be cached, so a
+    transient issue can be retried later rather than permanently
+    remembering this animal as having no facts."""
+    api_key = config.ANIMAL_FACTS_API_KEY
+    if not api_key:
+        logger.info("ANIMAL_FACTS_API_KEY not set -- skipping animal fact lookup")
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=timeout, transport=transport) as client:
+            response = await client.get(
+                f"{_API_HOST}/v1/animals",
+                params={"name": canonical_name},
+                headers={"X-Api-Key": api_key},
+            )
+            if response.status_code != 200:
+                logger.warning(
+                    "animal facts API returned %d for %r", response.status_code, canonical_name
+                )
+                return None
+            records = response.json()
+    except (httpx.HTTPError, json.JSONDecodeError) as exc:
+        logger.warning("animal facts API call failed for %r: %s", canonical_name, exc)
+        return None
+    if not isinstance(records, list):
+        logger.warning("animal facts API returned an unexpected shape for %r", canonical_name)
+        return None
+    if not records:
+        return []
+    return _extract_facts(records[0])
