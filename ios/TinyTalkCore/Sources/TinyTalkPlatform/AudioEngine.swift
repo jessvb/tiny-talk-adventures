@@ -329,6 +329,16 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     }
 
     private func rebuildCaptureTap() {
+        // engine.stop() stops the WHOLE engine graph, not just the input
+        // side being rebuilt here -- if playerNode is mid-buffer when this
+        // fires, that playback is interrupted too. Logged so a real-device
+        // capture can confirm whether this is the actual mechanism behind
+        // "the real reply audio was audibly delayed after a resume" (see
+        // play()'s own 3s completion-handler timeout, added for the same
+        // reason).
+        if playerNode.isPlaying {
+            print("RealAudioEngine: rebuildCaptureTap() is stopping the engine WHILE playerNode is playing")
+        }
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         do {
@@ -376,12 +386,38 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             print("RealAudioEngine: engine never started -- dropping this play() call rather than hanging forever")
             return
         }
+        // Guards scheduleBuffer's completion handler and the timeout task
+        // below from both trying to resume the same continuation --
+        // resuming twice is a fatal error. Real race, confirmed on real
+        // hardware: rebuildCaptureTap() (fired by AVAudioEngineConfiguration
+        // Change, which reliably happens more than once in quick succession
+        // right after a reconnect -- see that method's own doc comment)
+        // calls engine.stop(), which stops the WHOLE engine, including
+        // whatever playerNode is currently rendering -- not just the input
+        // side it's ostensibly rebuilding. When that lands mid-buffer,
+        // scheduleBuffer's completion handler does not reliably fire
+        // (confirmed as a real, user-visible symptom: state correctly
+        // advances to .speaking, since that transition happens before this
+        // await, but no audio is actually heard for several seconds until
+        // -- if ever -- the handler eventually fires). Without this timeout,
+        // that hangs whichever caller is awaiting this play() call
+        // (runTurn()'s TTS loop, or the waiting ditty) indefinitely.
+        let gate = PlaybackCompletionGate()
         await withCheckedContinuation { continuation in
             playerNode.scheduleBuffer(buffer) {
-                continuation.resume()
+                if gate.tryResume() {
+                    continuation.resume()
+                }
             }
             if !playerNode.isPlaying {
                 playerNode.play()
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if gate.tryResume() {
+                    print("RealAudioEngine: play() scheduleBuffer completion did not fire within 3s (likely the engine was stopped mid-render by a concurrent reconfiguration) -- giving up on this buffer rather than hanging forever")
+                    continuation.resume()
+                }
             }
         }
     }
@@ -445,6 +481,28 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             }
         }
         return buffer
+    }
+}
+
+/// Lock-protected "resume exactly once" gate for play()'s continuation --
+/// scheduleBuffer's completion handler and play()'s own timeout task race
+/// to resume the same continuation (see play()'s doc comment for why the
+/// timeout exists), and resuming a continuation twice is a fatal error. A
+/// tiny `@unchecked Sendable` class, rather than a captured local var, is
+/// what Swift 6's strict concurrency checking accepts for state shared
+/// between a closure and a detached Task like this.
+private final class PlaybackCompletionGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var resumed = false
+
+    /// Returns true for exactly one caller (whichever gets there first,
+    /// completion handler or timeout) -- that caller is the one that
+    /// should actually resume the continuation.
+    func tryResume() -> Bool {
+        lock.withLock {
+            defer { resumed = true }
+            return !resumed
+        }
     }
 }
 #endif
