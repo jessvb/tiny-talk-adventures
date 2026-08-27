@@ -272,19 +272,33 @@ _FIRST_ANIMAL_NUDGE = (
 class AnimalFactTracker:
     """Per-story tracker, constructed fresh alongside StoryArc and
     replaced whenever a story finishes and a new Conversation/StoryArc
-    pair is created -- so "already facted" always means *this* story."""
+    pair is created -- so "already facted" always means *this* story.
+
+    _facted and _attempted are deliberately separate sets. _facted tracks
+    animals a fact was actually woven in for (used to skip re-fetching a
+    successful animal). _attempted additionally tracks animals whose fetch
+    was tried and failed (offline, timeout, API cap) -- so a failure is
+    retried at most once per story, not on every subsequent turn that
+    mentions the same animal, per the design spec's error-handling goal
+    that a slow/failed API must never degrade more than one turn. This is
+    intentionally NOT persisted to the on-disk cache (get_fact/
+    _fetch_facts_from_api never cache a failure) so a temporary outage
+    doesn't permanently blacklist an animal across stories -- only within
+    the lifetime of this one in-memory tracker."""
 
     def __init__(self) -> None:
         self._facted: set[str] = set()
+        self._attempted: set[str] = set()
         self._any_animal_mentioned = False
 
     async def record_turn(self, transcript: str, stage: Stage) -> str:
         """Call once per turn, alongside StoryArc.record_turn(), with
         that same turn's story_arc.stage. Returns guidance to append to
         the system prompt for this turn -- "" if there's nothing to add."""
-        canonical = find_new_animal(transcript, self._facted)
+        canonical = find_new_animal(transcript, self._facted | self._attempted)
         if canonical is not None:
             self._any_animal_mentioned = True
+            self._attempted.add(canonical)
             fact = await get_fact(canonical)
             if fact is not None:
                 self._facted.add(canonical)

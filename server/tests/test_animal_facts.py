@@ -285,6 +285,28 @@ async def test_tracker_does_not_refact_the_same_animal_twice(tmp_path, monkeypat
     assert guidance == ""
 
 
+async def test_tracker_does_not_retry_a_failed_fetch_within_the_same_story(monkeypatch):
+    # A failed fetch (offline, timeout, API cap) must not be retried every
+    # turn the same animal is mentioned again -- that would re-stall the
+    # turn on a slow network call indefinitely. Mock get_fact itself (the
+    # tracker calls it directly) so a fetch that always "fails" (returns
+    # None) is spied on for call count.
+    calls: list[str] = []
+
+    async def failing_get_fact(canonical: str) -> str | None:
+        calls.append(canonical)
+        return None
+
+    monkeypatch.setattr("tinytalk.animal_facts.get_fact", failing_get_fact)
+
+    tracker = AnimalFactTracker()
+    await tracker.record_turn("tell me about a fox", Stage.SETUP)
+    guidance = await tracker.record_turn("the fox ran through the forest", Stage.RISING_ACTION)
+
+    assert calls == ["fox"], "a failed fetch must only be attempted once per story"
+    assert guidance == ""
+
+
 async def test_tracker_nudges_for_an_animal_during_setup_with_none_mentioned(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "")
     monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", tmp_path / "cache.json")
