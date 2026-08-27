@@ -170,3 +170,74 @@ async def test_fetch_facts_from_api_returns_none_without_an_api_key(monkeypatch)
     monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "")
     facts = await _fetch_facts_from_api("fox")
     assert facts is None
+
+
+from tinytalk.animal_facts import get_fact
+
+
+async def test_get_fact_returns_cached_fact_without_calling_the_api(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "test-key")
+    cache_path = tmp_path / "animal_facts.json"
+    _save_cache({"fox": ["foxes have excellent hearing"]}, cache_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("API must not be called on a cache hit")
+
+    fact = await get_fact(
+        "fox", cache_path=cache_path, transport=httpx.MockTransport(handler)
+    )
+    assert fact == "foxes have excellent hearing"
+
+
+async def test_get_fact_fetches_and_caches_on_a_miss(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "test-key")
+    cache_path = tmp_path / "animal_facts.json"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"characteristics": {"diet": "Omnivore"}}])
+
+    fact = await get_fact(
+        "fox", cache_path=cache_path, transport=httpx.MockTransport(handler)
+    )
+    assert fact == "its diet is Omnivore"
+    assert _load_cache(cache_path) == {"fox": ["its diet is Omnivore"]}
+
+
+async def test_get_fact_returns_none_and_caches_empty_when_api_has_no_data(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "test-key")
+    cache_path = tmp_path / "animal_facts.json"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[])
+
+    fact = await get_fact(
+        "fox", cache_path=cache_path, transport=httpx.MockTransport(handler)
+    )
+    assert fact is None
+    assert _load_cache(cache_path) == {"fox": []}
+
+
+async def test_get_fact_does_not_cache_on_api_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "test-key")
+    cache_path = tmp_path / "animal_facts.json"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="server error")
+
+    fact = await get_fact(
+        "fox", cache_path=cache_path, transport=httpx.MockTransport(handler)
+    )
+    assert fact is None
+    assert _load_cache(cache_path) == {}
+
+
+async def test_get_fact_picks_randomly_among_multiple_cached_facts(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "test-key")
+    cache_path = tmp_path / "animal_facts.json"
+    _save_cache({"fox": ["fact one", "fact two", "fact three"]}, cache_path)
+
+    seen = set()
+    for _ in range(20):
+        fact = await get_fact("fox", cache_path=cache_path, transport=None)
+        seen.add(fact)
+    assert seen == {"fact one", "fact two", "fact three"}

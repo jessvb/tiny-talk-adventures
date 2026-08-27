@@ -217,3 +217,35 @@ async def _fetch_facts_from_api(
     if not records:
         return []
     return _extract_facts(records[0])
+
+
+async def get_fact(
+    canonical_name: str,
+    *,
+    cache_path: Path | None = None,
+    transport: httpx.BaseTransport | None = None,
+) -> str | None:
+    """Returns one random fact about canonical_name, or None if none is
+    available. Checks the on-disk cache first; on a miss, calls the API
+    and writes a definitive result (even an empty list, so a "no usable
+    facts" animal isn't re-queried every time it comes up) back to the
+    cache. An API failure is never cached -- see _fetch_facts_from_api's
+    own doc comment.
+
+    cache_path defaults to FACTS_CACHE_PATH, resolved at call time inside
+    _load_cache/_save_cache (passing None through to them), not bound
+    here as a parameter default -- critical for AnimalFactTracker below,
+    which calls get_fact(canonical) with no cache_path argument at all:
+    a frozen-at-import default would silently ignore any test's
+    monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", ...)."""
+    cache = _load_cache(cache_path)
+    if canonical_name not in cache:
+        facts = await _fetch_facts_from_api(canonical_name, transport=transport)
+        if facts is None:
+            return None
+        cache[canonical_name] = facts
+        _save_cache(cache, cache_path)
+    facts = cache[canonical_name]
+    if not facts:
+        return None
+    return random.choice(facts)
