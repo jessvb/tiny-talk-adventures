@@ -286,12 +286,20 @@ public actor SessionCoordinator {
     /// baked-in trailing silence (see WaitingDitty.audio) paces the loop --
     /// no separate timer/sleep needed.
     private func startWaitingDitty() {
-        guard let waitingDittyAudio, dittyTask == nil else { return }
+        guard let waitingDittyAudio, dittyTask == nil else {
+            print("SessionCoordinator: startWaitingDitty() no-op (audio configured=\(waitingDittyAudio != nil), already running=\(dittyTask != nil))")
+            return
+        }
+        print("SessionCoordinator: starting ditty loop")
         dittyTask = Task { [weak self] in
             guard let self else { return }
+            var iteration = 0
             while !Task.isCancelled {
+                iteration += 1
+                print("SessionCoordinator: ditty loop iteration \(iteration) calling play()")
                 await self.audio.play(waitingDittyAudio)
             }
+            print("SessionCoordinator: ditty loop ended after \(iteration) iteration(s), cancelled=\(Task.isCancelled)")
         }
     }
 
@@ -513,7 +521,10 @@ public actor SessionCoordinator {
     /// retry logic), the resumed reply may have already arrived and moved
     /// playback past the point where a ditty makes sense.
     public func startResumedWaitingDitty() {
-        guard machine.state == .waitingForReply else { return }
+        guard machine.state == .waitingForReply else {
+            print("SessionCoordinator: startResumedWaitingDitty() no-op -- state is \(machine.state), not .waitingForReply")
+            return
+        }
         startWaitingDitty()
     }
 

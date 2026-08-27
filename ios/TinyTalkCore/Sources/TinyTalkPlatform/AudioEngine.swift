@@ -221,7 +221,11 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             } catch {
                 lastError = error
                 print("RealAudioEngine: startCapturing attempt \(attempt)/8 failed: \(error)")
-                try? await Task.sleep(nanoseconds: 250_000_000)
+                do {
+                    try await Task.sleep(nanoseconds: 250_000_000)
+                } catch {
+                    throw lastError!  // cancelled -- stop retrying immediately, see ensureEngineRunning()
+                }
             }
         }
         throw lastError!
@@ -399,7 +403,25 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
                 return true
             } catch {
                 print("RealAudioEngine: engine.start() attempt \(attempt)/8 failed: \(error)")
-                try? await Task.sleep(nanoseconds: 250_000_000)
+                do {
+                    try await Task.sleep(nanoseconds: 250_000_000)
+                } catch {
+                    // Cancelled -- e.g. stopWaitingDitty() cancelling the
+                    // ditty loop's task because the app is backgrounding.
+                    // Confirmed on real hardware that the earlier `try?`
+                    // here silently discarded exactly this cancellation,
+                    // so this retry loop kept grinding through all 8
+                    // attempts (~2s) regardless of being told to stop --
+                    // real time during which this now-abandoned engine
+                    // instance was still fighting the shared, singleton
+                    // AVAudioSession for the route right as a NEW
+                    // RealAudioEngine (for the reconnect) was trying to
+                    // configure the exact same session. Stopping the
+                    // instant cancellation is observed, instead of
+                    // swallowing it, is what actually lets that
+                    // contention window close promptly.
+                    return false
+                }
             }
         }
         return false
