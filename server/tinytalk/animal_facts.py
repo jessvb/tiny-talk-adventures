@@ -82,3 +82,48 @@ def find_new_animal(transcript: str, already_facted: set[str]) -> str | None:
         if pattern.search(transcript):
             return canonical
     return None
+
+
+def _load_cache(path: Path | None = None) -> dict[str, list[str]]:
+    """Returns the on-disk fact cache, or an empty dict if the file
+    doesn't exist yet or is corrupt -- logged, not raised, since a bad
+    cache file must never crash server startup or a turn.
+
+    path defaults to the CURRENT value of the module-level
+    FACTS_CACHE_PATH, resolved inside the function body rather than
+    bound as a parameter default -- a parameter default is frozen at
+    first import, so it would not pick up a test's
+    monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", ...)
+    (same reasoning as llm_groq.py's GroqLlm resolving api_key at call
+    time, not as a constructor default)."""
+    if path is None:
+        path = FACTS_CACHE_PATH
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.error("failed to read animal facts cache at %s: %s", path, exc)
+        return {}
+    if not isinstance(data, dict):
+        logger.error("animal facts cache at %s is not a JSON object -- ignoring", path)
+        return {}
+    return data
+
+
+def _save_cache(cache: dict[str, list[str]], path: Path | None = None) -> None:
+    """Writes the cache to disk. A failed write is logged and swallowed,
+    not raised -- same reasoning as story_store.py's save_story: losing a
+    cache write is unfortunate but must never crash or hang a turn. The
+    fact already fetched this turn is still used for guidance regardless
+    of whether persisting it for next time succeeded.
+
+    path defaults to FACTS_CACHE_PATH, resolved at call time -- see
+    _load_cache's doc comment for why this can't be a parameter default."""
+    if path is None:
+        path = FACTS_CACHE_PATH
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(cache, indent=2))
+    except OSError as exc:
+        logger.error("failed to write animal facts cache at %s: %s", path, exc)
