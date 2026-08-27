@@ -127,3 +127,47 @@ def _save_cache(cache: dict[str, list[str]], path: Path | None = None) -> None:
         path.write_text(json.dumps(cache, indent=2))
     except OSError as exc:
         logger.error("failed to write animal facts cache at %s: %s", path, exc)
+
+
+# Curated allowlist of API Ninjas' "characteristics" fields -- the full
+# set includes many more (gestation_period, age_of_sexual_maturity,
+# average_litter_size, name_of_young, biggest_threat,
+# estimated_population_size, and others), deliberately excluded here.
+# Their raw values ("63 days", "Humans") don't contain any word
+# safety.is_safe() would catch, so this allowlist -- not the safety
+# filter -- is the real protection against reproduction/population/
+# threat-related content leaking through. safety.is_safe() is still
+# applied to every field below as a second layer, in case a field's
+# free-text value (e.g. slogan) happens to contain something unsafe.
+_FACT_FIELD_TEMPLATES: dict[str, str] = {
+    "most_distinctive_feature": "its most distinctive feature is {value}",
+    "top_speed": "it can move as fast as {value}",
+    "diet": "its diet is {value}",
+    "habitat": "it lives in {value}",
+    "slogan": "{value}",
+    "color": "its coloring is {value}",
+    "group_behavior": "its group behavior is {value}",
+    "lifespan": "its lifespan is {value}",
+}
+
+
+def _extract_facts(record: dict) -> list[str]:
+    """Turns one API Ninjas animal record's characteristics into a list
+    of safety-filtered fact strings, using only the curated field
+    allowlist above. Order follows _FACT_FIELD_TEMPLATES' definition
+    order for determinism; a missing, empty, or non-string field value is
+    skipped."""
+    characteristics = record.get("characteristics")
+    if not isinstance(characteristics, dict):
+        return []
+    facts = []
+    for field, template in _FACT_FIELD_TEMPLATES.items():
+        value = characteristics.get(field)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        fact = template.format(value=value.strip())
+        if safety.is_safe(fact):
+            facts.append(fact)
+        else:
+            logger.info("dropping unsafe animal fact candidate: %r", fact)
+    return facts

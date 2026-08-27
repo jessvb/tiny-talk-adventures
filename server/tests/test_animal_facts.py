@@ -65,3 +65,50 @@ def test_load_cache_treats_non_object_json_as_empty(tmp_path):
     path = tmp_path / "animal_facts.json"
     path.write_text("[1, 2, 3]")
     assert _load_cache(path) == {}
+
+
+from tinytalk.animal_facts import _extract_facts
+
+
+def test_extract_facts_pulls_from_curated_fields():
+    record = {
+        "characteristics": {
+            "most_distinctive_feature": "large pointed ears",
+            "diet": "Omnivore",
+            "top_speed": "30 mph",
+        }
+    }
+    facts = _extract_facts(record)
+    assert "its most distinctive feature is large pointed ears" in facts
+    assert "its diet is Omnivore" in facts
+    assert "it can move as fast as 30 mph" in facts
+
+
+def test_extract_facts_skips_missing_and_empty_fields():
+    record = {"characteristics": {"most_distinctive_feature": "", "diet": "Omnivore"}}
+    facts = _extract_facts(record)
+    assert facts == ["its diet is Omnivore"]
+
+
+def test_extract_facts_ignores_fields_outside_the_curated_allowlist():
+    # gestation_period/age_of_sexual_maturity/biggest_threat etc. are
+    # deliberately not in _FACT_FIELD_TEMPLATES -- their raw values (e.g.
+    # "63 days", "Humans") wouldn't be caught by the word-list safety
+    # filter, so exclusion at extraction time is the real protection.
+    record = {
+        "characteristics": {
+            "gestation_period": "63 days",
+            "diet": "Omnivore",
+        }
+    }
+    facts = _extract_facts(record)
+    assert facts == ["its diet is Omnivore"]
+
+
+def test_extract_facts_drops_unsafe_candidates():
+    record = {"characteristics": {"slogan": "Known for its violent mating rituals"}}
+    assert _extract_facts(record) == []
+
+
+def test_extract_facts_returns_empty_list_when_no_characteristics():
+    assert _extract_facts({"name": "Fox"}) == []
