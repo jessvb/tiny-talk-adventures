@@ -14,6 +14,7 @@ import time
 from typing import Protocol
 
 from . import config, safety, story_store
+from .animal_facts import AnimalFactTracker
 from .audio import TTS_SAMPLE_RATE, split_sentences
 from .conversation import Conversation
 from .engines import EngineError, LlmEngine, SttEngine, TtsEngine
@@ -58,6 +59,7 @@ class SessionRunner:
         self._system_prompt = system_prompt
         self._conversation = conversation or Conversation()
         self._story_arc = StoryArc()
+        self._animal_facts = AnimalFactTracker()
         self._machine = TurnStateMachine()
         self._turn_task: asyncio.Task | None = None
         # (sentence text, estimated real-world time.monotonic() at which
@@ -271,6 +273,11 @@ class SessionRunner:
         try:
             self._conversation.add_child(transcript)
             guidance = self._story_arc.record_turn(transcript)
+            fact_guidance = await self._animal_facts.record_turn(
+                transcript, self._story_arc.stage
+            )
+            if fact_guidance:
+                guidance = f"{guidance}\n\n{fact_guidance}"
             messages = self._conversation.to_messages(
                 self._system_prompt + "\n\n" + guidance
             )
@@ -339,6 +346,7 @@ class SessionRunner:
                     logger.info("story saved to %s", saved_path)
                 self._conversation = Conversation()
                 self._story_arc = StoryArc()
+                self._animal_facts = AnimalFactTracker()
         except asyncio.CancelledError:
             raise
         except EngineError as exc:

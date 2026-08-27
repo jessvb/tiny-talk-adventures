@@ -609,3 +609,44 @@ async def test_story_not_done_does_not_save_or_reset_conversation(transport, mon
 
     assert saved == []
     assert len(session.conversation.turns) == 2  # child + agent turn both retained
+
+
+async def test_animal_mention_adds_fact_guidance_to_the_llm_call(transport, monkeypatch, tmp_path):
+    from tinytalk.animal_facts import _save_cache
+
+    monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", tmp_path / "cache.json")
+    _save_cache({"fox": ["foxes have excellent hearing"]}, tmp_path / "cache.json")
+    llm = FakeLlm()
+    session = make_session(transport, stt=FakeStt(transcript="tell me about a fox"), llm=llm)
+
+    await run_full_turn(session)
+
+    system_message = llm.calls[0][0]
+    assert system_message["role"] == "system"
+    assert "foxes have excellent hearing" in system_message["content"]
+
+
+async def test_no_animal_mentioned_sends_no_fact_guidance(transport, monkeypatch, tmp_path):
+    monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", tmp_path / "cache.json")
+    llm = FakeLlm()
+    session = make_session(
+        transport, stt=FakeStt(transcript="what is your favorite color"), llm=llm
+    )
+
+    await run_full_turn(session)
+
+    system_message = llm.calls[0][0]
+    assert "Weave this real fact" not in system_message["content"]
+
+
+async def test_animal_free_first_turn_gets_the_nudge(transport, monkeypatch, tmp_path):
+    monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", tmp_path / "cache.json")
+    llm = FakeLlm()
+    session = make_session(
+        transport, stt=FakeStt(transcript="let's make up a story"), llm=llm
+    )
+
+    await run_full_turn(session)
+
+    system_message = llm.calls[0][0]
+    assert "what animal should be in the story" in system_message["content"]

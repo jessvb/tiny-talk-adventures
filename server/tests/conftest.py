@@ -129,3 +129,15 @@ class FailingLlm:
 @pytest.fixture
 def transport() -> FakeTransport:
     return FakeTransport()
+
+
+@pytest.fixture(autouse=True)
+def isolated_animal_facts_cache(tmp_path, monkeypatch):
+    """Redirects the on-disk animal facts cache to an isolated temp path
+    for every test in the suite -- without this, a pre-existing "fox"
+    cache entry on a developer's machine (from running the real server)
+    would silently change what tests using the default transcript
+    ("tell me about a fox") send to the LLM."""
+    path = tmp_path / "animal_facts.json"
+    monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", path)
+    return path
