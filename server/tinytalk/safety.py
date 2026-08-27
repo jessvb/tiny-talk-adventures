@@ -133,4 +133,12 @@ def is_safe(text: str) -> bool:
 
 
 def filter_reply(text: str) -> str:
-    return text if is_safe(text) else SAFE_FALLBACK
+    # `text and` also catches an empty LLM completion -- confirmed on real
+    # hardware to happen even with _STT_FAILURE_GUIDANCE already appended
+    # to the prompt (that guidance covers an empty TRANSCRIPT; the model
+    # can separately just return nothing for a given turn regardless of
+    # what it was asked). is_safe("") is trivially True, so without this,
+    # an empty reply sailed through untouched: no audio synthesized, no
+    # fallback, a turn_end with total silence and no indication anything
+    # happened -- worse than an unsafe reply, which at least gets caught.
+    return text if text and is_safe(text) else SAFE_FALLBACK

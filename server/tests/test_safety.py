@@ -47,6 +47,17 @@ def test_filter_replaces_unsafe_text_with_fallback():
     assert filter_reply("He picked up the knife.") == SAFE_FALLBACK
 
 
+def test_filter_replaces_an_empty_reply_with_fallback():
+    # Real bug, confirmed on real hardware: the LLM can return a genuinely
+    # empty completion for a turn (separate from an empty transcript, which
+    # _STT_FAILURE_GUIDANCE already covers) -- is_safe("") is trivially
+    # True, so without this, an empty reply sailed straight through, giving
+    # total silence with no fallback and no indication anything happened.
+    # (Whitespace-only input isn't this function's concern -- session.py's
+    # only call site already .strip()s before calling filter_reply().)
+    assert filter_reply("") == SAFE_FALLBACK
+
+
 @pytest.mark.parametrize(
     "text",
     [

@@ -409,9 +409,23 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
                     continuation.resume()
                 }
             }
-            if !playerNode.isPlaying {
-                playerNode.play()
-            }
+            // Deliberately unconditional -- AVAudioPlayerNode.play() on an
+            // already-playing node is a documented no-op, so the previous
+            // `if !playerNode.isPlaying` guard was only ever an
+            // optimization, not a correctness requirement. Confirmed on
+            // real hardware that it was actively harmful: engine.stop()
+            // (from rebuildCaptureTap(), see this method's own doc comment)
+            // does NOT reset playerNode.isPlaying back to false, even
+            // though the engine restarting means nothing is actually
+            // rendering for this node anymore. With the guard, every
+            // subsequent play() call after that first collision skipped
+            // re-invoking playerNode.play() (since isPlaying still read
+            // true), so scheduled buffers just sat there timing out one
+            // after another -- observed as many consecutive "did not fire
+            // within 3s" logs with genuinely no sound at all, self-healing
+            // only once something else (stopWaitingDitty()) called
+            // stopPlaybackImmediately() and reset the flag.
+            playerNode.play()
             Task {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 if gate.tryResume() {

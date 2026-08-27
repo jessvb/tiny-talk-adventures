@@ -366,6 +366,25 @@ async def test_empty_transcript_does_not_add_a_child_turn_to_conversation_histor
     assert speakers == ["agent"], "an empty transcript must not be recorded as a child turn"
 
 
+async def test_llm_returning_an_empty_reply_still_gets_a_spoken_fallback(transport):
+    # Real on-device bug, distinct from the empty-transcript case above:
+    # the LLM can return a genuinely empty completion for a normal,
+    # non-empty transcript (confirmed: happened even with
+    # _STT_FAILURE_GUIDANCE already covering the empty-transcript case) --
+    # previously this reached turn_end with zero audio synthesized and no
+    # indication anything happened.
+    tts = FakeTts()
+    llm = FakeLlm(chunks=[])
+    session = make_session(transport, llm=llm, tts=tts)
+
+    await run_full_turn(session)
+
+    assert transport.messages_of_type("response_text")[0]["text"] == SAFE_FALLBACK
+    assert tts.spoken, "a fallback reply must still be synthesized and spoken, not silently skipped"
+    assert transport.types() == ["transcript_final", "response_text", "turn_end"]
+    assert session.state is State.IDLE
+
+
 async def test_aclose_cancels_an_in_flight_turn(transport):
     tts = FakeTts(delay=0.05)
     session = make_session(transport, tts=tts)
