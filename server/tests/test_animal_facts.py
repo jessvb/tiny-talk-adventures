@@ -172,6 +172,20 @@ async def test_fetch_facts_from_api_returns_none_without_an_api_key(monkeypatch)
     assert facts is None
 
 
+async def test_fetch_facts_from_api_returns_none_for_a_non_object_record(monkeypatch):
+    # A 200 response whose first list element isn't a dict -- an
+    # unexpected shape from the API, not a network/HTTP failure, but
+    # still a failure that must be reported as None (and therefore never
+    # cached), not raised out to the caller.
+    monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=["not-a-dict-record"])
+
+    facts = await _fetch_facts_from_api("fox", transport=httpx.MockTransport(handler))
+    assert facts is None
+
+
 from tinytalk.animal_facts import get_fact
 
 

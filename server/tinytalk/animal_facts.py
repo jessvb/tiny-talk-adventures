@@ -216,7 +216,13 @@ async def _fetch_facts_from_api(
         return None
     if not records:
         return []
-    return _extract_facts(records[0])
+    first_record = records[0]
+    if not isinstance(first_record, dict):
+        logger.warning(
+            "animal facts API returned a non-object record for %r", canonical_name
+        )
+        return None
+    return _extract_facts(first_record)
 
 
 async def get_fact(
