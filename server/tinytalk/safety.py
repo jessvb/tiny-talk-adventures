@@ -86,11 +86,7 @@ _REAL_WORLD_DANGER = (
 # dialogue ever does -- confirmed, while designing this feature, that
 # none of the existing five categories had any coverage for it.
 _REPRODUCTION = (
-    "mate",
-    "mates",
     "mating",
-    "breed",
-    "breeds",
     "breeding",
     "pregnant",
     "pregnancy",
