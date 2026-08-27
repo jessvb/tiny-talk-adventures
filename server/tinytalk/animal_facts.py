@@ -249,3 +249,41 @@ async def get_fact(
     if not facts:
         return None
     return random.choice(facts)
+
+
+_WEAVE_IN_TEMPLATE = (
+    "The story just mentioned a {animal}. Weave this real fact about "
+    "{animal}s naturally into what happens next, as part of the action -- "
+    "don't just state it as trivia: {fact}"
+)
+
+_FIRST_ANIMAL_NUDGE = (
+    "No animal has been part of the story yet. Before continuing, warmly "
+    "ask the child what animal should be in the story."
+)
+
+
+class AnimalFactTracker:
+    """Per-story tracker, constructed fresh alongside StoryArc and
+    replaced whenever a story finishes and a new Conversation/StoryArc
+    pair is created -- so "already facted" always means *this* story."""
+
+    def __init__(self) -> None:
+        self._facted: set[str] = set()
+        self._any_animal_mentioned = False
+
+    async def record_turn(self, transcript: str, stage: Stage) -> str:
+        """Call once per turn, alongside StoryArc.record_turn(), with
+        that same turn's story_arc.stage. Returns guidance to append to
+        the system prompt for this turn -- "" if there's nothing to add."""
+        canonical = find_new_animal(transcript, self._facted)
+        if canonical is not None:
+            self._any_animal_mentioned = True
+            fact = await get_fact(canonical)
+            if fact is not None:
+                self._facted.add(canonical)
+                return _WEAVE_IN_TEMPLATE.format(animal=canonical, fact=fact)
+            return ""
+        if stage is Stage.SETUP and not self._any_animal_mentioned:
+            return _FIRST_ANIMAL_NUDGE
+        return ""

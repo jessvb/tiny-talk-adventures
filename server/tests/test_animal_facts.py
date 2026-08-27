@@ -241,3 +241,75 @@ async def test_get_fact_picks_randomly_among_multiple_cached_facts(tmp_path, mon
         fact = await get_fact("fox", cache_path=cache_path, transport=None)
         seen.add(fact)
     assert seen == {"fact one", "fact two", "fact three"}
+
+
+from tinytalk.animal_facts import AnimalFactTracker
+from tinytalk.story_arc import Stage
+
+
+async def test_tracker_returns_weave_in_guidance_for_a_known_animal(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "test-key")
+    monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", tmp_path / "cache.json")
+    _save_cache({"fox": ["foxes have excellent hearing"]}, tmp_path / "cache.json")
+
+    tracker = AnimalFactTracker()
+    guidance = await tracker.record_turn("tell me about a fox", Stage.SETUP)
+
+    assert "fox" in guidance
+    assert "foxes have excellent hearing" in guidance
+
+
+async def test_tracker_does_not_refact_the_same_animal_twice(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "test-key")
+    monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", tmp_path / "cache.json")
+    _save_cache({"fox": ["foxes have excellent hearing"]}, tmp_path / "cache.json")
+
+    tracker = AnimalFactTracker()
+    await tracker.record_turn("tell me about a fox", Stage.SETUP)
+    guidance = await tracker.record_turn("the fox ran through the forest", Stage.RISING_ACTION)
+
+    assert guidance == ""
+
+
+async def test_tracker_nudges_for_an_animal_during_setup_with_none_mentioned(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "")
+    monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", tmp_path / "cache.json")
+
+    tracker = AnimalFactTracker()
+    guidance = await tracker.record_turn("let's make up a story", Stage.SETUP)
+
+    assert "animal" in guidance.lower()
+
+
+async def test_tracker_does_not_nudge_once_an_animal_has_been_mentioned(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "")
+    monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", tmp_path / "cache.json")
+
+    tracker = AnimalFactTracker()
+    await tracker.record_turn("tell me about a fox", Stage.SETUP)
+    guidance = await tracker.record_turn("what happens next", Stage.SETUP)
+
+    assert guidance == ""
+
+
+async def test_tracker_does_not_nudge_outside_setup(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "")
+    monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", tmp_path / "cache.json")
+
+    tracker = AnimalFactTracker()
+    guidance = await tracker.record_turn("let's keep going", Stage.RISING_ACTION)
+
+    assert guidance == ""
+
+
+async def test_tracker_returns_empty_string_when_no_fact_is_available(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "")
+    monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", tmp_path / "cache.json")
+
+    tracker = AnimalFactTracker()
+    guidance = await tracker.record_turn("tell me about a fox", Stage.SETUP)
+
+    # No API key configured -- get_fact returns None, so no weave-in
+    # guidance, but the animal was still detected/mentioned, so the nudge
+    # must not fire either.
+    assert guidance == ""
