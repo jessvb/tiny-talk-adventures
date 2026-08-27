@@ -82,6 +82,24 @@ _REAL_WORLD_DANGER = (
     "jump off a cliff",
 )
 
+# Real animal facts mention this far more often than ordinary story
+# dialogue ever does -- confirmed, while designing this feature, that
+# none of the existing five categories had any coverage for it.
+_REPRODUCTION = (
+    "mate",
+    "mates",
+    "mating",
+    "breed",
+    "breeds",
+    "breeding",
+    "pregnant",
+    "pregnancy",
+    "reproduce",
+    "reproduces",
+    "reproducing",
+    "reproduction",
+)
+
 _PROFANITY = (
     "damn",
     "hell",
@@ -98,7 +116,7 @@ _PROFANITY = (
     "slut",
 )
 
-_ALL_BLOCKED = _VIOLENCE + _FRIGHTENING + _ADULT_THEMES + _REAL_WORLD_DANGER + _PROFANITY
+_ALL_BLOCKED = _VIOLENCE + _FRIGHTENING + _ADULT_THEMES + _REAL_WORLD_DANGER + _REPRODUCTION + _PROFANITY
 
 # Word boundaries keep "begun" and "knifemaker" from tripping the filter.
 _BLOCKED_PATTERN = re.compile(

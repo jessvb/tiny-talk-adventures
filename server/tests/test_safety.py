@@ -141,3 +141,23 @@ def test_safe_phrase_does_not_mask_a_separate_dangerous_use_of_the_same_word():
     assert is_safe(
         "He wished on a shooting star while shooting arrows at the target."
     ) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The two foxes will mate in the spring.",
+        "Foxes are mating right now.",
+        "The rabbits started breeding early this year.",
+        "She is pregnant with a litter of kittens.",
+        "The pregnancy lasts about two months.",
+        "Animals reproduce in many different ways.",
+        "This is how animals reproduction works.",
+    ],
+)
+def test_reproduction_content_is_unsafe(text):
+    assert is_safe(text) is False
+
+
+def test_filter_replaces_reproduction_content_with_fallback():
+    assert filter_reply("The two foxes will mate in the spring.") == SAFE_FALLBACK
