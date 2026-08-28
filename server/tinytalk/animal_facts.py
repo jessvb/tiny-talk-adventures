@@ -251,7 +251,8 @@ async def get_fact(
     a frozen-at-import default would silently ignore any test's
     monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", ...)."""
     cache = _load_cache(cache_path)
-    if canonical_name not in cache:
+    cache_hit = canonical_name in cache
+    if not cache_hit:
         facts = await _fetch_facts_from_api(canonical_name, transport=transport)
         if facts is None:
             return None
@@ -260,7 +261,10 @@ async def get_fact(
     facts = cache[canonical_name]
     if not facts:
         return None
-    return random.choice(facts)
+    fact = random.choice(facts)
+    if cache_hit:
+        logger.info("fact retrieved from cache for %r: %r", canonical_name, fact)
+    return fact
 
 
 _WEAVE_IN_TEMPLATE = (
