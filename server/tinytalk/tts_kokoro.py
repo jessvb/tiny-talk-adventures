@@ -8,6 +8,8 @@ agent is mid-sentence.
 from __future__ import annotations
 
 import asyncio
+import shutil
+from pathlib import Path
 from typing import AsyncIterator, Callable
 
 import torch
@@ -15,6 +17,44 @@ import torch
 from . import config
 from .audio import float32_to_pcm16
 from .engines import EngineError
+
+
+def _configure_espeak_from_homebrew() -> None:
+    """Kokoro's G2P (misaki) unconditionally points itself at the espeak-ng
+    copy bundled by the `espeakng-loader` PyPI package. Confirmed on real
+    hardware (2026-08-28) that espeakng-loader 0.2.4's macOS dylib has a
+    data path hard-coded from its GitHub Actions build machine
+    (/Users/runner/work/espeakng-loader/...), which doesn't exist on any
+    real Mac -- every phonemize call fails with "Error processing file
+    '.../phontab': No such file or directory" the moment it's used. Same
+    root cause as bootphon/phonemizer#159 and rhasspy/piper#73; their fix
+    is the same one applied here: point phonemizer's espeak wrapper at a
+    real `brew install espeak-ng` instead of the broken bundled copy.
+    Must run after `import kokoro` (which imports misaki, which sets the
+    broken default at ITS import time) and before constructing any
+    KPipeline, which is the only thing that actually triggers phonemizing.
+    """
+    espeak_ng = shutil.which("espeak-ng")
+    if espeak_ng is None:
+        raise EngineError(
+            "espeak-ng not found on PATH -- Kokoro's phonemizer needs a "
+            "real system install (the one bundled by the espeakng-loader "
+            "pip package is broken on macOS): run `brew install espeak-ng`"
+        )
+    # Homebrew's stable `opt/<formula>` alias, not the versioned Cellar
+    # path -- survives `brew upgrade espeak-ng` without this breaking again.
+    prefix = Path(espeak_ng).parent.parent
+    library = prefix / "opt" / "espeak-ng" / "lib" / "libespeak-ng.dylib"
+    data = prefix / "opt" / "espeak-ng" / "share" / "espeak-ng-data"
+    if not library.exists() or not data.exists():
+        raise EngineError(
+            f"found espeak-ng on PATH but not the expected Homebrew layout "
+            f"at {prefix}/opt/espeak-ng -- try `brew reinstall espeak-ng`"
+        )
+    from phonemizer.backend.espeak.wrapper import EspeakWrapper
+
+    EspeakWrapper.set_library(str(library))
+    EspeakWrapper.set_data_path(str(data))
 
 
 def _default_pipeline_factory(lang_code: str):
@@ -25,6 +65,7 @@ def _default_pipeline_factory(lang_code: str):
             "Kokoro is not installed — run `pip install kokoro soundfile` "
             "and `brew install espeak-ng`"
         ) from exc
+    _configure_espeak_from_homebrew()
     return KPipeline(lang_code=lang_code, device=config.KOKORO_DEVICE)
 
 

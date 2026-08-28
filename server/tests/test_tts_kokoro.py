@@ -1,10 +1,58 @@
 import numpy as np
 import pytest
 import torch
+from phonemizer.backend.espeak.wrapper import EspeakWrapper
 
 from tinytalk.audio import float32_to_pcm16
 from tinytalk.engines import EngineError
-from tinytalk.tts_kokoro import KokoroTts
+from tinytalk.tts_kokoro import KokoroTts, _configure_espeak_from_homebrew
+
+
+def _make_fake_homebrew_layout(tmp_path):
+    """Builds a fake `brew install espeak-ng` layout under tmp_path:
+    <tmp_path>/bin/espeak-ng (what shutil.which would find) plus the
+    stable opt/espeak-ng/{lib,share} alias structure alongside it."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    espeak_bin = bin_dir / "espeak-ng"
+    espeak_bin.touch()
+    lib_dir = tmp_path / "opt" / "espeak-ng" / "lib"
+    lib_dir.mkdir(parents=True)
+    library = lib_dir / "libespeak-ng.dylib"
+    library.touch()
+    data_dir = tmp_path / "opt" / "espeak-ng" / "share" / "espeak-ng-data"
+    data_dir.mkdir(parents=True)
+    return espeak_bin, library, data_dir
+
+
+def test_configure_espeak_points_the_wrapper_at_the_homebrew_install(monkeypatch, tmp_path):
+    espeak_bin, library, data_dir = _make_fake_homebrew_layout(tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: str(espeak_bin))
+    calls = {}
+    monkeypatch.setattr(EspeakWrapper, "set_library", lambda lib: calls.__setitem__("library", lib))
+    monkeypatch.setattr(EspeakWrapper, "set_data_path", lambda path: calls.__setitem__("data_path", path))
+
+    _configure_espeak_from_homebrew()
+
+    assert calls == {"library": str(library), "data_path": str(data_dir)}
+
+
+def test_configure_espeak_raises_when_not_on_path(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: None)
+
+    with pytest.raises(EngineError, match="brew install espeak-ng"):
+        _configure_espeak_from_homebrew()
+
+
+def test_configure_espeak_raises_when_homebrew_layout_is_incomplete(monkeypatch, tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    espeak_bin = bin_dir / "espeak-ng"
+    espeak_bin.touch()
+    monkeypatch.setattr("shutil.which", lambda name: str(espeak_bin))
+
+    with pytest.raises(EngineError, match="brew reinstall espeak-ng"):
+        _configure_espeak_from_homebrew()
 
 
 class FakePipeline:
