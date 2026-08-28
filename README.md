@@ -99,6 +99,17 @@ provide — containers there run inside a Linux VM with no Metal passthrough.)
    Note: Ollama's newer MLX backend (added March 2026) needs 32GB unified
    memory. On this 16GB M1, Ollama will use its default Metal backend
    instead — that's expected, not a misconfiguration.
+
+   qwen3.5 defaults to "thinking" mode — a long internal chain-of-thought
+   before it ever produces a reply (confirmed on real hardware: 100+
+   lines and ~3m19s for one prompt, via `ollama run qwen3.5:9b` directly).
+   `config.OLLAMA_THINK` defaults to `False` specifically to disable this
+   (see that setting's comment), which is what actually makes this usable
+   at real-time latency — a smaller model was tried first and wasn't
+   the real fix. With thinking off, 9b gives noticeably better-reasoned
+   replies than 4b at acceptable latency on this 16GB Mac; if memory
+   pressure becomes a problem again, `TINYTALK_MODEL=qwen3.5:4b` is the
+   fallback.
 5. **Kyutai STT** (MLX build) — already declared in `server/pyproject.toml`;
    no manual installation needed. It will be installed automatically in step 3
    of "Running the server" below when you run `pip install -e ".[dev]"` inside

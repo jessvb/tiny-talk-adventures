@@ -58,6 +58,12 @@ public actor SessionCoordinator {
     private var currentTurnId = 0
 
     public var state: SessionState { machine.state }
+    /// Read-only mirror of currentTurnId -- AppModel polls this (alongside
+    /// state) so that if the app is backgrounded, it already knows which
+    /// turn to resume without needing an extra actor round-trip during the
+    /// narrow window iOS gives an app to react to being backgrounded. See
+    /// resume().
+    public var activeTurnId: Int { currentTurnId }
     public var latencyHistory: [InterruptLatency] { latencyLogger.history }
     /// Latest transcript_final/response_text/error text from the server,
     /// for a UI (e.g. the iOS client's poll loop) to surface -- see
@@ -127,20 +133,34 @@ public actor SessionCoordinator {
     /// flushPreRoll()'s doc comment for how it's cleared safely.
     private var isFlushing = false
 
-    /// True while the child/parent has muted the mic via the UI. Checked
-    /// first thing in captureAudio(), before audio ever reaches the VAD --
-    /// this is a deliberate "mute" (matching the mental model of a video-
-    /// call mute button), not merely a barge-in suppressor: while muted, no
-    /// new speechStart can be detected either, not just interrupts of an
-    /// in-flight reply. That's the whole point of exposing it as a plain
-    /// mute toggle rather than a narrower "block interrupts" flag -- it's
-    /// simpler to explain to a parent and impossible to misread from the
-    /// UI. Muting mid-.listening utterance is handled explicitly by
-    /// setMuted(_:) below: since captureAudio() stops feeding the VAD the
-    /// instant this flips true, the VAD would otherwise never observe the
-    /// silence hangover needed to fire speechEnd on its own, leaving the
-    /// state machine stuck in .listening forever.
-    private var isMuted = false
+    /// True while the mic is muted -- checked first thing in captureAudio(),
+    /// before audio ever reaches the VAD. A deliberate "mute" (matching the
+    /// mental model of a video-call mute button), not merely a barge-in
+    /// suppressor: while muted, no new speechStart can be detected either,
+    /// not just interrupts of an in-flight reply. That's the whole point of
+    /// exposing it as a plain mute toggle rather than a narrower "block
+    /// interrupts" flag -- it's simpler to explain to a parent and
+    /// impossible to misread from the UI.
+    ///
+    /// This is the ONE flag both the UI's mute button AND this actor's own
+    /// automatic mute/unmute (see handleSpeechEnd()/runTurn() -- muted for
+    /// the whole .waitingForReply window, unmuted the instant real reply
+    /// audio starts) write to, deliberately -- not two separate flags OR'd
+    /// together. A parent/child pressing the button DURING an
+    /// automatically-muted .waitingForReply window must genuinely unmute
+    /// (e.g. to speak up and redirect the story while it's still thinking),
+    /// not be silently overridden by the automatic behavior; sharing one
+    /// flag is what makes that possible, at the cost of the automatic
+    /// unmute-on-.speaking/-on-turn-end paths overriding a *manual* mute
+    /// the child pressed moments earlier -- accepted since automatic
+    /// unmuting only ever happens at points where nothing is being
+    /// captured yet anyway (the child would need to speak AGAIN, at which
+    /// point they could re-press the button if they still want it muted).
+    ///
+    /// Exposed read-only (not just private) so the UI can mirror the
+    /// actual current state rather than only knowing what IT last set --
+    /// necessary now that this can also change from inside this actor.
+    public private(set) var isMuted = false
 
     public init(
         connection: any ServerConnecting,
@@ -266,12 +286,20 @@ public actor SessionCoordinator {
     /// baked-in trailing silence (see WaitingDitty.audio) paces the loop --
     /// no separate timer/sleep needed.
     private func startWaitingDitty() {
-        guard let waitingDittyAudio, dittyTask == nil else { return }
+        guard let waitingDittyAudio, dittyTask == nil else {
+            print("SessionCoordinator: startWaitingDitty() no-op (audio configured=\(waitingDittyAudio != nil), already running=\(dittyTask != nil))")
+            return
+        }
+        print("SessionCoordinator: starting ditty loop")
         dittyTask = Task { [weak self] in
             guard let self else { return }
+            var iteration = 0
             while !Task.isCancelled {
+                iteration += 1
+                print("SessionCoordinator: ditty loop iteration \(iteration) calling play()")
                 await self.audio.play(waitingDittyAudio)
             }
+            print("SessionCoordinator: ditty loop ended after \(iteration) iteration(s), cancelled=\(Task.isCancelled)")
         }
     }
 
@@ -316,6 +344,14 @@ public actor SessionCoordinator {
         for await event in connection.events() {
             if case .closed = event {
                 stopWaitingDitty()
+                // This is the real disconnect path -- runTurn()'s own
+                // .closed case is unreachable in practice, since this
+                // handler intercepts .closed before it could ever be
+                // forwarded into turnContinuation. Auto-unmute here, not
+                // there, so this coordinator's own state stays consistent
+                // for whatever brief window remains before the UI observes
+                // isClosed and discards it (see isClosed's doc comment).
+                await setMuted(false)
                 turnContinuation?.finish()
                 turnContinuation = nil
                 turnTask?.cancel()
@@ -405,11 +441,89 @@ public actor SessionCoordinator {
     private func handleSpeechEnd() async {
         guard machine.state == .listening else { return }
         guard (try? machine.handle(.speechEnd)) != nil else { return }
+        // machine.state is .waitingForReply from this point on -- "press
+        // the mute button" for the child, same as isMuted's doc comment
+        // describes, so a manual unmute during this window genuinely
+        // works (one shared flag, not a separate auto-mute OR'd on top).
+        // setMuted(true) itself calls back into handleSpeechEnd() -- safe,
+        // not infinite: machine.state is already .waitingForReply by the
+        // time that nested call runs, so its own top guard immediately
+        // no-ops it.
+        await setMuted(true)
         try? await connection.send(.speechEnd)
         let (turnStream, continuation) = AsyncStream<ServerConnectionEvent>.makeStream()
         turnContinuation = continuation
         turnTask = Task { [weak self] in
             await self?.runTurn(turnStream)
+        }
+        startWaitingDitty()
+    }
+
+    /// Re-enters .waitingForReply for a turn that was already in flight (or
+    /// already complete) on the server when this app was backgrounded --
+    /// call right after creating a fresh coordinator for a reconnect that
+    /// followed a backgrounding-triggered disconnect, and BEFORE calling
+    /// start(): this sets currentTurnId and starts turnTask listening on
+    /// turnContinuation before consumeServerEvents() (started by start())
+    /// exists to forward anything into it, so nothing the server replays
+    /// can be discarded as stale for arriving "too early". A no-op if this
+    /// coordinator is not freshly-.idle (only ever called on a fresh one in
+    /// practice).
+    ///
+    /// turnId must be whatever turn_id was active when the disconnect
+    /// happened (AppModel polls activeTurnId for exactly this) -- the
+    /// server stamps every replayed event with that same id, and
+    /// consumeServerEvents() discards anything whose turn_id doesn't match
+    /// currentTurnId.
+    ///
+    /// Deliberately identical whether the disconnect happened while
+    /// .waitingForReply or already .speaking: the server always replays a
+    /// held reply from its start (see replay_last_turn() on the server), so
+    /// there is nothing state-specific left to resume into -- both cases
+    /// are "wait for the reply to (re)arrive from the top."
+    ///
+    /// Deliberately does NOT start the waiting ditty itself -- see
+    /// startResumedWaitingDitty(), which the caller (AppModel.connect(
+    /// resumingTurnId:)) invokes separately, only after mic capture has
+    /// been started. Confirmed on real hardware: calling play() (and so
+    /// engine.start()) before the mic capture pipeline has ever configured
+    /// RealAudioEngine's input side reliably fails with an input/output
+    /// sample-rate mismatch inside CoreAudio's voice-processing unit --
+    /// every retry attempt failed identically, unlike the transient
+    /// "route still settling" case RealAudioEngine's own retries already
+    /// handle. This method still sets currentTurnId and starts turnTask
+    /// listening on turnContinuation synchronously, before start() is
+    /// called, for the reason described above -- only the ditty's first
+    /// play() call needed to move later.
+    public func resume(turnId: Int) async {
+        guard (try? machine.handle(.resumed)) != nil else {
+            print("SessionCoordinator: resume(turnId: \(turnId)) ignored -- not fresh/.idle (state=\(machine.state))")
+            return
+        }
+        currentTurnId = turnId
+        print("SessionCoordinator: resumed into .waitingForReply for turn_id=\(turnId)")
+        // "Press the mute button" for the wait, same as handleSpeechEnd() --
+        // there is nothing new to say until this replayed/resumed turn
+        // finishes.
+        await setMuted(true)
+        let (turnStream, continuation) = AsyncStream<ServerConnectionEvent>.makeStream()
+        turnContinuation = continuation
+        turnTask = Task { [weak self] in
+            await self?.runTurn(turnStream)
+        }
+    }
+
+    /// Starts the waiting-ditty loop for a turn resume() already set up --
+    /// split out for ordering reasons only, see resume()'s doc comment.
+    /// Guards on still being .waitingForReply since, by the time the
+    /// caller gets around to calling this (after mic capture has started,
+    /// which can itself take a couple of seconds under real hardware's own
+    /// retry logic), the resumed reply may have already arrived and moved
+    /// playback past the point where a ditty makes sense.
+    public func startResumedWaitingDitty() {
+        guard machine.state == .waitingForReply else {
+            print("SessionCoordinator: startResumedWaitingDitty() no-op -- state is \(machine.state), not .waitingForReply")
+            return
         }
         startWaitingDitty()
     }
@@ -444,18 +558,29 @@ public actor SessionCoordinator {
                     // never be in flight on the same player node at once.
                     stopWaitingDitty()
                     guard (try? machine.handle(.audioChunkReceived)) != nil else { return }
+                    // machine.state is .speaking from this point on --
+                    // "press the mute button" again to auto-unmute the
+                    // instant real reply audio starts, so barge-in works
+                    // normally once there's something to barge in on. If
+                    // the child already manually unmuted themselves during
+                    // the wait, this is a harmless no-op (already false).
+                    await setMuted(false)
                 }
                 await audio.play(pcm)
             case .message(.turnEnd(_)):
                 // Covers the empty-reply case: no .audio event ever
                 // arrives, so this is the only place left to stop a
-                // still-looping ditty for this turn.
+                // still-looping ditty for this turn -- and, for the same
+                // reason, the only place left to auto-unmute if .speaking
+                // was never reached (the "waiting" is over either way).
                 stopWaitingDitty()
+                await setMuted(false)
                 _ = try? machine.handle(.turnEnd)
                 turnContinuation = nil
                 return
             case .message(.error(let text, _)):
                 stopWaitingDitty()
+                await setMuted(false)
                 lastErrorMessage = text
                 // Mirrors the server's own behavior: end the turn
                 // immediately rather than waiting for a turn_end the
@@ -473,6 +598,7 @@ public actor SessionCoordinator {
                 continue
             case .closed:
                 stopWaitingDitty()
+                await setMuted(false)
                 return
             }
         }

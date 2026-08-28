@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import torch
 
 from tinytalk.audio import float32_to_pcm16
 from tinytalk.engines import EngineError
@@ -69,3 +70,42 @@ async def test_model_failure_is_reported_as_engine_error():
     tts = KokoroTts(pipeline_factory=ExplodingPipeline)
     with pytest.raises(EngineError, match="Kokoro"):
         [chunk async for chunk in tts.synthesize("The fox ran.")]
+
+
+async def test_synthesize_releases_mps_cache_after_each_call(monkeypatch):
+    # PyTorch's MPS caching allocator holds memory for reuse within this
+    # process rather than returning it to the OS -- on a machine also
+    # running Ollama and STT, an unreleased cache was found (real
+    # on-device testing) to make each LATER turn in a session
+    # progressively worse than the first, as Kokoro's footprint grows and
+    # leaves less memory for Ollama.
+    calls = []
+    monkeypatch.setattr(torch.mps, "empty_cache", lambda: calls.append(True))
+    pipeline = FakePipeline("a")
+    tts = KokoroTts(pipeline_factory=lambda code: pipeline)
+
+    [chunk async for chunk in tts.synthesize("The fox ran.")]
+
+    assert calls == [True]
+
+
+async def test_synthesize_releases_mps_cache_even_when_synthesis_fails(monkeypatch):
+    calls = []
+    monkeypatch.setattr(torch.mps, "empty_cache", lambda: calls.append(True))
+    tts = KokoroTts(pipeline_factory=ExplodingPipeline)
+
+    with pytest.raises(EngineError):
+        [chunk async for chunk in tts.synthesize("The fox ran.")]
+
+    assert calls == [True]
+
+
+async def test_blank_text_does_not_touch_the_mps_cache(monkeypatch):
+    calls = []
+    monkeypatch.setattr(torch.mps, "empty_cache", lambda: calls.append(True))
+    pipeline = FakePipeline("a")
+    tts = KokoroTts(pipeline_factory=lambda code: pipeline)
+
+    [chunk async for chunk in tts.synthesize("   ")]
+
+    assert calls == []
