@@ -1,3 +1,7 @@
+import asyncio
+import threading
+import time
+
 import numpy as np
 import pytest
 import torch
@@ -157,3 +161,43 @@ async def test_blank_text_does_not_touch_the_mps_cache(monkeypatch):
     [chunk async for chunk in tts.synthesize("   ")]
 
     assert calls == []
+
+
+class TrackingPipeline:
+    """Records the [start, end) wall-clock window each call actually ran
+    in, so a test can assert two calls never overlapped."""
+
+    def __init__(self, lang_code: str, delay: float = 0.05) -> None:
+        self.delay = delay
+        self.windows: list[tuple[float, float]] = []
+        self._windows_lock = threading.Lock()
+
+    def __call__(self, text: str, voice: str):
+        start = time.monotonic()
+        time.sleep(self.delay)
+        end = time.monotonic()
+        with self._windows_lock:
+            self.windows.append((start, end))
+        yield ("graphemes", "phonemes", np.array([0.0], dtype=np.float32))
+
+
+async def test_concurrent_synthesize_calls_never_overlap_in_the_pipeline():
+    # Real bug, confirmed on real hardware (2026-08-28): a cancelled turn's
+    # TTS call keeps running on its worker thread even after asyncio
+    # considers it cancelled (Python cannot stop an already-started
+    # thread-pool call), so a NEW turn's synthesize() could start a second
+    # concurrent call into the same shared KPipeline instance -- and
+    # PyTorch's MPS backend crashed the whole process when that happened.
+    # This proves _run_pipeline's threading.Lock actually serializes
+    # concurrent calls rather than letting them race.
+    pipeline = TrackingPipeline("a", delay=0.05)
+    tts = KokoroTts(pipeline_factory=lambda code: pipeline)
+
+    async def run():
+        return [chunk async for chunk in tts.synthesize("hello")]
+
+    await asyncio.gather(run(), run())
+
+    assert len(pipeline.windows) == 2
+    (start1, end1), (start2, end2) = sorted(pipeline.windows)
+    assert end1 <= start2, f"pipeline calls overlapped: {pipeline.windows}"

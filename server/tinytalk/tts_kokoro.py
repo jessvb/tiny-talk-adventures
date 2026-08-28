@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import threading
 from pathlib import Path
 from typing import AsyncIterator, Callable
 
@@ -83,6 +84,9 @@ class KokoroTts:
         self._voice = voice
         self._pipeline_factory = pipeline_factory or _default_pipeline_factory
         self._pipeline = None
+        # A real OS thread lock, not asyncio.Lock -- see synthesize()'s
+        # comment on why an asyncio-level lock can't do this job.
+        self._synthesis_lock = threading.Lock()
 
     def _get_pipeline(self):
         # Built lazily and cached: loading weights takes seconds, and doing it
@@ -91,14 +95,38 @@ class KokoroTts:
             self._pipeline = self._pipeline_factory(self._lang_code)
         return self._pipeline
 
+    def _run_pipeline(self, pipeline, text: str) -> list:
+        # Holds a real thread lock for the pipeline call itself (not just
+        # the asyncio await around it). Confirmed on real hardware
+        # (2026-08-28): a barge-in/reconnect can cancel a turn whose TTS
+        # call is already mid-flight on this pipeline's worker thread --
+        # asyncio.to_thread cannot actually stop a thread that's already
+        # running (documented Python behaviour: Future.cancel() is a
+        # no-op once the callable has started), so that thread runs to
+        # completion regardless, orphaned. A new turn's own synthesize()
+        # call can then start a SECOND concurrent call into this same
+        # shared KPipeline instance (built once, reused for the server's
+        # whole lifetime) while the orphaned one is still running.
+        # PyTorch's MPS backend is not safe for that: two threads issuing
+        # Metal compute commands to the same pipeline crashed the whole
+        # process outright with "A command encoder is already encoding to
+        # this command buffer" (SIGABRT, no Python traceback -- every open
+        # connection dropped at once). An asyncio.Lock can't prevent this:
+        # it gets released the instant the awaiting coroutine is
+        # cancelled, exactly while the orphaned thread is still running.
+        # A plain threading.Lock, acquired here inside the worker thread
+        # itself, keeps a second call waiting (in ITS OWN worker thread,
+        # not the event loop) until the first is actually, physically
+        # done -- turning the crash into a bounded wait instead.
+        with self._synthesis_lock:
+            return list(pipeline(text, voice=self._voice))
+
     async def synthesize(self, text: str) -> AsyncIterator[bytes]:
         if not text.strip():
             return
         try:
             pipeline = await asyncio.to_thread(self._get_pipeline)
-            segments = await asyncio.to_thread(
-                lambda: list(pipeline(text, voice=self._voice))
-            )
+            segments = await asyncio.to_thread(self._run_pipeline, pipeline, text)
         except EngineError:
             raise
         except Exception as exc:
