@@ -41,27 +41,247 @@ _KNOWN_ANIMALS: dict[str, tuple[str, ...]] = {
     "lion": ("lion", "lions"),
     "tiger": ("tiger", "tigers"),
     "wolf": ("wolf", "wolves"),
-    "deer": ("deer", "deers"),
+    "deer": ("deer", "deers", "fawn", "fawns"),
     "squirrel": ("squirrel", "squirrels"),
     "turtle": ("turtle", "turtles"),
     "frog": ("frog", "frogs"),
     "penguin": ("penguin", "penguins"),
     "dog": ("dog", "dogs", "puppy", "puppies"),
     "cat": ("cat", "cats", "kitten", "kittens"),
-    "horse": ("horse", "horses"),
-    "duck": ("duck", "ducks"),
+    "horse": ("horse", "horses", "pony", "ponies", "colt", "colts", "foal", "foals"),
+    "duck": ("duck", "ducks", "duckling", "ducklings"),
     "butterfly": ("butterfly", "butterflies"),
-    "bee": ("bee", "bees"),
+    "bee": ("bee", "bees", "honeybee", "honeybees"),
     "giraffe": ("giraffe", "giraffes"),
     "monkey": ("monkey", "monkeys"),
     "whale": ("whale", "whales"),
     "shark": ("shark", "sharks"),
     "eagle": ("eagle", "eagles"),
+    # Everything below was added from a curated pass over
+    # https://www.abcmouse.com/learn/printables-and-worksheets/animal-names-list-for-kids/73920
+    # (2026-08-28). Life-stage/sex-specific/regional names for the SAME
+    # species are folded in as aliases above or below (e.g. calf -> cow,
+    # fawn -> deer) -- but a related, genuinely DIFFERENT species is its
+    # own entry even when it shares a common word with another one (e.g.
+    # "sea otter" is not folded into "otter", "cane toad" is not folded
+    # into "toad") to avoid handing back a fact that doesn't actually
+    # describe what the child asked about. Purely generic, non-species
+    # words from that list (bird, fish, bug, insect, lizard, snake, worm)
+    # were deliberately left out -- the facts API needs an actual species
+    # name, and "kid" (baby goat) / "joey" (baby kangaroo) were left out
+    # too since those words are far too common in ordinary conversation
+    # (a child, or another child) to safely treat as an animal mention.
+    "aardvark": ("aardvark", "aardvarks"),
+    "alligator": ("alligator", "alligators"),
+    "alpaca": ("alpaca", "alpacas"),
+    "anaconda": ("anaconda", "anacondas"),
+    "angelfish": ("angelfish", "angelfishes"),
+    "ant": ("ant", "ants"),
+    "antelope": ("antelope", "antelopes"),
+    "armadillo": ("armadillo", "armadillos"),
+    "axolotl": ("axolotl", "axolotls"),
+    "baboon": ("baboon", "baboons"),
+    "badger": ("badger", "badgers"),
+    "bandicoot": ("bandicoot", "bandicoots"),
+    "barracuda": ("barracuda", "barracudas"),
+    "bat": ("bat", "bats", "vampire bat", "vampire bats"),
+    "beaver": ("beaver", "beavers"),
+    "beetle": ("beetle", "beetles", "junebug", "junebugs"),
+    "bilby": ("bilby", "bilbies"),
+    "bison": ("bison", "bisons", "buffalo", "buffaloes", "buffalos"),
+    "blue jay": ("blue jay", "blue jays"),
+    "bluebird": ("bluebird", "bluebirds"),
+    "boa constrictor": ("boa constrictor", "boa constrictors", "boa", "boas"),
+    "bobcat": ("bobcat", "bobcats"),
+    "budgie": ("budgie", "budgies", "budgerigar", "budgerigars"),
+    "bullfrog": ("bullfrog", "bullfrogs"),
+    "bumblebee": ("bumblebee", "bumblebees"),
+    "caecilian": ("caecilian", "caecilians"),
+    "caiman": ("caiman", "caimans"),
+    "camel": ("camel", "camels"),
+    "canary": ("canary", "canaries"),
+    "cane toad": ("cane toad", "cane toads"),
+    "capybara": ("capybara", "capybaras"),
+    "cardinal": ("cardinal", "cardinals"),
+    "caterpillar": ("caterpillar", "caterpillars"),
+    "chameleon": ("chameleon", "chameleons"),
+    "cheetah": ("cheetah", "cheetahs"),
+    "chickadee": ("chickadee", "chickadees"),
+    "chicken": ("chicken", "chickens", "hen", "hens", "rooster", "roosters"),
+    "chimpanzee": ("chimpanzee", "chimpanzees", "chimp", "chimps"),
+    "chinchilla": ("chinchilla", "chinchillas"),
+    "chipmunk": ("chipmunk", "chipmunks"),
+    "cicada": ("cicada", "cicadas"),
+    "clam": ("clam", "clams"),
+    "clownfish": ("clownfish", "clownfishes"),
+    "cobra": ("cobra", "cobras"),
+    "cockatoo": ("cockatoo", "cockatoos"),
+    "cockroach": ("cockroach", "cockroaches"),
+    "coral": ("coral", "corals"),
+    "cougar": ("cougar", "cougars", "puma", "pumas", "mountain lion", "mountain lions"),
+    "cow": ("cow", "cows", "bull", "bulls", "calf", "calves"),
+    "coyote": ("coyote", "coyotes"),
+    "crab": ("crab", "crabs"),
+    "cricket": ("cricket", "crickets"),
+    "crocodile": ("crocodile", "crocodiles"),
+    "crow": ("crow", "crows"),
+    "dingo": ("dingo", "dingos", "dingoes"),
+    "donkey": ("donkey", "donkeys"),
+    "dove": ("dove", "doves"),
+    "dragonfly": ("dragonfly", "dragonflies"),
+    "elk": ("elk", "elks"),
+    "emu": ("emu", "emus"),
+    "falcon": ("falcon", "falcons"),
+    "fennec fox": ("fennec fox", "fennec foxes", "desert fox", "desert foxes"),
+    "ferret": ("ferret", "ferrets"),
+    "finch": ("finch", "finches"),
+    "firefly": ("firefly", "fireflies"),
+    "flea": ("flea", "fleas"),
+    "flounder": ("flounder", "flounders"),
+    "fly": ("fly", "flies", "fruit fly", "fruit flies"),
+    "gazelle": ("gazelle", "gazelles"),
+    "gecko": ("gecko", "geckos", "geckoes"),
+    "gerbil": ("gerbil", "gerbils"),
+    "gila monster": ("gila monster", "gila monsters"),
+    "glass frog": ("glass frog", "glass frogs"),
+    "goanna": ("goanna", "goannas"),
+    "goat": ("goat", "goats"),
+    "goldfish": ("goldfish", "goldfishes"),
+    "goose": ("goose", "geese"),
+    "gorilla": ("gorilla", "gorillas"),
+    "grasshopper": ("grasshopper", "grasshoppers"),
+    "groundhog": ("groundhog", "groundhogs", "woodchuck", "woodchucks"),
+    "guinea pig": ("guinea pig", "guinea pigs"),
+    "hamster": ("hamster", "hamsters"),
+    "hawk": ("hawk", "hawks"),
+    "hedgehog": ("hedgehog", "hedgehogs"),
+    "hellbender": ("hellbender", "hellbenders"),
+    "hippopotamus": ("hippopotamus", "hippopotamuses", "hippo", "hippos"),
+    "horned lizard": ("horned lizard", "horned lizards"),
+    "hummingbird": ("hummingbird", "hummingbirds"),
+    "hyena": ("hyena", "hyenas"),
+    "ibis": ("ibis", "ibises"),
+    "iguana": ("iguana", "iguanas"),
+    "impala": ("impala", "impalas"),
+    "inchworm": ("inchworm", "inchworms"),
+    "jaguar": ("jaguar", "jaguars"),
+    "jellyfish": ("jellyfish", "jellyfishes"),
+    "jerboa": ("jerboa", "jerboas"),
+    "kangaroo": ("kangaroo", "kangaroos"),
+    "kangaroo rat": ("kangaroo rat", "kangaroo rats"),
+    "katydid": ("katydid", "katydids"),
+    "koala": ("koala", "koalas"),
+    "kookaburra": ("kookaburra", "kookaburras"),
+    "leopard": ("leopard", "leopards"),
+    "leopard frog": ("leopard frog", "leopard frogs"),
+    "llama": ("llama", "llamas"),
+    "lobster": ("lobster", "lobsters"),
+    "lorikeet": ("lorikeet", "lorikeets"),
+    "lynx": ("lynx", "lynxes"),
+    "lyrebird": ("lyrebird", "lyrebirds"),
+    "macaw": ("macaw", "macaws"),
+    "manatee": ("manatee", "manatees"),
+    "manta ray": ("manta ray", "manta rays"),
+    "meerkat": ("meerkat", "meerkats"),
+    "mole": ("mole", "moles"),
+    "monitor lizard": ("monitor lizard", "monitor lizards"),
+    "moose": ("moose", "mooses"),
+    "mosquito": ("mosquito", "mosquitoes", "mosquitos"),
+    "moth": ("moth", "moths"),
+    "mouse": ("mouse", "mice"),
+    "mudpuppy": ("mudpuppy", "mudpuppies"),
+    "mule": ("mule", "mules"),
+    "narwhal": ("narwhal", "narwhals"),
+    "newt": ("newt", "newts", "eastern newt", "eastern newts"),
+    "nightingale": ("nightingale", "nightingales"),
+    "nudibranch": ("nudibranch", "nudibranchs", "nudibranches"),
+    "numbat": ("numbat", "numbats"),
+    "nutria": ("nutria", "nutrias"),
+    "ocelot": ("ocelot", "ocelots"),
+    "octopus": ("octopus", "octopuses", "octopi"),
+    "okapi": ("okapi", "okapis"),
+    "opossum": ("opossum", "opossums"),
+    "orangutan": ("orangutan", "orangutans"),
+    "ostrich": ("ostrich", "ostriches"),
+    "otter": ("otter", "otters"),
+    "oyster": ("oyster", "oysters"),
+    "panda": ("panda", "pandas"),
+    "panther": ("panther", "panthers"),
+    "parrot": ("parrot", "parrots"),
+    "peacock": ("peacock", "peacocks"),
+    "peccary": ("peccary", "peccaries"),
+    "pelican": ("pelican", "pelicans"),
+    "pig": ("pig", "pigs", "piglet", "piglets"),
+    "pigeon": ("pigeon", "pigeons"),
+    "platypus": ("platypus", "platypuses"),
+    "polar bear": ("polar bear", "polar bears"),
+    "porcupine": ("porcupine", "porcupines"),
+    "possum": ("possum", "possums"),
+    "praying mantis": ("praying mantis", "praying mantises", "praying mantids"),
+    "python": ("python", "pythons"),
+    "quail": ("quail", "quails"),
+    "quokka": ("quokka", "quokkas"),
+    "quoll": ("quoll", "quolls"),
+    "raccoon": ("raccoon", "raccoons"),
+    "rat": ("rat", "rats"),
+    "rattlesnake": ("rattlesnake", "rattlesnakes"),
+    "reindeer": ("reindeer", "reindeers", "caribou", "caribous"),
+    "rhinoceros": ("rhinoceros", "rhinoceroses", "rhino", "rhinos"),
+    "robin": ("robin", "robins"),
+    "salamander": ("salamander", "salamanders", "marbled salamander", "marbled salamanders"),
+    "sand cat": ("sand cat", "sand cats"),
+    "scorpion": ("scorpion", "scorpions"),
+    "sea otter": ("sea otter", "sea otters"),
+    "sea turtle": ("sea turtle", "sea turtles"),
+    "sea urchin": ("sea urchin", "sea urchins", "urchin", "urchins"),
+    "seagull": ("seagull", "seagulls", "gull", "gulls"),
+    "seahorse": ("seahorse", "seahorses"),
+    "seal": ("seal", "seals"),
+    "sheep": ("sheep", "lamb", "lambs"),
+    "shrimp": ("shrimp", "shrimps"),
+    "sidewinder": ("sidewinder", "sidewinders", "sidewinder snake", "sidewinder snakes"),
+    "skink": ("skink", "skinks"),
+    "skunk": ("skunk", "skunks"),
+    "sloth": ("sloth", "sloths"),
+    "slug": ("slug", "slugs"),
+    "snail": ("snail", "snails"),
+    "sparrow": ("sparrow", "sparrows"),
+    "squid": ("squid", "squids"),
+    "starfish": ("starfish", "starfishes"),
+    "starling": ("starling", "starlings"),
+    "stingray": ("stingray", "stingrays"),
+    "sugar glider": ("sugar glider", "sugar gliders"),
+    "swan": ("swan", "swans"),
+    "swordfish": ("swordfish", "swordfishes"),
+    "tapir": ("tapir", "tapirs"),
+    "tarantula": ("tarantula", "tarantulas"),
+    "tasmanian devil": ("tasmanian devil", "tasmanian devils"),
+    "termite": ("termite", "termites"),
+    "toad": ("toad", "toads"),
+    "tortoise": ("tortoise", "tortoises"),
+    "toucan": ("toucan", "toucans"),
+    "tree frog": ("tree frog", "tree frogs"),
+    "turkey": ("turkey", "turkeys"),
+    "viper": ("viper", "vipers"),
+    "vulture": ("vulture", "vultures"),
+    "wallaby": ("wallaby", "wallabies"),
+    "walrus": ("walrus", "walruses"),
+    "warthog": ("warthog", "warthogs"),
+    "wasp": ("wasp", "wasps", "yellow jacket", "yellow jackets"),
+    "weasel": ("weasel", "weasels"),
+    "wild boar": ("wild boar", "wild boars", "boar", "boars"),
+    "wolverine": ("wolverine", "wolverines"),
+    "wombat": ("wombat", "wombats"),
+    "wood frog": ("wood frog", "wood frogs"),
+    "woodpecker": ("woodpecker", "woodpeckers"),
+    "x-ray tetra": ("x-ray tetra", "x-ray tetras"),
+    "yak": ("yak", "yaks"),
+    "zebra": ("zebra", "zebras"),
 }
 
-# One compiled pattern per canonical name -- a few dozen entries at most,
-# so this is not a hot loop worth optimizing further. Word boundaries
-# keep "foxglove" from matching "fox".
+# One compiled pattern per canonical name -- a few hundred entries, still
+# not a hot loop worth optimizing further. Word boundaries keep
+# "foxglove" from matching "fox".
 _ANIMAL_PATTERNS: dict[str, re.Pattern[str]] = {
     canonical: re.compile(
         r"\b(?:" + "|".join(re.escape(alias) for alias in aliases) + r")\b",
@@ -71,15 +291,37 @@ _ANIMAL_PATTERNS: dict[str, re.Pattern[str]] = {
 }
 
 
+def _alias_specificity(aliases: tuple[str, ...]) -> int:
+    return max(len(alias.split()) for alias in aliases)
+
+
+# Multi-word aliases (e.g. "sea turtle", "fennec fox") must be checked
+# BEFORE single-word ones like "turtle"/"fox" -- otherwise the generic
+# entry's pattern, which also matches the word "turtle"/"fox" occurring
+# INSIDE those phrases, would win first and "sea turtle" would incorrectly
+# resolve to the plain turtle entry. Sorted most-specific-first (by the
+# longest alias, in words); _KNOWN_ANIMALS' own definition order is a
+# stable tiebreaker for entries equally specific.
+_DETECTION_ORDER: tuple[str, ...] = tuple(
+    canonical
+    for canonical, _ in sorted(
+        _KNOWN_ANIMALS.items(),
+        key=lambda item: _alias_specificity(item[1]),
+        reverse=True,
+    )
+)
+
+
 def find_new_animal(transcript: str, already_facted: set[str]) -> str | None:
     """Returns the canonical name of the first known animal mentioned in
     transcript that isn't already in already_facted, or None if there
-    isn't one. Iteration order follows _KNOWN_ANIMALS' definition order,
-    so this is deterministic given the same transcript and already_facted."""
-    for canonical, pattern in _ANIMAL_PATTERNS.items():
+    isn't one. Checks more specific (multi-word) entries before more
+    generic (single-word) ones -- see _DETECTION_ORDER -- so this is
+    deterministic given the same transcript and already_facted."""
+    for canonical in _DETECTION_ORDER:
         if canonical in already_facted:
             continue
-        if pattern.search(transcript):
+        if _ANIMAL_PATTERNS[canonical].search(transcript):
             return canonical
     return None
 

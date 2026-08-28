@@ -1,4 +1,4 @@
-from tinytalk.animal_facts import find_new_animal
+from tinytalk.animal_facts import _KNOWN_ANIMALS, find_new_animal
 
 
 def test_find_new_animal_matches_a_known_animal():
@@ -32,6 +32,56 @@ def test_find_new_animal_returns_none_if_only_mentioned_animal_already_facted():
 def test_find_new_animal_does_not_match_substrings():
     # "foxglove" contains "fox" but is a plant, not an animal mention.
     assert find_new_animal("the foxglove flowers bloomed", set()) is None
+
+
+def test_find_new_animal_matches_a_newly_added_species():
+    assert find_new_animal("we saw an aardvark digging", set()) == "aardvark"
+
+
+def test_find_new_animal_folds_a_life_stage_name_into_its_parent_species():
+    # "calf" is a baby cow, not a different species -- same alias-table
+    # pattern as the existing ladybird/ladybug and puppy/dog entries.
+    assert find_new_animal("the calf followed its mother", set()) == "cow"
+
+
+def test_find_new_animal_generic_category_words_are_not_known_animals():
+    # Deliberately excluded: the facts API needs an actual species name,
+    # not an umbrella category -- the specific animals from that category
+    # (fox, cobra, goldfish, ...) are known individually instead.
+    for word in ("bird", "fish", "bug", "snake", "lizard", "worm"):
+        assert find_new_animal(f"a {word} went by", set()) is None
+
+
+def test_find_new_animal_prefers_a_more_specific_multi_word_match():
+    # "sea turtle" contains the word "turtle", which the plain turtle
+    # entry's own pattern also matches -- without specificity-ordered
+    # detection, this would incorrectly resolve to "turtle" instead of
+    # the more specific "sea turtle" entry.
+    assert find_new_animal("a sea turtle swam by", set()) == "sea turtle"
+    assert find_new_animal("a plain turtle crawled by", set()) == "turtle"
+
+
+def test_find_new_animal_prefers_a_multi_word_alias_over_a_generic_entry():
+    # Same precedence concern as above, but via an ALIAS rather than the
+    # canonical name itself: "mountain lion" is an alias of "cougar", and
+    # contains the word "lion", which the separate, existing lion entry's
+    # pattern also matches.
+    assert find_new_animal("a mountain lion prowled the ridge", set()) == "cougar"
+    assert find_new_animal("a lion roared", set()) == "lion"
+
+
+def test_known_animals_have_no_duplicate_aliases():
+    # A regression guard on the whole table, not just a few examples --
+    # the same alias string accidentally assigned to two canonical
+    # entries would make one of them permanently unreachable (whichever
+    # loses the specificity/definition-order tiebreak).
+    seen: dict[str, str] = {}
+    for canonical, aliases in _KNOWN_ANIMALS.items():
+        for alias in aliases:
+            assert alias not in seen, (
+                f"{alias!r} is used by both {seen.get(alias)!r} and {canonical!r}"
+            )
+            seen[alias] = canonical
 
 
 from tinytalk.animal_facts import _load_cache, _save_cache
