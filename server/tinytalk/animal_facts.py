@@ -222,7 +222,13 @@ async def _fetch_facts_from_api(
             "animal facts API returned a non-object record for %r", canonical_name
         )
         return None
-    return _extract_facts(first_record)
+    facts = _extract_facts(first_record)
+    if facts:
+        for fact in facts:
+            logger.info("fact retrieved from API for %r: %r", canonical_name, fact)
+    else:
+        logger.info("animal facts API had no usable facts for %r", canonical_name)
+    return facts
 
 
 async def get_fact(
