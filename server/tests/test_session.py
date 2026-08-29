@@ -137,10 +137,8 @@ async def test_llm_receives_system_prompt_and_history(transport):
         {
             "role": "system",
             "content": "be a kind storyteller\n\n"
-            "You're at the start of the story -- introduce the setting and "
-            "characters, and introduce a problem, challenge, or conflict for "
-            "them to face. Every good story needs something for the "
-            "characters to overcome -- don't wait to introduce it.",
+            "You're at the very start of the story. Introduce the setting "
+            "and characters.",
         },
         {"role": "user", "content": "tell me about a fox"},
     ]
@@ -336,15 +334,53 @@ async def test_malformed_control_frame_is_reported_without_killing_the_session(t
     assert session.state is State.IDLE
 
 
-async def test_empty_transcript_ends_the_turn_without_calling_the_llm(transport):
-    llm = FakeLlm()
+async def test_empty_transcript_still_gets_a_graceful_llm_reply_instead_of_silence(transport):
+    # Real on-device bug: the VAD can fire on background noise/rustling
+    # long enough to start a turn, but STT then transcribes nothing --
+    # previously this ended the turn with dead silence, no reply at all.
+    llm = FakeLlm(chunks=["Just then, "])
     session = make_session(transport, stt=FakeStt(transcript="   "), llm=llm)
 
     await run_full_turn(session)
 
-    assert llm.calls == []
+    assert len(llm.calls) == 1, "an empty transcript must still get a real LLM reply, not silence"
+    system_message = llm.calls[0][0]
+    assert system_message["role"] == "system"
+    assert "didn't hear anything new" in system_message["content"]
+    # No fake child utterance was added to history for the empty transcript.
+    assert not any(turn.speaker == "child" for turn in session.conversation.turns)
     assert session.state is State.IDLE
-    assert "turn_end" in transport.types()
+    assert transport.types() == ["transcript_final", "response_text", "turn_end"]
+    assert transport.messages_of_type("transcript_final")[0]["text"] == "   "
+
+
+async def test_empty_transcript_does_not_add_a_child_turn_to_conversation_history(transport):
+    llm = FakeLlm(chunks=["Just then, "])
+    session = make_session(transport, stt=FakeStt(transcript=""), llm=llm)
+
+    await run_full_turn(session)
+
+    speakers = [turn.speaker for turn in session.conversation.turns]
+    assert speakers == ["agent"], "an empty transcript must not be recorded as a child turn"
+
+
+async def test_llm_returning_an_empty_reply_still_gets_a_spoken_fallback(transport):
+    # Real on-device bug, distinct from the empty-transcript case above:
+    # the LLM can return a genuinely empty completion for a normal,
+    # non-empty transcript (confirmed: happened even with
+    # _STT_FAILURE_GUIDANCE already covering the empty-transcript case) --
+    # previously this reached turn_end with zero audio synthesized and no
+    # indication anything happened.
+    tts = FakeTts()
+    llm = FakeLlm(chunks=[])
+    session = make_session(transport, llm=llm, tts=tts)
+
+    await run_full_turn(session)
+
+    assert transport.messages_of_type("response_text")[0]["text"] == SAFE_FALLBACK
+    assert tts.spoken, "a fallback reply must still be synthesized and spoken, not silently skipped"
+    assert transport.types() == ["transcript_final", "response_text", "turn_end"]
+    assert session.state is State.IDLE
 
 
 async def test_aclose_cancels_an_in_flight_turn(transport):
@@ -360,9 +396,11 @@ async def test_aclose_cancels_an_in_flight_turn(transport):
 
 
 async def test_aclose_resets_stt_so_a_dropped_connection_cannot_leak_audio(transport):
-    # Engines are shared across connections in production (app.py) for
-    # loading cost reasons; a dropped connection must not leave stale
-    # buffered audio in the STT engine for the next connection to inherit.
+    # aclose() is for full session teardown (e.g. server shutdown), not an
+    # ordinary reconnect-expected disconnect -- see handle_disconnect()
+    # for that path. Engines are shared across connections in production
+    # (app.py) for loading cost reasons, so even a final teardown must not
+    # leave stale buffered audio in the STT engine behind.
     stt = FakeStt()
     session = make_session(transport, stt=stt)
 
@@ -372,6 +410,123 @@ async def test_aclose_resets_stt_so_a_dropped_connection_cannot_leak_audio(trans
 
     assert stt.resets == 1
     assert stt.fed == []
+
+
+async def test_handle_disconnect_mid_utterance_resets_stt_and_returns_to_idle(transport):
+    # A disconnect landing while still LISTENING (before speech_end ever
+    # arrived) means STT's own per-utterance reset -- normally triggered
+    # by finish() -- never fired. Unlike aclose(), this is the path an
+    # ordinary WebSocket drop takes (app.py's handle_connection), and it
+    # must still leave the session able to start a fresh utterance once
+    # the client reconnects.
+    stt = FakeStt()
+    session = make_session(transport, stt=stt)
+
+    await session.handle_text(SPEECH_START)
+    await session.handle_audio(b"\x01\x02")
+    await session.handle_disconnect()
+
+    assert stt.resets == 1
+    assert stt.fed == []
+    assert session.state is State.IDLE
+
+    # The session must be able to start a genuinely new utterance afterward.
+    await session.handle_text(SPEECH_START)
+    assert session.state is State.LISTENING
+
+
+async def test_handle_disconnect_while_waiting_for_reply_lets_the_turn_keep_running(transport):
+    # The core behavior this whole feature exists for: backgrounding the
+    # iOS app while waiting for a reply disconnects the client, but the
+    # reply must keep generating rather than being cancelled -- see
+    # replay_last_turn() for how it reaches the child later.
+    tts = FakeTts(delay=0.05)
+    session = make_session(transport, tts=tts)
+
+    await session.handle_text(SPEECH_START)
+    await session.handle_text(SPEECH_END)
+    await session.handle_disconnect()
+
+    assert tts.cancelled is False
+    await session.wait_for_turn()
+    assert transport.types() == ["transcript_final", "response_text", "turn_end"]
+    assert session.state is State.IDLE
+
+
+async def test_replay_last_turn_resends_the_buffered_reply_on_a_fresh_transport(transport):
+    other_transport = FakeTransport()
+    session = make_session(transport)
+
+    await run_full_turn(session)
+    session.rebind_transport(other_transport)
+    await session.replay_last_turn()
+
+    assert other_transport.types() == ["response_text", "turn_end"]
+    assert other_transport.audio == transport.audio
+
+
+async def test_replay_last_turn_is_a_no_op_when_nothing_is_buffered(transport):
+    session = make_session(transport)
+
+    await session.replay_last_turn()  # must not raise
+
+    assert transport.types() == []
+
+
+async def test_replay_last_turn_can_replay_to_multiple_reconnects_in_a_row(transport):
+    # Deliberate: replay_last_turn() does NOT consume the buffer. Real bug,
+    # found on real hardware, from an earlier version that DID consume it:
+    # a reconnect that itself dies quickly (e.g. the child backgrounding
+    # the app twice in a row) would use up the one replay attempt without
+    # the child ever actually hearing it -- silently losing the reply for
+    # good, since no later connection would get a turn at it. There is no
+    # reliable server-side signal for "the child genuinely heard this" (a
+    # send not raising doesn't mean it reached a live listener), so it's
+    # safer to keep replaying on every reconnect until a genuinely new
+    # utterance starts (see test_a_new_turn_clears_the_previous_turns_replay_buffer)
+    # than to risk losing a reply the child is actively still trying to
+    # catch up on.
+    other_transport = FakeTransport()
+    session = make_session(transport)
+
+    await run_full_turn(session)
+    session.rebind_transport(other_transport)
+    await session.replay_last_turn()
+    assert other_transport.types() == ["response_text", "turn_end"]
+
+    yet_another_transport = FakeTransport()
+    session.rebind_transport(yet_another_transport)
+    await session.replay_last_turn()
+
+    assert yet_another_transport.types() == ["response_text", "turn_end"], (
+        "a second reconnect (e.g. the first one died before the child could "
+        "actually hear it) must still get the reply replayed"
+    )
+
+
+async def test_a_new_turn_clears_the_previous_turns_replay_buffer(transport):
+    llm = FakeLlm()
+    session = make_session(transport, llm=llm)
+
+    await run_full_turn(session)
+
+    other_transport = FakeTransport()
+    session.rebind_transport(other_transport)
+
+    llm.chunks = ["A dragon then!"]
+    await session.handle_text('{"type": "speech_start", "turn_id": 2}')
+    await session.handle_audio(b"\x03\x04")
+    await session.handle_text(SPEECH_END)
+    await session.wait_for_turn()
+
+    # A fresh reconnect at this point must replay only the SECOND turn, not
+    # a stale copy of the first one prepended to it.
+    yet_another_transport = FakeTransport()
+    session.rebind_transport(yet_another_transport)
+    await session.replay_last_turn()
+
+    assert yet_another_transport.messages_of_type("response_text")[0]["text"] == "A dragon then!"
+    assert len(yet_another_transport.messages_of_type("response_text")) == 1
 
 
 async def test_speech_start_mid_turn_is_treated_as_an_interrupt(transport):
@@ -566,6 +721,10 @@ async def test_reaching_story_done_saves_and_resets_conversation_and_arc(transpo
     # no memory of the finished one.
     assert session.conversation.turns == ()
     assert session._story_arc.is_done is False, "the story arc must be a fresh instance, not the same already-done one"
+    # The turn's transcript ("tell me about a fox", FakeStt's default) mentions
+    # an animal, so a non-reset tracker would still have _any_animal_mentioned
+    # set to True here.
+    assert session._animal_facts._any_animal_mentioned is False, "the animal fact tracker must be a fresh instance too"
 
 
 async def test_interrupting_a_concluding_turn_defers_save_and_reset_to_the_next_completed_turn(transport, monkeypatch):
@@ -609,3 +768,44 @@ async def test_story_not_done_does_not_save_or_reset_conversation(transport, mon
 
     assert saved == []
     assert len(session.conversation.turns) == 2  # child + agent turn both retained
+
+
+async def test_animal_mention_adds_fact_guidance_to_the_llm_call(transport, monkeypatch, tmp_path):
+    from tinytalk.animal_facts import _save_cache
+
+    monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", tmp_path / "cache.json")
+    _save_cache({"fox": ["foxes have excellent hearing"]}, tmp_path / "cache.json")
+    llm = FakeLlm()
+    session = make_session(transport, stt=FakeStt(transcript="tell me about a fox"), llm=llm)
+
+    await run_full_turn(session)
+
+    system_message = llm.calls[0][0]
+    assert system_message["role"] == "system"
+    assert "foxes have excellent hearing" in system_message["content"]
+
+
+async def test_no_animal_mentioned_sends_no_fact_guidance(transport, monkeypatch, tmp_path):
+    monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", tmp_path / "cache.json")
+    llm = FakeLlm()
+    session = make_session(
+        transport, stt=FakeStt(transcript="what is your favorite color"), llm=llm
+    )
+
+    await run_full_turn(session)
+
+    system_message = llm.calls[0][0]
+    assert "Weave this real fact" not in system_message["content"]
+
+
+async def test_animal_free_first_turn_gets_the_nudge(transport, monkeypatch, tmp_path):
+    monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", tmp_path / "cache.json")
+    llm = FakeLlm()
+    session = make_session(
+        transport, stt=FakeStt(transcript="let's make up a story"), llm=llm
+    )
+
+    await run_full_turn(session)
+
+    system_message = llm.calls[0][0]
+    assert "what animal should be in the story" in system_message["content"]

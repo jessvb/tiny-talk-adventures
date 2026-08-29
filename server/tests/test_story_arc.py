@@ -3,18 +3,19 @@ import pytest
 from tinytalk.story_arc import Stage, StoryArc
 
 
-def test_new_arc_starts_at_setup_stage_and_is_not_done():
+def test_new_arc_starts_at_intro_stage_and_is_not_done():
     arc = StoryArc()
-    assert arc.stage is Stage.SETUP
+    assert arc.stage is Stage.INTRO
     assert arc.is_done is False
 
 
 def test_stage_progresses_through_all_boundaries_for_default_target():
-    # target_turns=7: setup 1-2, rising_action 3-5, climax 6-7,
+    # target_turns=7: intro 1, setup 2, rising_action 3-5, climax 6-7,
     # resolution 8-10.
     arc = StoryArc()
     expected = (
-        [Stage.SETUP] * 2
+        [Stage.INTRO] * 1
+        + [Stage.SETUP] * 1
         + [Stage.RISING_ACTION] * 3
         + [Stage.CLIMAX] * 2
         + [Stage.RESOLUTION] * 3
@@ -25,9 +26,14 @@ def test_stage_progresses_through_all_boundaries_for_default_target():
 
 
 def test_custom_target_turns_scales_boundaries():
-    # target_turns=8: setup 1-2, rising_action 3-5, climax 6-8.
+    # target_turns=8: intro 1, setup 2, rising_action 3-5, climax 6-8.
     arc = StoryArc(target_turns=8)
-    expected = [Stage.SETUP] * 2 + [Stage.RISING_ACTION] * 3 + [Stage.CLIMAX] * 3
+    expected = (
+        [Stage.INTRO] * 1
+        + [Stage.SETUP] * 1
+        + [Stage.RISING_ACTION] * 3
+        + [Stage.CLIMAX] * 3
+    )
     for expected_stage in expected:
         arc.record_turn("a squirrel found an acorn")
         assert arc.stage is expected_stage
@@ -39,12 +45,21 @@ def test_record_turn_returns_guidance_matching_current_stage():
     assert "start of the story" in guidance.lower()
 
 
+def test_intro_guidance_does_not_mention_conflict():
+    # The first turn should just set the scene -- introducing a
+    # problem/challenge/conflict is SETUP's job, starting turn 2.
+    arc = StoryArc()
+    guidance = arc.record_turn("we walked into the forest").lower()  # turn 1 -- intro
+    assert not any(word in guidance for word in ("problem", "challenge", "conflict"))
+
+
 def test_setup_guidance_instructs_introducing_a_conflict_right_away():
     # Real on-device testing found stories had no conflict/tension at
     # all -- SETUP must explicitly tell the model to introduce a
     # problem/challenge, not just describe the setting.
     arc = StoryArc()
-    guidance = arc.record_turn("we walked into the forest")
+    arc.record_turn("we walked into the forest")  # turn 1 -- intro
+    guidance = arc.record_turn("a fox appeared")  # turn 2 -- setup
     assert any(word in guidance.lower() for word in ("problem", "challenge", "conflict"))
 
 
@@ -80,7 +95,7 @@ def test_resolution_and_forced_guidance_both_instruct_ending_with_the_end():
 )
 def test_child_stop_phrases_force_resolution_guidance_even_during_setup(phrase):
     arc = StoryArc()
-    guidance = arc.record_turn(phrase)  # turn 1 -- would normally be setup
+    guidance = arc.record_turn(phrase)  # turn 1 -- would normally be intro
     assert "wrap up the story" in guidance.lower()
 
 
@@ -108,9 +123,9 @@ def test_turn_count_past_grace_ceiling_forces_guidance_then_marks_done():
 
     guidance = arc.record_turn("something happens")  # turn 11, past ceiling
     assert guidance == (
-        "This must be the last reply -- resolve the problem from earlier "
+        "This must be the last reply. Resolve the problem from earlier "
         "in the story and bring it to a warm, complete ending right now. "
-        "Do not ask what should happen next -- the story is over. End "
+        "Do not ask what should happen next. The story is over. End "
         "your reply with the words \"The end.\""
     )
     arc.record_reply("anything at all, even without a conclusion phrase")

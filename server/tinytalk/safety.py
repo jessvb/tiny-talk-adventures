@@ -82,6 +82,34 @@ _REAL_WORLD_DANGER = (
     "jump off a cliff",
 )
 
+# Real animal facts mention mating/breeding/pregnancy far more often than
+# ordinary story dialogue ever does -- confirmed, while designing this
+# feature, that none of the existing five categories had any coverage for
+# it. Also covers explicit sexual content/terminology, which has no
+# legitimate place in a story for a young child regardless of source.
+_REPRODUCTION = (
+    "mating",
+    "breeding",
+    "pregnant",
+    "pregnancy",
+    "reproduce",
+    "reproduces",
+    "reproducing",
+    "reproduction",
+    "sex",
+    "sexual",
+    "porn",
+    "porno",
+    "pornography",
+    "pornographic",
+    "nude",
+    "nudity",
+    "erotic",
+    "masturbate",
+    "masturbation",
+    "orgasm",
+)
+
 _PROFANITY = (
     "damn",
     "hell",
@@ -98,7 +126,7 @@ _PROFANITY = (
     "slut",
 )
 
-_ALL_BLOCKED = _VIOLENCE + _FRIGHTENING + _ADULT_THEMES + _REAL_WORLD_DANGER + _PROFANITY
+_ALL_BLOCKED = _VIOLENCE + _FRIGHTENING + _ADULT_THEMES + _REAL_WORLD_DANGER + _REPRODUCTION + _PROFANITY
 
 # Word boundaries keep "begun" and "knifemaker" from tripping the filter.
 _BLOCKED_PATTERN = re.compile(
@@ -133,4 +161,12 @@ def is_safe(text: str) -> bool:
 
 
 def filter_reply(text: str) -> str:
-    return text if is_safe(text) else SAFE_FALLBACK
+    # `text and` also catches an empty LLM completion -- confirmed on real
+    # hardware to happen even with _STT_FAILURE_GUIDANCE already appended
+    # to the prompt (that guidance covers an empty TRANSCRIPT; the model
+    # can separately just return nothing for a given turn regardless of
+    # what it was asked). is_safe("") is trivially True, so without this,
+    # an empty reply sailed through untouched: no audio synthesized, no
+    # fallback, a turn_end with total silence and no indication anything
+    # happened -- worse than an unsafe reply, which at least gets caught.
+    return text if text and is_safe(text) else SAFE_FALLBACK

@@ -1,9 +1,62 @@
+import asyncio
+import threading
+import time
+
 import numpy as np
 import pytest
+import torch
+from phonemizer.backend.espeak.wrapper import EspeakWrapper
 
 from tinytalk.audio import float32_to_pcm16
 from tinytalk.engines import EngineError
-from tinytalk.tts_kokoro import KokoroTts
+from tinytalk.tts_kokoro import KokoroTts, _configure_espeak_from_homebrew
+
+
+def _make_fake_homebrew_layout(tmp_path):
+    """Builds a fake `brew install espeak-ng` layout under tmp_path:
+    <tmp_path>/bin/espeak-ng (what shutil.which would find) plus the
+    stable opt/espeak-ng/{lib,share} alias structure alongside it."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    espeak_bin = bin_dir / "espeak-ng"
+    espeak_bin.touch()
+    lib_dir = tmp_path / "opt" / "espeak-ng" / "lib"
+    lib_dir.mkdir(parents=True)
+    library = lib_dir / "libespeak-ng.dylib"
+    library.touch()
+    data_dir = tmp_path / "opt" / "espeak-ng" / "share" / "espeak-ng-data"
+    data_dir.mkdir(parents=True)
+    return espeak_bin, library, data_dir
+
+
+def test_configure_espeak_points_the_wrapper_at_the_homebrew_install(monkeypatch, tmp_path):
+    espeak_bin, library, data_dir = _make_fake_homebrew_layout(tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: str(espeak_bin))
+    calls = {}
+    monkeypatch.setattr(EspeakWrapper, "set_library", lambda lib: calls.__setitem__("library", lib))
+    monkeypatch.setattr(EspeakWrapper, "set_data_path", lambda path: calls.__setitem__("data_path", path))
+
+    _configure_espeak_from_homebrew()
+
+    assert calls == {"library": str(library), "data_path": str(data_dir)}
+
+
+def test_configure_espeak_raises_when_not_on_path(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: None)
+
+    with pytest.raises(EngineError, match="brew install espeak-ng"):
+        _configure_espeak_from_homebrew()
+
+
+def test_configure_espeak_raises_when_homebrew_layout_is_incomplete(monkeypatch, tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    espeak_bin = bin_dir / "espeak-ng"
+    espeak_bin.touch()
+    monkeypatch.setattr("shutil.which", lambda name: str(espeak_bin))
+
+    with pytest.raises(EngineError, match="brew reinstall espeak-ng"):
+        _configure_espeak_from_homebrew()
 
 
 class FakePipeline:
@@ -69,3 +122,82 @@ async def test_model_failure_is_reported_as_engine_error():
     tts = KokoroTts(pipeline_factory=ExplodingPipeline)
     with pytest.raises(EngineError, match="Kokoro"):
         [chunk async for chunk in tts.synthesize("The fox ran.")]
+
+
+async def test_synthesize_releases_mps_cache_after_each_call(monkeypatch):
+    # PyTorch's MPS caching allocator holds memory for reuse within this
+    # process rather than returning it to the OS -- on a machine also
+    # running Ollama and STT, an unreleased cache was found (real
+    # on-device testing) to make each LATER turn in a session
+    # progressively worse than the first, as Kokoro's footprint grows and
+    # leaves less memory for Ollama.
+    calls = []
+    monkeypatch.setattr(torch.mps, "empty_cache", lambda: calls.append(True))
+    pipeline = FakePipeline("a")
+    tts = KokoroTts(pipeline_factory=lambda code: pipeline)
+
+    [chunk async for chunk in tts.synthesize("The fox ran.")]
+
+    assert calls == [True]
+
+
+async def test_synthesize_releases_mps_cache_even_when_synthesis_fails(monkeypatch):
+    calls = []
+    monkeypatch.setattr(torch.mps, "empty_cache", lambda: calls.append(True))
+    tts = KokoroTts(pipeline_factory=ExplodingPipeline)
+
+    with pytest.raises(EngineError):
+        [chunk async for chunk in tts.synthesize("The fox ran.")]
+
+    assert calls == [True]
+
+
+async def test_blank_text_does_not_touch_the_mps_cache(monkeypatch):
+    calls = []
+    monkeypatch.setattr(torch.mps, "empty_cache", lambda: calls.append(True))
+    pipeline = FakePipeline("a")
+    tts = KokoroTts(pipeline_factory=lambda code: pipeline)
+
+    [chunk async for chunk in tts.synthesize("   ")]
+
+    assert calls == []
+
+
+class TrackingPipeline:
+    """Records the [start, end) wall-clock window each call actually ran
+    in, so a test can assert two calls never overlapped."""
+
+    def __init__(self, lang_code: str, delay: float = 0.05) -> None:
+        self.delay = delay
+        self.windows: list[tuple[float, float]] = []
+        self._windows_lock = threading.Lock()
+
+    def __call__(self, text: str, voice: str):
+        start = time.monotonic()
+        time.sleep(self.delay)
+        end = time.monotonic()
+        with self._windows_lock:
+            self.windows.append((start, end))
+        yield ("graphemes", "phonemes", np.array([0.0], dtype=np.float32))
+
+
+async def test_concurrent_synthesize_calls_never_overlap_in_the_pipeline():
+    # Real bug, confirmed on real hardware (2026-08-28): a cancelled turn's
+    # TTS call keeps running on its worker thread even after asyncio
+    # considers it cancelled (Python cannot stop an already-started
+    # thread-pool call), so a NEW turn's synthesize() could start a second
+    # concurrent call into the same shared KPipeline instance -- and
+    # PyTorch's MPS backend crashed the whole process when that happened.
+    # This proves _run_pipeline's threading.Lock actually serializes
+    # concurrent calls rather than letting them race.
+    pipeline = TrackingPipeline("a", delay=0.05)
+    tts = KokoroTts(pipeline_factory=lambda code: pipeline)
+
+    async def run():
+        return [chunk async for chunk in tts.synthesize("hello")]
+
+    await asyncio.gather(run(), run())
+
+    assert len(pipeline.windows) == 2
+    (start1, end1), (start2, end2) = sorted(pipeline.windows)
+    assert end1 <= start2, f"pipeline calls overlapped: {pipeline.windows}"

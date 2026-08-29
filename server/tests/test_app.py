@@ -5,6 +5,7 @@ from tinytalk.engines import EngineError
 from tinytalk.llm_groq import GroqLlm
 from tinytalk.llm_ollama import OllamaLlm
 from tinytalk.session import SessionRunner
+from websockets.exceptions import ConnectionClosedError
 
 
 class FakeWebSocket:
@@ -23,6 +24,21 @@ class FakeWebSocket:
 
     async def send(self, payload: str | bytes) -> None:
         self.sent.append(payload)
+
+
+class AbruptlyClosingWebSocket(FakeWebSocket):
+    """Raises ConnectionClosedError partway through iteration -- simulates
+    a keepalive ping timeout or WiFi drop, distinct from a clean close
+    handshake (which FakeWebSocket's generator already covers by just
+    running out of items)."""
+
+    def __aiter__(self):
+        async def generate():
+            for item in self._incoming:
+                yield item
+            raise ConnectionClosedError(None, None)
+
+        return generate()
 
 
 class BoomStt:
@@ -64,38 +80,137 @@ async def test_transport_sends_text_and_binary_over_the_socket():
     assert websocket.sent == ['{"type": "turn_end"}', b"\x01\x02"]
 
 
-async def test_handle_connection_drives_a_full_turn():
+async def test_handle_connection_dispatches_audio_to_stt_before_any_disconnect():
     websocket = FakeWebSocket(
         ['{"type": "speech_start", "turn_id": 1}', b"\x01\x02", '{"type": "speech_end"}']
     )
     stt = FakeStt()
+    session = SessionRunner(
+        transport=WebSocketTransport(websocket),
+        stt=stt,
+        llm=FakeLlm(),
+        tts=FakeTts(),
+        system_prompt="be kind",
+    )
 
-    def session_factory(transport):
-        return SessionRunner(
-            transport=transport,
-            stt=stt,
-            llm=FakeLlm(),
-            tts=FakeTts(),
-            system_prompt="be kind",
-        )
-
-    await handle_connection(websocket, session_factory=session_factory)
+    await handle_connection(websocket, session=session)
 
     # The binary frame must actually have reached the STT engine -- this is
     # the routing this task is responsible for, and it's easy to break
     # silently since FakeStt.finish() returns a canned transcript regardless
-    # of what was fed to it. Checked via resets/all_fed rather than
-    # stt.fed directly: handle_connection's cleanup now resets the STT on
-    # every disconnect (shared engines mean a dropped connection must not
-    # leave stale buffered audio for whoever connects next), which clears
-    # stt.fed as its own correct side effect.
-    assert stt.all_fed == [b"\x01\x02"]
-    assert stt.resets == 1
+    # of what was fed to it.
+    assert stt.fed == [b"\x01\x02"]
+    # By the time the fixture "disconnects" (runs out of messages), speech_end
+    # has already moved the session to THINKING -- handle_disconnect() only
+    # resets STT for a disconnect landing mid-utterance (still LISTENING), so
+    # no reset happens here. See test_abrupt_disconnect_is_handled_without_an_unhandled_exception
+    # for that case.
+    assert stt.resets == 0
 
+    # transcript_final is sent synchronously inside _finish_listening,
+    # before the (still-running, not cancelled) turn task even exists --
+    # must still arrive even though the fixture "disconnects" (runs out of
+    # messages) immediately afterward. See
+    # test_handle_connection_lets_an_in_flight_turn_finish_and_buffers_it_for_replay
+    # for the reply side of this.
     text_frames = [item for item in websocket.sent if isinstance(item, str)]
     assert any("transcript_final" in frame for frame in text_frames)
-    assert any("turn_end" in frame for frame in text_frames)
     assert not any("error" in frame for frame in text_frames)
+
+
+async def test_handle_connection_lets_an_in_flight_turn_finish_and_buffers_it_for_replay():
+    # Real scenario, confirmed on real hardware: the fixture running out of
+    # messages right after speech_end simulates the client disconnecting
+    # before any reply arrives -- exactly what happens when the iOS app is
+    # backgrounded while waiting for a response. handle_connection used to
+    # cancel the in-flight turn on disconnect; it now deliberately does NOT
+    # (see SessionRunner.handle_disconnect()) -- the turn keeps running and
+    # everything it sends is buffered so it can be replayed in full to
+    # whichever connection asks next (see the reconnect test below).
+    websocket = FakeWebSocket(
+        ['{"type": "speech_start", "turn_id": 1}', b"\x01\x02", '{"type": "speech_end"}']
+    )
+    session = SessionRunner(
+        transport=WebSocketTransport(websocket),
+        stt=FakeStt(),
+        llm=FakeLlm(),
+        tts=FakeTts(),
+        system_prompt="be kind",
+    )
+
+    await handle_connection(websocket, session=session)
+    # handle_connection returns as soon as the fake socket runs out of
+    # messages -- the turn it left running is a detached background task,
+    # awaited here the same way any test waits for one.
+    await session.wait_for_turn()
+
+    text_frames = [item for item in websocket.sent if isinstance(item, str)]
+    assert any("response_text" in frame for frame in text_frames), (
+        "the turn must be allowed to finish, not cancelled, so its reply exists to replay later"
+    )
+    assert any("turn_end" in frame for frame in text_frames)
+
+
+async def test_reconnecting_after_a_disconnect_mid_turn_replays_the_buffered_reply():
+    first_socket = FakeWebSocket(
+        ['{"type": "speech_start", "turn_id": 1}', b"\x01\x02", '{"type": "speech_end"}']
+    )
+    session = SessionRunner(
+        transport=WebSocketTransport(first_socket),
+        stt=FakeStt(),
+        llm=FakeLlm(),
+        tts=FakeTts(),
+        system_prompt="be kind",
+    )
+    await handle_connection(first_socket, session=session)
+    await session.wait_for_turn()
+
+    second_socket = FakeWebSocket([])  # the child reopens the app; no new messages yet
+    await handle_connection(second_socket, session=session)
+
+    text_frames = [item for item in second_socket.sent if isinstance(item, str)]
+    audio_frames = [item for item in second_socket.sent if isinstance(item, bytes)]
+    assert any("response_text" in frame for frame in text_frames), (
+        "reconnecting must replay the reply the child never received"
+    )
+    assert any("turn_end" in frame for frame in text_frames)
+    assert audio_frames, "the reply's audio must be replayed too, not just its text"
+
+
+async def test_a_third_connection_still_gets_the_reply_replayed_if_the_second_died_fast():
+    # Real bug, found on real hardware: an EARLIER version consumed the
+    # replay buffer on first use, so a reconnect that itself died quickly
+    # (e.g. the child backgrounding the app twice in a row, each time
+    # before the reply could actually finish playing) burned the one
+    # replay attempt without the child ever hearing it -- silently losing
+    # the reply for good. The buffer must survive across as many flaky
+    # reconnects as it takes, forgotten only once a genuinely new
+    # utterance starts (see test_a_new_turn_clears_the_previous_turns_replay_buffer
+    # in test_session.py).
+    first_socket = FakeWebSocket(
+        ['{"type": "speech_start", "turn_id": 1}', b"\x01\x02", '{"type": "speech_end"}']
+    )
+    session = SessionRunner(
+        transport=WebSocketTransport(first_socket),
+        stt=FakeStt(),
+        llm=FakeLlm(),
+        tts=FakeTts(),
+        system_prompt="be kind",
+    )
+    await handle_connection(first_socket, session=session)
+    await session.wait_for_turn()
+
+    second_socket = FakeWebSocket([])
+    await handle_connection(second_socket, session=session)
+    assert second_socket.sent, "sanity check: the first reconnect should have gotten the replay"
+
+    third_socket = FakeWebSocket([])
+    await handle_connection(third_socket, session=session)
+
+    assert third_socket.sent, (
+        "the third connection must still get the reply -- the second one dying "
+        "fast must not have burned the only replay attempt"
+    )
 
 
 async def test_engine_failure_during_dispatch_sends_an_error_frame_and_keeps_the_socket_open():
@@ -107,20 +222,45 @@ async def test_engine_failure_during_dispatch_sends_an_error_frame_and_keeps_the
     websocket = FakeWebSocket(
         ['{"type": "speech_start", "turn_id": 1}', b"\x01\x02", '{"type": "speech_end"}']
     )
+    session = SessionRunner(
+        transport=WebSocketTransport(websocket),
+        stt=BoomStt(),
+        llm=FakeLlm(),
+        tts=FakeTts(),
+        system_prompt="be kind",
+    )
 
-    def session_factory(transport):
-        return SessionRunner(
-            transport=transport,
-            stt=BoomStt(),
-            llm=FakeLlm(),
-            tts=FakeTts(),
-            system_prompt="be kind",
-        )
-
-    await handle_connection(websocket, session_factory=session_factory)
+    await handle_connection(websocket, session=session)
 
     text_frames = [item for item in websocket.sent if isinstance(item, str)]
     assert text_frames, "expected an error frame, but nothing was sent to the client"
     assert any(
         '"type": "error"' in frame and "stt exploded" in frame for frame in text_frames
     )
+
+
+async def test_abrupt_disconnect_is_handled_without_an_unhandled_exception():
+    # A keepalive ping timeout or WiFi drop raises ConnectionClosedError
+    # out of `async for message in websocket` itself, not just out of a
+    # send -- this must not propagate as an unhandled exception (which
+    # would otherwise produce a scary traceback in the logs for what is,
+    # in real-world mobile usage, an expected occurrence).
+    websocket = AbruptlyClosingWebSocket(
+        ['{"type": "speech_start", "turn_id": 1}', b"\x01\x02"]
+    )
+    stt = FakeStt()
+    session = SessionRunner(
+        transport=WebSocketTransport(websocket),
+        stt=stt,
+        llm=FakeLlm(),
+        tts=FakeTts(),
+        system_prompt="be kind",
+    )
+
+    await handle_connection(websocket, session=session)  # must not raise
+
+    # No speech_end ever arrived, so the disconnect landed mid-utterance
+    # (still LISTENING) -- handle_disconnect() resets STT in exactly this
+    # case, since STT's own per-utterance reset (normally triggered by
+    # finish()) never got a chance to fire.
+    assert stt.resets == 1

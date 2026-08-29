@@ -23,6 +23,7 @@ class Event(Enum):
     RESPONSE_READY = auto()
     TTS_DONE = auto()
     INTERRUPT = auto()
+    ABANDON = auto()
 
 
 class InvalidTransition(RuntimeError):
@@ -40,6 +41,15 @@ _TRANSITIONS: dict[tuple[State, Event], State] = {
     (State.LISTENING, Event.INTERRUPT): State.LISTENING,
     (State.THINKING, Event.INTERRUPT): State.LISTENING,
     (State.SPEAKING, Event.INTERRUPT): State.LISTENING,
+    # A WebSocket disconnect landing mid-utterance (before speech_end ever
+    # arrived) means the child's partial utterance was simply abandoned --
+    # there is nothing to resume, so this walks back to IDLE rather than
+    # leaving the session stuck in LISTENING with no legal way to start a
+    # fresh utterance once the client reconnects. Deliberately not defined
+    # for THINKING/SPEAKING: a disconnect there is expected to leave a turn
+    # running/held for later replay, not abandoned. See
+    # SessionRunner.handle_disconnect().
+    (State.LISTENING, Event.ABANDON): State.IDLE,
 }
 
 

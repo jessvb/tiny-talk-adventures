@@ -47,6 +47,17 @@ def test_filter_replaces_unsafe_text_with_fallback():
     assert filter_reply("He picked up the knife.") == SAFE_FALLBACK
 
 
+def test_filter_replaces_an_empty_reply_with_fallback():
+    # Real bug, confirmed on real hardware: the LLM can return a genuinely
+    # empty completion for a turn (separate from an empty transcript, which
+    # _STT_FAILURE_GUIDANCE already covers) -- is_safe("") is trivially
+    # True, so without this, an empty reply sailed straight through, giving
+    # total silence with no fallback and no indication anything happened.
+    # (Whitespace-only input isn't this function's concern -- session.py's
+    # only call site already .strip()s before calling filter_reply().)
+    assert filter_reply("") == SAFE_FALLBACK
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -141,3 +152,53 @@ def test_safe_phrase_does_not_mask_a_separate_dangerous_use_of_the_same_word():
     assert is_safe(
         "He wished on a shooting star while shooting arrows at the target."
     ) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Foxes are mating right now.",
+        "The rabbits started breeding early this year.",
+        "She is pregnant with a litter of kittens.",
+        "The pregnancy lasts about two months.",
+        "Animals reproduce in many different ways.",
+        "This is how animals reproduction works.",
+    ],
+)
+def test_reproduction_content_is_unsafe(text):
+    assert is_safe(text) is False
+
+
+def test_filter_replaces_reproduction_content_with_fallback():
+    assert filter_reply("Foxes are mating right now.") == SAFE_FALLBACK
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Let's talk about sex.",
+        "That website has sexual content.",
+        "He was watching porn.",
+        "That's a porno movie.",
+        "It's a pornography site.",
+        "The image was pornographic.",
+        "She was nude in the painting.",
+        "The statue depicts nudity.",
+        "The scene was erotic.",
+        "He started to masturbate.",
+        "Masturbation is a private act.",
+        "She had an orgasm.",
+    ],
+)
+def test_explicit_sexual_content_is_unsafe(text):
+    assert is_safe(text) is False
+
+
+def test_bare_mate_and_breed_nouns_are_not_blocked():
+    # "mate" and "breed" were trimmed from _REPRODUCTION: the gerund/verb/
+    # adjective forms (mating, breeding, pregnant, ...) already cover real
+    # reproduction-fact text, and the bare nouns false-positive on common
+    # innocent phrases -- "mates" meaning friends, "breed" meaning a dog
+    # breed -- without adding real coverage.
+    assert is_safe("His mates ran on ahead through the meadow.") is True
+    assert is_safe("The friendliest breed of dog is the golden retriever.") is True

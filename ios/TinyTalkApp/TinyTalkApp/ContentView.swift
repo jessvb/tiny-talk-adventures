@@ -1,6 +1,7 @@
 import SwiftUI
 import TinyTalkCore
 import TinyTalkPlatform
+import UIKit
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -29,12 +30,28 @@ final class AppModel: ObservableObject {
     /// single long-lived consumer task drains the stream strictly in order.
     private var micStreamContinuation: AsyncStream<Data>.Continuation?
     private var micConsumerTask: Task<Void, Never>?
+    /// True only when this app itself disconnected because it was
+    /// backgrounded WHILE actually connected -- see
+    /// handleAppBackgrounded()/handleAppForegrounded(). Distinguishes
+    /// "reconnect automatically, the user didn't ask for this" from a
+    /// disconnect the user chose themselves (tapped Disconnect) or one
+    /// the server side already caused (startPollingState()'s `closed`
+    /// handling) -- neither of those should be silently overridden by
+    /// auto-reconnecting the next time the app becomes active again.
+    private var shouldReconnectOnForeground = false
+    /// Set by handleAppBackgrounded() when the backgrounded turn was still
+    /// live (.waitingForReply or .speaking) -- handleAppForegrounded() hands
+    /// this to connect(resumingTurnId:) so the reply that was in flight (or
+    /// already finished but never heard) can be resumed/replayed instead of
+    /// starting a silent fresh session. nil for a backgrounding that
+    /// happened while .idle or .listening, where there is nothing to resume.
+    private var pendingResumeTurnId: Int?
 
     init() {
         serverAddress = UserDefaults.standard.string(forKey: "serverAddress") ?? "ws://192.168.1.1:8765"
     }
 
-    func connect() async {
+    func connect(resumingTurnId: Int? = nil) async {
         UserDefaults.standard.set(serverAddress, forKey: "serverAddress")
         guard let url = URL(string: serverAddress) else {
             lastErrorMessage = "invalid server address"
@@ -61,6 +78,20 @@ final class AppModel: ObservableObject {
 
         let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad, waitingDittyAudio: WaitingDitty.audio)
         self.coordinator = coordinator
+        // Must happen BEFORE start() below: resume() sets up turnTask/
+        // currentTurnId synchronously so that once consumeServerEvents()
+        // (started by start()) begins reading connection.events(), nothing
+        // the server replays for this turn_id can be discarded as stale for
+        // arriving before anything was listening for it. Deliberately does
+        // NOT start the waiting ditty yet -- see the startResumedWaitingDitty()
+        // call further down, and resume()'s own doc comment, for why that
+        // has to wait until after mic capture has configured the engine.
+        if let resumingTurnId {
+            print("AppModel: resuming turn_id=\(resumingTurnId)")
+            await coordinator.resume(turnId: resumingTurnId)
+        } else {
+            print("AppModel: fresh connect, no turn to resume")
+        }
         runLoop = Task { await coordinator.start() }
 
         let (micStream, micContinuation) = AsyncStream<Data>.makeStream()
@@ -75,7 +106,7 @@ final class AppModel: ObservableObject {
             // micContinuation is a value type (AsyncStream.Continuation is a
             // struct), so capturing it here does not retain `self` or the
             // coordinator -- no weak-capture is needed or possible.
-            try audio.startCapturing { pcm in
+            try await audio.startCapturing { pcm in
                 micContinuation.yield(pcm)
             }
         } catch {
@@ -89,6 +120,17 @@ final class AppModel: ObservableObject {
             lastErrorMessage = "could not start audio capture: \(error.localizedDescription). Check Settings > Privacy > Microphone."
             disconnect()
             return
+        }
+
+        // Only now -- after startCapturing() has configured
+        // RealAudioEngine's input side -- is it safe to start the waiting
+        // ditty (the first thing that calls play()/engine.start()).
+        // Confirmed on real hardware: calling play() any earlier than this
+        // reliably fails with an input/output sample-rate mismatch inside
+        // CoreAudio's voice-processing unit, every single retry attempt,
+        // regardless of how long play()'s own retry loop waits.
+        if resumingTurnId != nil {
+            await coordinator.startResumedWaitingDitty()
         }
 
         isConnected = true
@@ -126,15 +168,89 @@ final class AppModel: ObservableObject {
     }
 
     /// Lets the child/parent mute the mic -- e.g. to prevent an accidental
-    /// barge-in while waiting for a reply. Toggles local UI state directly
-    /// (rather than polling it back from the coordinator, the way state/
-    /// transcript/etc. are) since this button is the only thing that ever
-    /// changes it -- there's no async server-driven update to reconcile.
+    /// barge-in while waiting for a reply, or to unmute during that same
+    /// window if they want to speak up anyway. Does NOT set isMicMuted
+    /// directly: SessionCoordinator now also flips its own isMuted
+    /// automatically (muted for the whole .waitingForReply window, unmuted
+    /// the instant real reply audio starts), so this button is no longer
+    /// the only thing that changes it -- isMicMuted has to be polled back
+    /// from the coordinator (see startPollingState()) like state/
+    /// transcript/etc. already are, or it would drift out of sync with
+    /// (and could visually contradict) an in-flight automatic change.
     func toggleMute() {
-        isMicMuted.toggle()
         let coordinatorToUpdate = coordinator
-        let muted = isMicMuted
-        Task { await coordinatorToUpdate?.setMuted(muted) }
+        let newValue = !isMicMuted
+        Task { await coordinatorToUpdate?.setMuted(newValue) }
+    }
+
+    /// Called when the app is backgrounded (phone locked, user switches
+    /// apps, etc.) -- real on-device testing found the connection just
+    /// dying uncleanly in this situation (iOS suspends the app; the mic/
+    /// WebSocket/audio session don't get a chance to tear down properly,
+    /// and by the time the app is reopened it's sitting in a stale,
+    /// half-dead "Connected" state until the user notices and manually
+    /// disconnects/reconnects). Disconnecting up front here, the instant
+    /// backgrounding starts, is what makes that graceful instead of a
+    /// silent failure discovered later. A no-op if not currently
+    /// connected (nothing to tear down, and nothing to remember to
+    /// restore on return).
+    ///
+    /// If a reply was in flight or already spoken when this happened
+    /// (.waitingForReply or .speaking), the SERVER keeps generating/holding
+    /// it regardless of this disconnect (see the server's
+    /// SessionRunner.handle_disconnect()) -- capturing the coordinator's
+    /// activeTurnId here is what lets handleAppForegrounded() ask for it
+    /// back instead of the child returning to a silently-abandoned turn
+    /// (previously read from `state`/a polled turn id refreshed only every
+    /// 100ms by startPollingState() -- close enough for UI display, but a
+    /// real gap for a one-shot decision made right as a turn transitions
+    /// into .waitingForReply, which is exactly when backgrounding is most
+    /// likely to happen). Switching this to an async, live actor read
+    /// (rather than the stale polled value) was NOT sufficient on its own
+    /// -- confirmed on real hardware (server logs showing a replayed reply
+    /// discarded because the client's turn id was still 0, i.e. resume()
+    /// was never even called) that the two actor reads below can still
+    /// lose the race against iOS actually suspending the app, despite each
+    /// individually being microseconds of work. beginBackgroundTask is
+    /// Apple's own mechanism for "let this short critical section finish
+    /// before suspending" -- requesting it here removes the guesswork
+    /// about whether there's enough time, rather than hoping the OS
+    /// schedules this Task promptly enough on its own.
+    func handleAppBackgrounded() async {
+        guard isConnected, let coordinator else { return }
+        shouldReconnectOnForeground = true
+
+        let backgroundTaskId = UIApplication.shared.beginBackgroundTask(withName: "handleAppBackgrounded")
+        defer { UIApplication.shared.endBackgroundTask(backgroundTaskId) }
+
+        let liveState = await coordinator.state
+        if liveState == .waitingForReply || liveState == .speaking {
+            pendingResumeTurnId = await coordinator.activeTurnId
+        } else {
+            pendingResumeTurnId = nil
+        }
+        print("AppModel: backgrounded while \(liveState) -- pendingResumeTurnId=\(String(describing: pendingResumeTurnId))")
+        disconnect()
+    }
+
+    /// Called when the app returns to the foreground. Only reconnects if
+    /// handleAppBackgrounded() is what caused the prior disconnect --
+    /// never overrides a disconnect the user chose themselves, or one the
+    /// server side already caused. Reuses connect() as-is, so this gets
+    /// exactly the same permission/error handling a manual reconnect
+    /// would (e.g. if the Mac server or WiFi genuinely isn't reachable
+    /// anymore, this surfaces the same clear error connect() already
+    /// produces, rather than pretending to succeed). Passing
+    /// pendingResumeTurnId through is what turns this from a fresh, memory-
+    /// less reconnect into a resume of whatever the server was still
+    /// holding for the child.
+    func handleAppForegrounded() async {
+        guard shouldReconnectOnForeground else { return }
+        shouldReconnectOnForeground = false
+        let resumingTurnId = pendingResumeTurnId
+        pendingResumeTurnId = nil
+        print("AppModel: foregrounded -- reconnecting with resumingTurnId=\(String(describing: resumingTurnId))")
+        await connect(resumingTurnId: resumingTurnId)
     }
 
     private func startPollingState() {
@@ -149,6 +265,7 @@ final class AppModel: ObservableObject {
                 let reply = await coordinator.lastReply
                 let errorMessage = await coordinator.lastErrorMessage
                 let closed = await coordinator.isClosed
+                let muted = await coordinator.isMuted
                 // Returns "should this loop stop" as the closure's result,
                 // rather than mutating a captured local var, since
                 // MainActor.run's body is @Sendable and Swift 6 strict
@@ -160,6 +277,7 @@ final class AppModel: ObservableObject {
                     self.latencyHistory = history
                     self.lastTranscript = transcript
                     self.lastReply = reply
+                    self.isMicMuted = muted
                     // Only overwrite with a real server error -- a nil here
                     // just means "no server error yet," and must not erase
                     // a client-side error (e.g. audio capture failing to
@@ -193,6 +311,7 @@ final class AppModel: ObservableObject {
 
 struct ContentView: View {
     @StateObject private var model = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         VStack(spacing: 16) {
@@ -251,5 +370,24 @@ struct ContentView: View {
             Spacer()
         }
         .padding()
+        // Single-value closure (not the two-value oldValue/newValue form,
+        // which needs iOS 17+ -- this project's deployment target is 16,
+        // see project.yml) -- no need to compare against a previous
+        // phase anyway, since handleAppForegrounded() already guards
+        // internally on whether IT was the one that disconnected. Only
+        // .background (not the momentary .inactive that happens e.g.
+        // pulling down Control Center) triggers a disconnect -- reacting
+        // to .inactive too would disconnect/reconnect on every brief
+        // interruption, far more disruptive than the problem this fixes.
+        .onChange(of: scenePhase) { newPhase in
+            switch newPhase {
+            case .background:
+                Task { await model.handleAppBackgrounded() }
+            case .active:
+                Task { await model.handleAppForegrounded() }
+            default:
+                break
+            }
+        }
     }
 }

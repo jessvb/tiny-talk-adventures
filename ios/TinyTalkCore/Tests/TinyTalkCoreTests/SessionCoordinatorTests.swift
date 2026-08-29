@@ -912,4 +912,343 @@ final class SessionCoordinatorTests: XCTestCase {
 
         runLoop.cancel()
     }
+
+    /// The mic now auto-mutes for the whole .waitingForReply window (no
+    /// button press needed) and auto-unmutes the instant real reply audio
+    /// starts, so barge-in works normally once there's something to barge
+    /// in on.
+    func testMicAutoMutesDuringWaitingForReplyAndAutoUnmutesOnceSpeakingBegins() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        let stateWhileWaiting = await coordinator.state
+        XCTAssertEqual(stateWhileWaiting, .waitingForReply)
+
+        await coordinator.captureAudio(Data([1]))
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        XCTAssertTrue(vad.fed.isEmpty, "mic audio must not reach the VAD while auto-muted during .waitingForReply")
+
+        connection.emit(.message(.responseText("hi", turnId: 1)))
+        connection.emit(.audio(Data([9]))) // drives state to .speaking
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        let stateWhileSpeaking = await coordinator.state
+        XCTAssertEqual(stateWhileSpeaking, .speaking)
+
+        await coordinator.captureAudio(Data([2]))
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        XCTAssertEqual(
+            vad.fed, [Data([2])],
+            "mic audio must reach the VAD again once real reply audio starts playing"
+        )
+
+        runLoop.cancel()
+    }
+
+    /// An empty reply (turn_end with no .audio event at all) never reaches
+    /// .speaking, so it's the only place besides .audio left to clear the
+    /// auto-mute -- without this, a story turn with no spoken reply would
+    /// leave the NEXT turn permanently auto-muted.
+    func testAutoMuteClearsOnEmptyReplyTurnEndSoTheNextTurnIsNotStuckMuted() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        connection.emit(.message(.turnEnd(turnId: 1))) // empty reply, no audio ever arrives
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        let stateAfterEmptyReply = await coordinator.state
+        XCTAssertEqual(stateAfterEmptyReply, .idle)
+
+        vad.fire(.speechStart) // a fresh, unrelated utterance
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        await coordinator.captureAudio(Data([3]))
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        XCTAssertEqual(
+            vad.fed, [Data([3])],
+            "auto-mute from a previous turn must not leak into a fresh one after an empty-reply turnEnd"
+        )
+
+        runLoop.cancel()
+    }
+
+    /// Same requirement as the empty-reply case, but for a server error
+    /// ending the turn before .speaking is ever reached.
+    func testAutoMuteClearsOnServerErrorSoTheNextTurnIsNotStuckMuted() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        connection.emit(.message(.error("Ollama is not running", turnId: 1)))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        await coordinator.captureAudio(Data([4]))
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        XCTAssertEqual(
+            vad.fed, [Data([4])],
+            "auto-mute from a previous turn must not leak into a fresh one after a server error"
+        )
+
+        runLoop.cancel()
+    }
+
+    /// Auto-mute and manual mute are independent flags, OR'd together --
+    /// a standing manual mute (e.g. a parent stepping away) must still
+    /// apply even once auto-mute itself would have cleared on reaching
+    /// .speaking.
+    /// The actual point of sharing one flag instead of OR-ing a separate
+    /// auto-mute on top: a child/parent must be able to press the SAME
+    /// mute button during an automatically-muted .waitingForReply window
+    /// and have it genuinely work, e.g. to speak up and redirect the story
+    /// while it's still thinking.
+    func testPressingMuteButtonDuringAutoMutedWaitingForReplyGenuinelyUnmutes() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        let stateWhileWaiting = await coordinator.state
+        XCTAssertEqual(stateWhileWaiting, .waitingForReply)
+        let mutedBeforeUnmute = await coordinator.isMuted
+        XCTAssertTrue(mutedBeforeUnmute, "auto-mute should have engaged on entering .waitingForReply")
+
+        await coordinator.setMuted(false) // the child/parent presses the button to unmute
+        let mutedAfterUnmute = await coordinator.isMuted
+        XCTAssertFalse(mutedAfterUnmute)
+
+        await coordinator.captureAudio(Data([1]))
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        XCTAssertEqual(
+            vad.fed, [Data([1])],
+            "pressing the mute button during .waitingForReply must genuinely unmute -- one shared flag, not a separate auto-mute the button can't override"
+        )
+
+        runLoop.cancel()
+    }
+
+    /// The accepted flip side of sharing one flag: reaching .speaking
+    /// always auto-unmutes, even overriding a mute the child/parent set
+    /// during the wait -- documented as intentional in isMuted's doc
+    /// comment (nothing is being captured yet at the moment this
+    /// override happens; they can re-mute if they still want it muted
+    /// once the reply starts).
+    func testAutoUnmuteOnSpeakingOverridesAManualMuteSetDuringTheWait() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        await coordinator.setMuted(true) // redundant with auto-mute, but exercises the manual path too
+
+        connection.emit(.message(.responseText("hi", turnId: 1)))
+        connection.emit(.audio(Data([9]))) // drives state to .speaking, which auto-unmutes
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        let stateWhileSpeaking = await coordinator.state
+        XCTAssertEqual(stateWhileSpeaking, .speaking)
+        let mutedWhileSpeaking = await coordinator.isMuted
+        XCTAssertFalse(
+            mutedWhileSpeaking,
+            "auto-unmute on reaching .speaking overrides a mute set during the wait -- one shared flag, last write wins, by design"
+        )
+
+        runLoop.cancel()
+    }
+
+    /// resume() is what a fresh coordinator calls after reconnecting from a
+    /// backgrounding-triggered disconnect (see ContentView.swift's
+    /// AppModel.connect(resumingTurnId:)) -- the server replays the whole
+    /// reply for that turn_id from its start (see the server's
+    /// replay_last_turn()), and this coordinator must land exactly where a
+    /// normal turn would: .waitingForReply, muted, ready to play whatever
+    /// arrives and reach .idle on turn_end.
+    func testResumeEntersWaitingForReplyMutedAndPlaysTheReplayedReply() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+
+        await coordinator.resume(turnId: 7)
+
+        let stateAfterResume = await coordinator.state
+        XCTAssertEqual(stateAfterResume, .waitingForReply)
+        let mutedAfterResume = await coordinator.isMuted
+        XCTAssertTrue(mutedAfterResume, "resuming should mute the mic for the wait, same as a normal speechEnd")
+
+        // start() is only launched AFTER resume() returns -- mirrors
+        // AppModel.connect(resumingTurnId:)'s required ordering, and proves
+        // resume() itself doesn't depend on consumeServerEvents() already
+        // running.
+        let runLoop = Task { await coordinator.start() }
+
+        connection.emit(.message(.responseText("the fox found a key", turnId: 7)))
+        connection.emit(.audio(Data([5, 6, 7])))
+        connection.emit(.message(.turnEnd(turnId: 7)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let finalState = await coordinator.state
+        XCTAssertEqual(finalState, .idle)
+        let reply = await coordinator.lastReply
+        XCTAssertEqual(reply, "the fox found a key")
+        XCTAssertEqual(audio.played, [Data([5, 6, 7])])
+        let mutedAfterTurnEnd = await coordinator.isMuted
+        XCTAssertFalse(mutedAfterTurnEnd)
+
+        runLoop.cancel()
+    }
+
+    /// Regression guard for the ordering requirement in resume()'s doc
+    /// comment: events emitted on the connection BEFORE start() is ever
+    /// called (simulating the server replaying instantly on connect,
+    /// possibly before consumeServerEvents() has been scheduled to run)
+    /// must not be lost or misattributed -- AsyncStream buffers them, and
+    /// resume() having already set currentTurnId before start() runs is
+    /// what keeps them from being discarded as stale once they are read.
+    func testResumeDoesNotLoseEventsEmittedBeforeStartIsCalled() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+
+        await coordinator.resume(turnId: 3)
+        // Emitted before start() -- exercises AsyncStream's own buffering,
+        // not the coordinator's.
+        connection.emit(.message(.responseText("already generated", turnId: 3)))
+        connection.emit(.audio(Data([1])))
+        connection.emit(.message(.turnEnd(turnId: 3)))
+
+        let runLoop = Task { await coordinator.start() }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let finalState = await coordinator.state
+        XCTAssertEqual(finalState, .idle)
+        let reply = await coordinator.lastReply
+        XCTAssertEqual(reply, "already generated")
+        XCTAssertEqual(audio.played, [Data([1])])
+
+        runLoop.cancel()
+    }
+
+    /// A stale replay for a turn_id the client no longer cares about (e.g.
+    /// this coordinator was actually created to resume a LATER turn) must
+    /// be discarded like any other turn_id mismatch -- resume() participates
+    /// in the same currentTurnId gating as a normal turn, not a bypass of it.
+    func testResumeWithMismatchedTurnIdDiscardsTheReplayedEvents() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+
+        await coordinator.resume(turnId: 5)
+        let runLoop = Task { await coordinator.start() }
+
+        connection.emit(.message(.responseText("wrong turn", turnId: 4)))
+        connection.emit(.audio(Data([9])))
+        connection.emit(.message(.turnEnd(turnId: 4)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let reply = await coordinator.lastReply
+        XCTAssertEqual(reply, "", "a reply for a different turn_id must be discarded, not applied")
+        XCTAssertTrue(audio.played.isEmpty)
+        let state = await coordinator.state
+        XCTAssertEqual(state, .waitingForReply, "still waiting -- nothing matching turn_id 5 ever arrived")
+
+        runLoop.cancel()
+    }
+
+    /// resume() deliberately does NOT start the waiting ditty itself --
+    /// confirmed on real hardware that calling play() (and so
+    /// engine.start()) before mic capture has ever configured
+    /// RealAudioEngine's input side reliably fails with an input/output
+    /// sample-rate mismatch. startResumedWaitingDitty() is the separate
+    /// call AppModel makes only after mic capture has started.
+    func testResumeDoesNotStartTheDittyOnItsOwn() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let ditty = Data([1, 1, 1])
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad, waitingDittyAudio: ditty)
+
+        await coordinator.resume(turnId: 1)
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertTrue(audio.played.isEmpty, "resume() alone must not play anything yet")
+    }
+
+    func testStartResumedWaitingDittyStartsItAfterResume() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let ditty = Data([1, 1, 1])
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad, waitingDittyAudio: ditty)
+
+        await coordinator.resume(turnId: 1)
+        await coordinator.startResumedWaitingDitty()
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertTrue(audio.played.contains(ditty), "the ditty should be looping once explicitly started")
+    }
+
+    /// If the resumed reply has already fully arrived by the time the
+    /// caller gets around to starting the ditty (mic capture's own retry
+    /// logic can take a couple of seconds on real hardware), there is
+    /// nothing left to wait for -- starting the ditty at that point would
+    /// just be a spurious chime after (or during) the real reply.
+    func testStartResumedWaitingDittyIsANoOpIfTheTurnAlreadyFinished() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let ditty = Data([1, 1, 1])
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad, waitingDittyAudio: ditty)
+
+        await coordinator.resume(turnId: 1)
+        let runLoop = Task { await coordinator.start() }
+        connection.emit(.message(.responseText("hi", turnId: 1)))
+        connection.emit(.audio(Data([9])))
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        await coordinator.startResumedWaitingDitty()
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertFalse(audio.played.contains(ditty), "no ditty once the resumed turn has already ended")
+
+        runLoop.cancel()
+    }
 }

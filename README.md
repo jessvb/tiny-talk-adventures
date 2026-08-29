@@ -99,6 +99,17 @@ provide — containers there run inside a Linux VM with no Metal passthrough.)
    Note: Ollama's newer MLX backend (added March 2026) needs 32GB unified
    memory. On this 16GB M1, Ollama will use its default Metal backend
    instead — that's expected, not a misconfiguration.
+
+   qwen3.5 defaults to "thinking" mode — a long internal chain-of-thought
+   before it ever produces a reply (confirmed on real hardware: 100+
+   lines and ~3m19s for one prompt, via `ollama run qwen3.5:9b` directly).
+   `config.OLLAMA_THINK` defaults to `False` specifically to disable this
+   (see that setting's comment), which is what actually makes this usable
+   at real-time latency — a smaller model was tried first and wasn't
+   the real fix. With thinking off, 9b gives noticeably better-reasoned
+   replies than 4b at acceptable latency on this 16GB Mac; if memory
+   pressure becomes a problem again, `TINYTALK_MODEL=qwen3.5:4b` is the
+   fallback.
 5. **Kyutai STT** (MLX build) — already declared in `server/pyproject.toml`;
    no manual installation needed. It will be installed automatically in step 3
    of "Running the server" below when you run `pip install -e ".[dev]"` inside
@@ -165,6 +176,19 @@ Python and packages for that terminal session. Every subsequent command in
 this README assumes the venv is active. If you see `command not found` for
 something Python-related, the venv is probably not active — run the
 activation command above.
+
+**Optional: animal facts API key.** Real animal facts get woven into the
+story when the child mentions a known animal (fox, elephant, dolphin, and
+others — see `server/tinytalk/animal_facts.py`), fetched from a free
+[API Ninjas](https://api-ninjas.com) account (100 requests/hour free tier).
+Sign up, then export the key before starting the server:
+
+```bash
+export ANIMAL_FACTS_API_KEY=your-key-here
+```
+
+Without it, animal fact lookups silently no-op — the story still works
+fine, it just never gets fact-grounding for the animals it mentions.
 
 Then, three terminals:
 

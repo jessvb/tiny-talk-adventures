@@ -67,6 +67,26 @@ final class SessionStateTests: XCTestCase {
         XCTAssertEqual(machine.state, .idle)
     }
 
+    func testResumedFromIdleLandsInWaitingForReply() throws {
+        let machine = SessionStateMachine()
+        XCTAssertEqual(try machine.handle(.resumed), .waitingForReply)
+    }
+
+    func testResumedIsOnlyLegalFromIdle() {
+        let setups: [(String, [SessionEvent])] = [
+            ("listening", [.speechStart]),
+            ("waitingForReply", [.speechStart, .speechEnd]),
+            ("speaking", [.speechStart, .speechEnd, .audioChunkReceived]),
+        ]
+        for (name, setup) in setups {
+            let machine = SessionStateMachine()
+            for event in setup {
+                _ = try? machine.handle(event)
+            }
+            XCTAssertThrowsError(try machine.handle(.resumed), "from \(name)")
+        }
+    }
+
     func testDisconnectedFromEveryStateLandsInIdle() throws {
         let setups: [(String, [SessionEvent])] = [
             ("idle", []),

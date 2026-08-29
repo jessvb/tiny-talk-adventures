@@ -51,11 +51,31 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     /// confirmed on-device necessary to recover from voice processing's
     /// graph rebuild silently invalidating the input tap.
     private var configChangeObserver: NSObjectProtocol?
+    /// See the outputVolume observer set up in init() -- kept alive for
+    /// this instance's whole lifetime (NSKeyValueObservation stops
+    /// observing the moment it deallocates).
+    private var outputVolumeObserver: NSKeyValueObservation?
 
     public init() throws {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker])
+            // .allowBluetoothA2DP: without this, iOS never routes playback
+            // to a Bluetooth device at all -- confirmed the reported
+            // "audio doesn't go through Bluetooth headphones" wasn't
+            // phone-specific, it's this. A2DP (not the plain .allowBluetooth
+            // HFP option) specifically routes OUTPUT to the headphones while
+            // leaving mic INPUT on the phone's own built-in mic -- keeps the
+            // capture path this whole app's VAD/AEC tuning was done against
+            // unchanged, and sidesteps HFP's much lower audio quality
+            // (narrowband, mono) that a lot of kids' Bluetooth headphones
+            // would otherwise impose on the TTS voice. Also makes AEC less
+            // load-bearing when active, not more: echo cancellation exists
+            // here to stop the phone's OWN speaker output from leaking into
+            // the phone's OWN mic -- with headphones, that leakage path
+            // doesn't exist in the first place.
+            try session.setCategory(
+                .playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothA2DP]
+            )
             try session.setActive(true)
         } catch {
             throw AudioEngineError.sessionConfigurationFailed(error)
@@ -107,6 +127,25 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         // is the confirmed-working connection format; pcmDataToBuffer
         // converts the Int16 wire bytes to Float32 before scheduling.
         engine.connect(playerNode, to: engine.mainMixerNode, format: playbackConnectionFormat)
+
+        // .voiceChat mode (needed above for AEC) routes playback through a
+        // separate "call audio" volume domain that does NOT automatically
+        // follow the hardware volume buttons for a plain, non-CallKit app --
+        // confirmed on real hardware as both the waiting ditty being too
+        // loud regardless of the media volume slider (worked around
+        // separately by lowering its own baked-in amplitude -- see
+        // WaitingDitty.swift) and, more generally, playback over headphones
+        // not responding to the volume buttons at all. AVAudioSession's
+        // outputVolume property itself DOES still update live as the
+        // buttons are pressed even though .voiceChat mode doesn't apply it
+        // automatically -- observing it and applying it to playerNode's own
+        // volume directly is the standard workaround for a voice-processing
+        // session that still needs to respect the user's volume control.
+        playerNode.volume = session.outputVolume
+        outputVolumeObserver = session.observe(\.outputVolume, options: [.new]) { [weak playerNode] _, change in
+            guard let playerNode, let newValue = change.newValue else { return }
+            playerNode.volume = newValue
+        }
     }
 
     /// Explicitly requests microphone permission and awaits the user's
@@ -136,7 +175,7 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     /// uses. Exact tap buffer size and the real-time-thread -> caller
     /// hand-off mechanism are tuned during on-device testing in Task 8;
     /// AVAudioConverter is the right tool for the format conversion itself.
-    public func startCapturing(onAudioCaptured: @escaping @Sendable (Data) -> Void) throws {
+    public func startCapturing(onAudioCaptured: @escaping @Sendable (Data) -> Void) async throws {
         self.onAudioCaptured = onAudioCaptured
 
         // Confirmed on-device (real iPhone 13 Pro): enabling voice
@@ -163,7 +202,33 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             self?.rebuildCaptureTap()
         }
 
-        try installCaptureTapAndStart()
+        // A plain single `try installCaptureTapAndStart()` here used to be
+        // fatal on the very first attempt: right after a backgrounding-
+        // triggered reconnect, the input format can genuinely still be
+        // invalid (see installCaptureTapAndStart()'s own format-validity
+        // guard) for a brief window while the route settles -- confirmed
+        // on real hardware as a "could not start audio capture" error that
+        // gave up and disconnected immediately, even though the SAME
+        // condition resolves itself moments later for the
+        // AVAudioEngineConfigurationChange-driven retries in
+        // rebuildCaptureTap() below. This is that same retry, just for the
+        // very first attempt, which has no notification to fall back on.
+        var lastError: Error?
+        for attempt in 1...8 {
+            do {
+                try installCaptureTapAndStart()
+                return
+            } catch {
+                lastError = error
+                print("RealAudioEngine: startCapturing attempt \(attempt)/8 failed: \(error)")
+                do {
+                    try await Task.sleep(nanoseconds: 250_000_000)
+                } catch {
+                    throw lastError!  // cancelled -- stop retrying immediately, see ensureEngineRunning()
+                }
+            }
+        }
+        throw lastError!
     }
 
     /// (Re)installs the mic tap against the input node's CURRENT format and
@@ -182,6 +247,31 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         // this returns), which is exactly why using the wrong one was
         // invisible until voice processing was enabled above.
         let hardwareFormat = inputNode.outputFormat(forBus: 0)
+        // Confirmed reachable on real hardware (observed under Xcode's
+        // debugger, where a slower-attached process widens the window, but
+        // nothing about the mechanism is Xcode-specific): a rapid run of
+        // AVAudioEngineConfigurationChange notifications -- e.g. voice
+        // processing's graph rebuild landing back-to-back with a genuine
+        // route change -- can report a transiently invalid 0Hz/0-channel
+        // format for the input node BETWEEN two valid ones, while the route
+        // is still being renegotiated. AVAudioConverter's initializer does
+        // NOT reject this format (confirmed: it succeeded here), but
+        // installTap(format:) does -- via an uncaught Objective-C
+        // NSException, not a Swift error, so `try` cannot catch it and the
+        // process crashes outright ('required condition is false:
+        // IsFormatSampleRateAndChannelCountValid'). Checking explicitly and
+        // bailing out via a normal Swift error is what turns that crash
+        // into a safe no-op: another AVAudioEngineConfigurationChange
+        // notification reliably follows once the route actually settles,
+        // and rebuildCaptureTap() retries then.
+        guard hardwareFormat.sampleRate > 0, hardwareFormat.channelCount > 0 else {
+            throw AudioEngineError.captureStartFailed(
+                NSError(domain: "RealAudioEngine", code: 2, userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "input hardware format not yet valid (\(hardwareFormat)) -- route still settling",
+                ])
+            )
+        }
         guard let converter = AVAudioConverter(from: hardwareFormat, to: wireFormat) else {
             throw AudioEngineError.captureStartFailed(
                 NSError(domain: "RealAudioEngine", code: 1, userInfo: [
@@ -239,6 +329,16 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     }
 
     private func rebuildCaptureTap() {
+        // engine.stop() stops the WHOLE engine graph, not just the input
+        // side being rebuilt here -- if playerNode is mid-buffer when this
+        // fires, that playback is interrupted too. Logged so a real-device
+        // capture can confirm whether this is the actual mechanism behind
+        // "the real reply audio was audibly delayed after a resume" (see
+        // play()'s own 3s completion-handler timeout, added for the same
+        // reason).
+        if playerNode.isPlaying {
+            print("RealAudioEngine: rebuildCaptureTap() is stopping the engine WHILE playerNode is playing")
+        }
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         do {
@@ -273,17 +373,108 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
 
     public func play(_ pcm: Data) async {
         guard let buffer = pcmDataToBuffer(pcm) else { return }
-        if !engine.isRunning {
-            try? engine.start()
+        guard await ensureEngineRunning() else {
+            // Giving up and returning here (rather than scheduling the
+            // buffer anyway) is deliberate: playerNode.play() with the
+            // engine not actually running never fires scheduleBuffer's
+            // completion handler (confirmed on real hardware: "Engine is
+            // not running... Cannot play yet!", with the awaiting
+            // continuation left hanging forever) -- which wedges whichever
+            // caller is awaiting this play() call permanently. The
+            // waiting-ditty's own retry loop (`while !Task.isCancelled {
+            // await audio.play(...) }`) will simply call play() again.
+            print("RealAudioEngine: engine never started -- dropping this play() call rather than hanging forever")
+            return
         }
+        // Guards scheduleBuffer's completion handler and the timeout task
+        // below from both trying to resume the same continuation --
+        // resuming twice is a fatal error. Real race, confirmed on real
+        // hardware: rebuildCaptureTap() (fired by AVAudioEngineConfiguration
+        // Change, which reliably happens more than once in quick succession
+        // right after a reconnect -- see that method's own doc comment)
+        // calls engine.stop(), which stops the WHOLE engine, including
+        // whatever playerNode is currently rendering -- not just the input
+        // side it's ostensibly rebuilding. When that lands mid-buffer,
+        // scheduleBuffer's completion handler does not reliably fire
+        // (confirmed as a real, user-visible symptom: state correctly
+        // advances to .speaking, since that transition happens before this
+        // await, but no audio is actually heard for several seconds until
+        // -- if ever -- the handler eventually fires). Without this timeout,
+        // that hangs whichever caller is awaiting this play() call
+        // (runTurn()'s TTS loop, or the waiting ditty) indefinitely.
+        let gate = PlaybackCompletionGate()
         await withCheckedContinuation { continuation in
             playerNode.scheduleBuffer(buffer) {
-                continuation.resume()
+                if gate.tryResume() {
+                    continuation.resume()
+                }
             }
-            if !playerNode.isPlaying {
-                playerNode.play()
+            // Deliberately unconditional -- AVAudioPlayerNode.play() on an
+            // already-playing node is a documented no-op, so the previous
+            // `if !playerNode.isPlaying` guard was only ever an
+            // optimization, not a correctness requirement. Confirmed on
+            // real hardware that it was actively harmful: engine.stop()
+            // (from rebuildCaptureTap(), see this method's own doc comment)
+            // does NOT reset playerNode.isPlaying back to false, even
+            // though the engine restarting means nothing is actually
+            // rendering for this node anymore. With the guard, every
+            // subsequent play() call after that first collision skipped
+            // re-invoking playerNode.play() (since isPlaying still read
+            // true), so scheduled buffers just sat there timing out one
+            // after another -- observed as many consecutive "did not fire
+            // within 3s" logs with genuinely no sound at all, self-healing
+            // only once something else (stopWaitingDitty()) called
+            // stopPlaybackImmediately() and reset the flag.
+            playerNode.play()
+            Task {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if gate.tryResume() {
+                    print("RealAudioEngine: play() scheduleBuffer completion did not fire within 3s (likely the engine was stopped mid-render by a concurrent reconfiguration) -- giving up on this buffer rather than hanging forever")
+                    continuation.resume()
+                }
             }
         }
+    }
+
+    /// Retries engine.start() a handful of times with a short delay between
+    /// attempts, rather than one attempt with its error silently discarded
+    /// (the previous behavior). Confirmed on real hardware: right after a
+    /// backgrounding-triggered reconnect, engine.start() can genuinely fail
+    /// -- not just throw and succeed moments later on its own -- while the
+    /// audio route is still settling (the same class of issue as
+    /// installCaptureTapAndStart()'s transiently-invalid-format guard, here
+    /// on the playback side). A handful of short retries gives the route a
+    /// real chance to settle before play() gives up on this buffer.
+    private func ensureEngineRunning() async -> Bool {
+        if engine.isRunning { return true }
+        for attempt in 1...8 {
+            do {
+                try engine.start()
+                return true
+            } catch {
+                print("RealAudioEngine: engine.start() attempt \(attempt)/8 failed: \(error)")
+                do {
+                    try await Task.sleep(nanoseconds: 250_000_000)
+                } catch {
+                    // Cancelled -- e.g. stopWaitingDitty() cancelling the
+                    // ditty loop's task because the app is backgrounding.
+                    // Confirmed on real hardware that the earlier `try?`
+                    // here silently discarded exactly this cancellation,
+                    // so this retry loop kept grinding through all 8
+                    // attempts (~2s) regardless of being told to stop --
+                    // real time during which this now-abandoned engine
+                    // instance was still fighting the shared, singleton
+                    // AVAudioSession for the route right as a NEW
+                    // RealAudioEngine (for the reconnect) was trying to
+                    // configure the exact same session. Stopping the
+                    // instant cancellation is observed, instead of
+                    // swallowing it, is what actually lets that
+                    // contention window close promptly.
+                    return false
+                }
+            }
+        }
+        return false
     }
 
     /// Converts wire-format (24kHz mono Int16 LE) bytes into an
@@ -304,6 +495,28 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             }
         }
         return buffer
+    }
+}
+
+/// Lock-protected "resume exactly once" gate for play()'s continuation --
+/// scheduleBuffer's completion handler and play()'s own timeout task race
+/// to resume the same continuation (see play()'s doc comment for why the
+/// timeout exists), and resuming a continuation twice is a fatal error. A
+/// tiny `@unchecked Sendable` class, rather than a captured local var, is
+/// what Swift 6's strict concurrency checking accepts for state shared
+/// between a closure and a detached Task like this.
+private final class PlaybackCompletionGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var resumed = false
+
+    /// Returns true for exactly one caller (whichever gets there first,
+    /// completion handler or timeout) -- that caller is the one that
+    /// should actually resume the continuation.
+    func tryResume() -> Bool {
+        lock.withLock {
+            defer { resumed = true }
+            return !resumed
+        }
     }
 }
 #endif

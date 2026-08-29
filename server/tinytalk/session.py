@@ -1,9 +1,16 @@
-"""Per-connection orchestration.
+"""Session orchestration, persistent across reconnects.
 
-One SessionRunner per WebSocket connection. The turn (LLM generation plus TTS
-playback) runs as its own asyncio task so that an interrupt can cancel it
-mid-flight — that cancellation, and recording what the agent had already said,
-is the core of the barge-in behaviour.
+One SessionRunner per *household*, not per WebSocket connection: app.py
+constructs it once at server startup and rebinds it onto whichever
+connection is current (rebind_transport()) as the phone app disconnects and
+reconnects (e.g. iOS backgrounding it while a reply is in flight). The turn
+(LLM generation plus TTS playback) runs as its own asyncio task so that an
+interrupt can cancel it mid-flight — that cancellation, and recording what
+the agent had already said, is the core of the barge-in behaviour. A plain
+disconnect (as opposed to an interrupt) deliberately does NOT cancel an
+in-flight turn: it is left running, and everything it sends is buffered so
+it can be replayed in full to whichever connection asks for it next. See
+replay_last_turn() and handle_disconnect().
 """
 
 from __future__ import annotations
@@ -14,6 +21,7 @@ import time
 from typing import Protocol
 
 from . import config, safety, story_store
+from .animal_facts import AnimalFactTracker
 from .audio import TTS_SAMPLE_RATE, split_sentences
 from .conversation import Conversation
 from .engines import EngineError, LlmEngine, SttEngine, TtsEngine
@@ -34,6 +42,25 @@ from .story_arc import StoryArc
 
 logger = logging.getLogger(__name__)
 
+# Shown to the LLM (appended to the per-turn guidance) whenever STT heard
+# something -- the VAD's amplitude threshold fired, so a turn genuinely
+# started -- but transcribed no recognizable words: background noise,
+# fabric rustling against the mic, a bump. Real on-device testing found
+# this genuinely happens, and the old behavior (silently ending the turn
+# with no reply at all) read as the app breaking rather than mishearing.
+# Deliberately doesn't ask the model to say "I didn't understand you" or
+# similar -- from the child's perspective nothing went wrong, there's
+# just nothing new to react to, so the natural move is to nudge the story
+# forward using what's already happened, same as picking back up after a
+# pause.
+_STT_FAILURE_GUIDANCE = (
+    "You didn't hear anything new from the child just now -- it might "
+    "have been background noise. Don't mention this or ask them to "
+    "repeat themselves. Instead, gently continue the story yourself "
+    "using what's already happened, and end with an easy, inviting "
+    "question so they have a natural opening to jump back in."
+)
+
 
 class Transport(Protocol):
     async def send_text(self, payload: str) -> None: ...
@@ -52,12 +79,19 @@ class SessionRunner:
         conversation: Conversation | None = None,
     ) -> None:
         self._transport = transport
+        # Guards every actual transport send (both a live turn's own sends
+        # and replay_last_turn()'s catch-up sends) so the two can never
+        # interleave: without this, a reconnect landing mid-turn could let a
+        # newly-generated chunk reach the client before the buffered ones
+        # that logically precede it.
+        self._transport_lock = asyncio.Lock()
         self._stt = stt
         self._llm = llm
         self._tts = tts
         self._system_prompt = system_prompt
         self._conversation = conversation or Conversation()
         self._story_arc = StoryArc()
+        self._animal_facts = AnimalFactTracker()
         self._machine = TurnStateMachine()
         self._turn_task: asyncio.Task | None = None
         # (sentence text, estimated real-world time.monotonic() at which
@@ -66,6 +100,12 @@ class SessionRunner:
         # "heard" are tracked separately. Only meaningful while a turn is
         # in flight; always cleared to [] once a turn ends or is cancelled.
         self._spoken: list[tuple[str, float]] = []
+        # Everything _run_turn() has sent for the CURRENT turn (response
+        # text, each audio chunk, turn_end), in order -- see
+        # replay_last_turn(). Cleared only when a genuinely new turn starts
+        # (_finish_listening), not on disconnect: a reply nobody has heard
+        # yet must survive across a reconnect.
+        self._turn_replay_buffer: list[tuple[str, str | bytes]] = []
         # See protocol.py's module docstring for why this exists: the
         # client assigns a new turn_id on every speech_start/interrupt, and
         # every event this session sends is stamped with whichever turn_id
@@ -120,16 +160,106 @@ class SessionRunner:
             )
 
     async def wait_for_turn(self) -> None:
-        """Await the in-flight turn. Used by tests and on disconnect."""
+        """Await the in-flight turn to finish naturally. Test-only -- real
+        callers never block a connection on this; see handle_disconnect()
+        and replay_last_turn() for how a turn's result actually reaches a
+        (possibly different) client."""
         if self._turn_task is not None:
             await asyncio.gather(self._turn_task, return_exceptions=True)
 
+    def rebind_transport(self, transport: Transport) -> None:
+        """Point this session at a new connection's transport. Called by
+        app.py on every connect, including a reconnect after a disconnect
+        mid-turn -- the still-running turn task's own sends (guarded by
+        _transport_lock, same as replay_last_turn()) will start reaching
+        the new connection as soon as this returns."""
+        logger.info("transport rebound (session state=%s)", self._machine.state.name)
+        self._transport = transport
+
+    async def replay_last_turn(self) -> None:
+        """Resend everything buffered for the current/most recent turn to
+        whichever transport is current -- call after rebind_transport() on
+        every new connection. If the turn already finished before this
+        connection arrived, this delivers the whole reply at once; if it's
+        still in flight, this is a catch-up burst of whatever's landed so
+        far, after which the turn's own live sends continue seamlessly (the
+        shared lock makes the two mutually exclusive, so ordering is
+        preserved either way). A no-op if nothing is buffered -- e.g. a
+        fresh session, or a turn already superseded by a new utterance.
+
+        Deliberately does NOT clear the buffer after replaying -- an
+        earlier version did, on the theory that a reply already fully
+        heard live shouldn't be replayed again to some later, unrelated
+        reconnect (real annoyance, confirmed on real hardware). That
+        traded a mild annoyance for a worse bug, also confirmed on real
+        hardware: a connection that itself dies quickly after reconnecting
+        (e.g. the child backgrounding the app twice in a row) would
+        consume the ONE replay attempt without ever actually getting to
+        hear it, silently losing the reply for good -- no other connection
+        would ever get a turn at it. There is no reliable server-side
+        signal for "the child genuinely heard this" (a send not raising
+        does not mean it reached a live listener -- see WebSocketTransport
+        -- so a connection can go quiet for a long time before the server
+        even notices it is gone). Given that, losing a reply the child is
+        actively still trying to catch up on is worse than occasionally
+        replaying one they already heard, so this only ever gets
+        forgotten once a genuinely new utterance starts (see
+        _finish_listening's buffer reset) -- the one unambiguous signal
+        that the child is not waiting on this reply anymore.
+        """
+        async with self._transport_lock:
+            if not self._turn_replay_buffer:
+                logger.debug("replay_last_turn: nothing buffered")
+                return
+            logger.info(
+                "replaying %d buffered item(s) for turn_id=%s to the new connection",
+                len(self._turn_replay_buffer),
+                self._current_turn_id,
+            )
+            for kind, payload in self._turn_replay_buffer:
+                if kind == "text":
+                    await self._transport.send_text(payload)
+                else:
+                    await self._transport.send_bytes(payload)
+
+    async def _send_and_buffer(self, *, text: str | None = None, audio: bytes | None = None) -> None:
+        async with self._transport_lock:
+            if text is not None:
+                self._turn_replay_buffer.append(("text", text))
+                await self._transport.send_text(text)
+            else:
+                assert audio is not None
+                self._turn_replay_buffer.append(("bytes", audio))
+                await self._transport.send_bytes(audio)
+
+    async def handle_disconnect(self) -> None:
+        """Called by app.py on every WebSocket disconnect (clean or
+        abrupt). Unlike aclose(), this deliberately does NOT cancel an
+        in-flight turn or unconditionally reset STT -- the session is
+        persistent across reconnects (see rebind_transport()/
+        replay_last_turn()), so a reply already being generated when the
+        phone app is backgrounded should keep generating, ready to deliver
+        whenever the child reopens the app. The one thing that does need
+        cleanup here: a disconnect landing mid-utterance (LISTENING, before
+        speech_end/stt.finish() ever ran) means STT's own per-utterance
+        reset -- normally triggered by finish() -- never fired, which would
+        otherwise leak partial audio into whatever the child says next."""
+        logger.info(
+            "handling disconnect (session state=%s, turn in flight=%s, replay buffer=%d item(s))",
+            self._machine.state.name,
+            self._turn_task is not None and not self._turn_task.done(),
+            len(self._turn_replay_buffer),
+        )
+        if self._machine.state is State.LISTENING:
+            self._stt.reset()
+            self._transition(Event.ABANDON)
+
     async def aclose(self) -> None:
+        """Full teardown: cancels any in-flight turn and resets STT.
+        Distinct from handle_disconnect() (which a plain WebSocket drop
+        uses) -- this is for when the session itself is going away, e.g.
+        server shutdown, not for an ordinary reconnect-expected disconnect."""
         await self._cancel_turn(record_spoken=False)
-        # Engines are shared across connections (loading them is expensive --
-        # see app.py), so a connection that drops mid-utterance must not
-        # leave stale buffered audio behind for whatever connection uses
-        # this STT engine next.
         self._stt.reset()
 
     async def _start_listening(self, turn_id: int) -> None:
@@ -199,12 +329,16 @@ class SessionRunner:
             )
             return
         await self._transport.send_text(encode_transcript_final(transcript, turn_id))
-        if not transcript.strip():
-            self._transition(Event.RESPONSE_READY)
-            self._transition(Event.TTS_DONE)
-            await self._transport.send_text(encode_turn_end(turn_id))
-            return
+        # An empty transcript still becomes a real turn (see
+        # _STT_FAILURE_GUIDANCE) rather than ending in silence -- the VAD
+        # already decided this was a genuine utterance attempt (that's how
+        # execution reached here at all), STT just couldn't make out
+        # words in it.
         self._spoken = []
+        # A new turn supersedes whatever the previous one left buffered for
+        # replay -- the child has moved the story forward, so there is
+        # nothing left worth resuming from the old reply.
+        self._turn_replay_buffer = []
         self._turn_task = asyncio.create_task(self._run_turn(transcript, turn_id))
 
     async def _interrupt(self, turn_id: int) -> None:
@@ -269,8 +403,15 @@ class SessionRunner:
         # synthesis is the bottleneck before deciding what to optimize.
         turn_start = time.monotonic()
         try:
-            self._conversation.add_child(transcript)
+            self._conversation.add_child(transcript)  # no-op if transcript is empty
             guidance = self._story_arc.record_turn(transcript)
+            fact_guidance = await self._animal_facts.record_turn(
+                transcript, self._story_arc.stage
+            )
+            if fact_guidance:
+                guidance = f"{guidance}\n\n{fact_guidance}"
+            if not transcript.strip():
+                guidance = f"{guidance}\n\n{_STT_FAILURE_GUIDANCE}"
             messages = self._conversation.to_messages(
                 self._system_prompt + "\n\n" + guidance
             )
@@ -292,7 +433,7 @@ class SessionRunner:
                 len(reply),
             )
 
-            await self._transport.send_text(encode_response_text(reply, turn_id))
+            await self._send_and_buffer(text=encode_response_text(reply, turn_id))
             self._transition(Event.RESPONSE_READY)
 
             tts_start = time.monotonic()
@@ -307,7 +448,7 @@ class SessionRunner:
                 async for pcm in self._tts.synthesize(sentence):
                     if first_audio_at is None:
                         first_audio_at = time.monotonic()
-                    await self._transport.send_bytes(pcm)
+                    await self._send_and_buffer(audio=pcm)
                     sentence_bytes += len(pcm)
                 # PCM16 mono at the wire sample rate (audio.py) -- 2 bytes/sample.
                 playback_offset += sentence_bytes / (2 * TTS_SAMPLE_RATE)
@@ -328,7 +469,7 @@ class SessionRunner:
             self._conversation.add_agent(reply)
             self._spoken = []
             self._transition(Event.TTS_DONE)
-            await self._transport.send_text(encode_turn_end(turn_id))
+            await self._send_and_buffer(text=encode_turn_end(turn_id))
             logger.info(
                 "turn total (transcript -> turn_end): %.1f ms",
                 (time.monotonic() - turn_start) * 1000,
@@ -339,6 +480,7 @@ class SessionRunner:
                     logger.info("story saved to %s", saved_path)
                 self._conversation = Conversation()
                 self._story_arc = StoryArc()
+                self._animal_facts = AnimalFactTracker()
         except asyncio.CancelledError:
             raise
         except EngineError as exc:
