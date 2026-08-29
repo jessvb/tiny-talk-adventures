@@ -64,12 +64,11 @@ _FORCED_GUIDANCE = (
 _GUIDANCE: dict[Stage, str] = {
     Stage.INTRO: (
         "You're at the very start of the story. Introduce the setting and "
-        "characters. Do not introduce a problem, challenge, or conflict "
-        "yet -- that comes next turn."
+        "characters."
     ),
     Stage.SETUP: (
-        "You're at the start of the story. Introduce the setting and "
-        "characters, and introduce a problem, challenge, or conflict for "
+        "You're at the start of the story. Continue introducing the setting "
+        "and characters, and introduce a problem, challenge, or conflict for "
         "them to face. Every good story needs something for the "
         "characters to overcome -- don't wait to introduce it."
     ),

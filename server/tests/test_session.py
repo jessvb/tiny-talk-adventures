@@ -138,8 +138,7 @@ async def test_llm_receives_system_prompt_and_history(transport):
             "role": "system",
             "content": "be a kind storyteller\n\n"
             "You're at the very start of the story. Introduce the setting "
-            "and characters. Do not introduce a problem, challenge, or "
-            "conflict yet -- that comes next turn.",
+            "and characters.",
         },
         {"role": "user", "content": "tell me about a fox"},
     ]

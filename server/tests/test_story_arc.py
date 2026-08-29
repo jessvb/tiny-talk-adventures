@@ -45,14 +45,12 @@ def test_record_turn_returns_guidance_matching_current_stage():
     assert "start of the story" in guidance.lower()
 
 
-def test_intro_guidance_instructs_against_introducing_a_conflict_yet():
+def test_intro_guidance_does_not_mention_conflict():
     # The first turn should just set the scene -- introducing a
-    # problem/challenge/conflict is SETUP's job, starting turn 2. The
-    # guidance still mentions "conflict" etc, but only to say not to.
+    # problem/challenge/conflict is SETUP's job, starting turn 2.
     arc = StoryArc()
     guidance = arc.record_turn("we walked into the forest").lower()  # turn 1 -- intro
-    assert "do not introduce" in guidance
-    assert any(word in guidance for word in ("problem", "challenge", "conflict"))
+    assert not any(word in guidance for word in ("problem", "challenge", "conflict"))
 
 
 def test_setup_guidance_instructs_introducing_a_conflict_right_away():
