@@ -18,15 +18,16 @@ wrapping up), or the agent's own reply concludes naturally on its own
 needed).
 
 Per-stage guidance also steers toward a real narrative arc, not just a
-timer: SETUP instructs introducing a problem/challenge/conflict right
-away (confirmed by real on-device testing that without this, stories
-stayed conflict-free and unengaging), RISING_ACTION and CLIMAX keep
-developing it, and RESOLUTION/the forced ending both explicitly resolve
-it and instruct ending with the literal words "The end." -- both for the
-child's sense of closure and because "the end" is already one of
-_CONCLUSION_PHRASES below, making natural-conclusion detection far more
-reliable than hoping the model happens to phrase things that way on its
-own.
+timer: INTRO (turn 1 only) introduces the setting and characters with no
+conflict yet, SETUP (turn 2 onward, up to setup_end) then instructs
+introducing a problem/challenge/conflict right away (confirmed by real
+on-device testing that without this, stories stayed conflict-free and
+unengaging), RISING_ACTION and CLIMAX keep developing it, and
+RESOLUTION/the forced ending both explicitly resolve it and instruct
+ending with the literal words "The end." -- both for the child's sense
+of closure and because "the end" is already one of _CONCLUSION_PHRASES
+below, making natural-conclusion detection far more reliable than
+hoping the model happens to phrase things that way on its own.
 
 Note on interrupts: if a story-concluding turn is interrupted before it
 completes normally (see session.py's _run_turn), is_done stays latched
@@ -45,6 +46,7 @@ from . import config
 
 
 class Stage(Enum):
+    INTRO = "intro"
     SETUP = "setup"
     RISING_ACTION = "rising_action"
     CLIMAX = "climax"
@@ -53,26 +55,31 @@ class Stage(Enum):
 
 
 _FORCED_GUIDANCE = (
-    "This must be the last reply -- resolve the problem from earlier in "
+    "This must be the last reply. Resolve the problem from earlier in "
     "the story and bring it to a warm, complete ending right now. Do not "
-    "ask what should happen next -- the story is over. End your reply "
+    "ask what should happen next. The story is over. End your reply "
     "with the words \"The end.\""
 )
 
 _GUIDANCE: dict[Stage, str] = {
+    Stage.INTRO: (
+        "You're at the very start of the story. Introduce the setting and "
+        "characters. Do not introduce a problem, challenge, or conflict "
+        "yet -- that comes next turn."
+    ),
     Stage.SETUP: (
-        "You're at the start of the story -- introduce the setting and "
+        "You're at the start of the story. Introduce the setting and "
         "characters, and introduce a problem, challenge, or conflict for "
         "them to face. Every good story needs something for the "
         "characters to overcome -- don't wait to introduce it."
     ),
     Stage.RISING_ACTION: (
-        "The story is building -- keep developing the problem or "
+        "The story is building. Keep developing the problem or "
         "challenge from the start of the story, raise the stakes a "
         "little, and let the child's ideas shape what happens next."
     ),
     Stage.CLIMAX: (
-        "The story is nearing its big moment -- build toward an exciting "
+        "The story is nearing its big moment. Build toward an exciting "
         "(but still gentle) turning point where the problem or challenge "
         "comes to a head."
     ),
@@ -80,7 +87,7 @@ _GUIDANCE: dict[Stage, str] = {
         "It's time to resolve the problem from earlier in the story and "
         "wrap up the story warmly and happily in this reply or the next "
         "one. If you conclude it now, do not ask what should happen "
-        "next -- instead, end your reply with the words \"The end.\""
+        "next. Instead, end your reply with the words \"The end.\""
     ),
 }
 
@@ -136,8 +143,11 @@ class StoryArc:
         return self._is_done
 
     def _stage_for_turn(self, turn: int) -> Stage:
-        if turn <= 0:
-            return Stage.SETUP
+        # turn <= 0 is the pre-first-turn state (a fresh arc, before
+        # record_turn has ever been called) -- treated the same as turn 1
+        # itself, since that's the turn it's about to produce guidance for.
+        if turn <= 1:
+            return Stage.INTRO
         setup_end = round(self._target_turns / 4)
         rising_end = round(self._target_turns * 2 / 3)
         if turn <= setup_end:

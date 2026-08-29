@@ -367,6 +367,18 @@ async def test_tracker_nudges_for_an_animal_during_setup_with_none_mentioned(tmp
     assert "animal" in guidance.lower()
 
 
+async def test_tracker_nudges_for_an_animal_during_intro_with_none_mentioned(tmp_path, monkeypatch):
+    # Stage.INTRO is turn 1 -- the nudge must still have a chance to fire
+    # there too, not just from Stage.SETUP (turn 2) onward.
+    monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "")
+    monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", tmp_path / "cache.json")
+
+    tracker = AnimalFactTracker()
+    guidance = await tracker.record_turn("let's make up a story", Stage.INTRO)
+
+    assert "animal" in guidance.lower()
+
+
 async def test_tracker_does_not_nudge_once_an_animal_has_been_mentioned(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "")
     monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", tmp_path / "cache.json")

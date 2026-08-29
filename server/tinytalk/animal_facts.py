@@ -556,6 +556,6 @@ class AnimalFactTracker:
                 self._facted.add(canonical)
                 return _WEAVE_IN_TEMPLATE.format(animal=canonical, fact=fact)
             return ""
-        if stage is Stage.SETUP and not self._any_animal_mentioned:
+        if stage in (Stage.INTRO, Stage.SETUP) and not self._any_animal_mentioned:
             return _FIRST_ANIMAL_NUDGE
         return ""
