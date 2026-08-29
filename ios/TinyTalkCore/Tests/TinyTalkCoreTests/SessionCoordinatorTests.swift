@@ -254,9 +254,154 @@ final class SessionCoordinatorTests: XCTestCase {
         runLoop.cancel()
     }
 
+    /// Root-cause regression test for the "press Connect, no ditty or
+    /// reply, straight to idle" bug: handleAppBackgrounded() has always
+    /// proactively captured activeTurnId before an intentional disconnect,
+    /// but a disconnect this coordinator discovers on its own (a network
+    /// drop, a server hiccup -- exactly what a plain "press Connect after
+    /// it dropped" scenario looks like) had no equivalent capture. By the
+    /// time a caller notices via polling that isClosed flipped true,
+    /// machine.state has already been walked back to .idle by this same
+    /// .closed handling -- so the resumable turn_id has to be captured
+    /// HERE, at the moment of disconnect, or the information is lost for
+    /// good and AppModel has nothing correct to pass to connect(
+    /// resumingTurnId:) on the next attempt.
+    func testClosedEventDuringActiveTurnCapturesTheResumableTurnId() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.message(.responseText("hi", turnId: 1))) // state is now .speaking
+
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        connection.emit(.closed)
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let resumableTurnId = await coordinator.resumableTurnIdAtDisconnect
+        XCTAssertEqual(resumableTurnId, 1, "disconnecting while .speaking must capture the in-flight turn_id to resume")
+
+        runLoop.cancel()
+    }
+
+    /// The counterpart case: a disconnect while genuinely idle (nothing in
+    /// flight, nothing to resume) must NOT report a resumable turn_id --
+    /// otherwise the next connect() would incorrectly try to resume a turn
+    /// that was never actually left hanging.
+    func testClosedEventWhileIdleDoesNotCaptureAResumableTurnId() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        connection.emit(.closed)
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let resumableTurnId = await coordinator.resumableTurnIdAtDisconnect
+        XCTAssertNil(resumableTurnId, "nothing was in flight -- there is nothing to resume")
+
+        runLoop.cancel()
+    }
+
+    /// A disconnect while .listening (mid-utterance, before speech_end)
+    /// is also not resumable -- matches handleAppBackgrounded()'s existing
+    /// criteria (only .waitingForReply/.speaking count) and state.py's own
+    /// ABANDON semantics: there is no reply in flight to pick back up,
+    /// just a partial utterance the server already discards on its side.
+    func testClosedEventWhileListeningDoesNotCaptureAResumableTurnId() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.closed)
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let resumableTurnId = await coordinator.resumableTurnIdAtDisconnect
+        XCTAssertNil(resumableTurnId, "mid-utterance, not mid-reply -- nothing to resume")
+
+        runLoop.cancel()
+    }
+
     /// Regression coverage for the per-turn AsyncStream handoff: after an
     /// interrupt tears one down, a fresh turn must work normally, not be
     /// left in a broken state by the previous turn's cleanup.
+    /// newStory() is the debug/testing "reset" affordance: abandon
+    /// whatever's happening (mirrors interrupt()'s in-flight-turn
+    /// teardown) and land in .idle rather than .listening, since nothing
+    /// new is starting.
+    func testNewStoryDuringActiveTurnCancelsItAndReturnsToIdle() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.message(.responseText("hi", turnId: 1)))
+        connection.emit(.audio(Data([1, 2, 3]))) // state is now .speaking
+
+        await coordinator.newStory()
+
+        let state = await coordinator.state
+        XCTAssertEqual(state, .idle)
+        XCTAssertEqual(connection.sentMessages.last, .newStory)
+        let reply = await coordinator.lastReply
+        XCTAssertEqual(reply, "", "abandoning the story should clear the last-shown reply")
+
+        runLoop.cancel()
+    }
+
+    /// A subsequent turn after newStory() must work completely normally --
+    /// same regression concern as testInterruptThenNewTurnCompletesNormally,
+    /// applied to the new reset path instead of interrupt.
+    func testNewStoryThenNewTurnCompletesNormally() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.message(.responseText("hi", turnId: 1)))
+        connection.emit(.audio(Data([1])))
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        await coordinator.newStory()
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.message(.responseText("a new tale", turnId: 2)))
+        connection.emit(.audio(Data([9])))
+        connection.emit(.message(.turnEnd(turnId: 2)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let state = await coordinator.state
+        XCTAssertEqual(state, .idle)
+        let reply = await coordinator.lastReply
+        XCTAssertEqual(reply, "a new tale")
+
+        runLoop.cancel()
+    }
+
     func testInterruptThenNewTurnCompletesNormally() async {
         let connection = FakeConnection()
         let audio = FakeAudio()

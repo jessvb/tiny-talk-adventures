@@ -727,6 +727,51 @@ async def test_reaching_story_done_saves_and_resets_conversation_and_arc(transpo
     assert session._animal_facts._any_animal_mentioned is False, "the animal fact tracker must be a fresh instance too"
 
 
+async def test_new_story_mid_turn_cancels_it_and_resets_everything(transport):
+    # New "reset" debug affordance -- the child/parent explicitly wants to
+    # abandon the current story and start over, without a full reconnect.
+    llm = FakeLlm(chunks=["Once ", "upon ", "a time."], delay=0.05)
+    session = make_session(transport, llm=llm)
+
+    await session.handle_text(SPEECH_START)
+    await session.handle_text(SPEECH_END)
+    await asyncio.sleep(0.01)  # turn genuinely in flight (THINKING)
+
+    await session.handle_text('{"type": "new_story"}')
+
+    assert session.state is State.IDLE
+    assert llm.cancelled is True
+    assert transport.messages_of_type("response_text") == []
+    assert session.conversation.turns == ()
+    assert session._story_arc.is_done is False
+    assert session._animal_facts._any_animal_mentioned is False
+
+
+async def test_new_story_after_a_completed_turn_clears_the_replay_buffer(transport):
+    # A finished-but-unheard reply from the OLD story must never be
+    # replayed to a later connection under a turn_id the new story reuses.
+    session = make_session(transport)
+    await run_full_turn(session)
+    assert transport.messages_of_type("turn_end")  # sanity: a turn did complete
+
+    await session.handle_text('{"type": "new_story"}')
+
+    assert session._turn_replay_buffer == []
+
+
+async def test_new_story_while_listening_resets_stt_and_returns_to_idle(transport):
+    stt = FakeStt()
+    session = make_session(transport, stt=stt)
+
+    await session.handle_text(SPEECH_START)
+    assert session.state is State.LISTENING
+
+    await session.handle_text('{"type": "new_story"}')
+
+    assert session.state is State.IDLE
+    assert stt.resets == 1
+
+
 async def test_interrupting_a_concluding_turn_defers_save_and_reset_to_the_next_completed_turn(transport, monkeypatch):
     # record_reply() runs BEFORE the TTS loop, so a turn that WOULD
     # conclude the story can still be interrupted mid-playback -- is_done

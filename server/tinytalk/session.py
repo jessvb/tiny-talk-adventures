@@ -27,6 +27,7 @@ from .conversation import Conversation
 from .engines import EngineError, LlmEngine, SttEngine, TtsEngine
 from .protocol import (
     Interrupt,
+    NewStory,
     ProtocolError,
     SpeechEnd,
     SpeechStart,
@@ -141,6 +142,30 @@ class SessionRunner:
                 await self._finish_listening()
             case Interrupt(turn_id=turn_id):
                 await self._interrupt(turn_id)
+            case NewStory():
+                await self.handle_new_story()
+
+    async def handle_new_story(self) -> None:
+        """Abandon the current story (if any) and start fresh, without
+        tearing down the connection or session -- a debug/testing
+        affordance for resetting without a full reconnect. Cancels any
+        in-flight turn (nothing to salvage -- the story it belonged to is
+        being discarded) and clears the replay buffer, so nothing from the
+        old story can ever be replayed to a later connection under a
+        turn_id the new story reuses. Deliberately does NOT reset
+        _current_turn_id: turn_id just keeps incrementing across stories
+        within the same connection, the same way it already does across
+        ordinary turns -- resetting it would risk exactly the kind of
+        turn_id collision this whole area of the codebase already has
+        enough trouble with."""
+        await self._cancel_turn(record_spoken=False)
+        if self._machine.state is State.LISTENING:
+            self._stt.reset()
+        self._turn_replay_buffer = []
+        self._conversation = Conversation()
+        self._story_arc = StoryArc()
+        self._animal_facts = AnimalFactTracker()
+        self._machine = TurnStateMachine()
 
     async def handle_audio(self, pcm: bytes) -> None:
         # Audio arriving outside LISTENING is stale — a frame in flight when

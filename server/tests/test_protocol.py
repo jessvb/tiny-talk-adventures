@@ -4,6 +4,7 @@ import pytest
 
 from tinytalk.protocol import (
     Interrupt,
+    NewStory,
     ProtocolError,
     SpeechEnd,
     SpeechStart,
@@ -22,6 +23,7 @@ from tinytalk.protocol import (
         ('{"type": "speech_start", "turn_id": 3}', SpeechStart(turn_id=3)),
         ('{"type": "speech_end"}', SpeechEnd()),
         ('{"type": "interrupt", "turn_id": 7}', Interrupt(turn_id=7)),
+        ('{"type": "new_story"}', NewStory()),
     ],
 )
 def test_decodes_each_client_message_type(raw, expected):

@@ -13,6 +13,14 @@ final class AppModel: ObservableObject {
     @Published var latencyHistory: [InterruptLatency] = []
     @Published var isConnected = false
     @Published var isMicMuted = false
+    /// The turn_id most recently sent on speechStart/interrupt/resume --
+    /// debug UI, added while diagnosing the disconnect/reconnect turn-id
+    /// mismatch bug, to let you SEE at a glance whether a reconnect
+    /// resumed the right turn instead of silently discarding everything.
+    @Published var currentTurnId: Int = 0
+    /// Mirror of SessionCoordinator.debugLog -- see that property's doc
+    /// comment for what it does and doesn't include.
+    @Published var debugLog: [String] = []
 
     private var coordinator: SessionCoordinator?
     private var audioEngine: RealAudioEngine?
@@ -39,12 +47,26 @@ final class AppModel: ObservableObject {
     /// handling) -- neither of those should be silently overridden by
     /// auto-reconnecting the next time the app becomes active again.
     private var shouldReconnectOnForeground = false
-    /// Set by handleAppBackgrounded() when the backgrounded turn was still
-    /// live (.waitingForReply or .speaking) -- handleAppForegrounded() hands
-    /// this to connect(resumingTurnId:) so the reply that was in flight (or
-    /// already finished but never heard) can be resumed/replayed instead of
-    /// starting a silent fresh session. nil for a backgrounding that
-    /// happened while .idle or .listening, where there is nothing to resume.
+    /// Whichever turn_id should be resumed on the NEXT connect() attempt,
+    /// or nil if there is nothing to resume. Two independent writers:
+    /// handleAppBackgrounded() sets it proactively (reads live coordinator
+    /// state before an intentional disconnect it's about to cause), and
+    /// startPollingState()'s poll loop sets it reactively, from
+    /// coordinator.resumableTurnIdAtDisconnect, whenever it notices the
+    /// connection died on its own (a network drop, a server hiccup --
+    /// what an ordinary "the app is open and waiting, then it randomly
+    /// disconnects" looks like). Both feed the same value into the same
+    /// place: connectResumingIfPending() reads and clears it, exactly like
+    /// handleAppForegrounded() already does for the backgrounding case.
+    /// Root-cause fix: previously only the backgrounding path ever set
+    /// this, so the manual "Connect" button -- used after every OTHER kind
+    /// of disconnect -- always resumed nothing, silently discarding
+    /// whatever the server replayed (turn_id 0 from a fresh coordinator
+    /// never matches the server's real turn_id) and landing back at
+    /// .idle with no ditty and no reply, exactly as reported.
+    /// disconnectUserInitiated() explicitly clears this -- a disconnect
+    /// the user chose themselves must never be silently overridden by an
+    /// auto-resume on their next manual reconnect.
     private var pendingResumeTurnId: Int?
 
     init() {
@@ -165,6 +187,41 @@ final class AppModel: ObservableObject {
         // Reset so the UI doesn't show "Muted" against a fresh coordinator
         // (created unmuted by default) on the next connect().
         isMicMuted = false
+        // Same reasoning -- a fresh coordinator starts at turn_id 0 with
+        // an empty debug log, so mirror that here rather than showing
+        // stale values from the coordinator that just went away.
+        currentTurnId = 0
+        debugLog = []
+    }
+
+    /// What the "Disconnect" button calls -- a disconnect the user chose
+    /// themselves must never be silently overridden by an auto-resume the
+    /// next time they tap "Connect" (mirrors the existing reasoning for
+    /// shouldReconnectOnForeground never being set here either).
+    func disconnectUserInitiated() {
+        pendingResumeTurnId = nil
+        disconnect()
+    }
+
+    /// What the manual "Connect" button calls. Reads and clears
+    /// pendingResumeTurnId -- exactly the same read-then-clear-then-pass
+    /// pattern handleAppForegrounded() already uses for the backgrounding
+    /// case -- so a plain reconnect after ANY kind of disconnect (not just
+    /// backgrounding) correctly resumes whatever the server is still
+    /// holding, instead of starting a fresh, memory-less session that
+    /// discards the reply as belonging to a turn_id it no longer
+    /// recognizes.
+    func connectResumingIfPending() async {
+        let resumingTurnId = pendingResumeTurnId
+        pendingResumeTurnId = nil
+        await connect(resumingTurnId: resumingTurnId)
+    }
+
+    /// Debug/testing affordance: abandon the current story and start a
+    /// fresh one without disconnecting -- see SessionCoordinator.newStory().
+    func startNewStory() async {
+        guard let coordinator else { return }
+        await coordinator.newStory()
     }
 
     /// Lets the child/parent mute the mic -- e.g. to prevent an accidental
@@ -247,10 +304,8 @@ final class AppModel: ObservableObject {
     func handleAppForegrounded() async {
         guard shouldReconnectOnForeground else { return }
         shouldReconnectOnForeground = false
-        let resumingTurnId = pendingResumeTurnId
-        pendingResumeTurnId = nil
-        print("AppModel: foregrounded -- reconnecting with resumingTurnId=\(String(describing: resumingTurnId))")
-        await connect(resumingTurnId: resumingTurnId)
+        print("AppModel: foregrounded -- reconnecting with pendingResumeTurnId=\(String(describing: pendingResumeTurnId))")
+        await connectResumingIfPending()
     }
 
     private func startPollingState() {
@@ -266,6 +321,15 @@ final class AppModel: ObservableObject {
                 let errorMessage = await coordinator.lastErrorMessage
                 let closed = await coordinator.isClosed
                 let muted = await coordinator.isMuted
+                let turnId = await coordinator.activeTurnId
+                let log = await coordinator.debugLog
+                // Read regardless of `closed` (cheap, and reading it only
+                // inside the `guard closed` branch below would still be
+                // correct -- kept alongside the other coordinator reads
+                // above for consistency). See resumableTurnIdAtDisconnect's
+                // doc comment: this is already nil unless a reply was
+                // genuinely in flight when the disconnect happened.
+                let resumableTurnId = await coordinator.resumableTurnIdAtDisconnect
                 // Returns "should this loop stop" as the closure's result,
                 // rather than mutating a captured local var, since
                 // MainActor.run's body is @Sendable and Swift 6 strict
@@ -278,6 +342,8 @@ final class AppModel: ObservableObject {
                     self.lastTranscript = transcript
                     self.lastReply = reply
                     self.isMicMuted = muted
+                    self.currentTurnId = turnId
+                    self.debugLog = log
                     // Only overwrite with a real server error -- a nil here
                     // just means "no server error yet," and must not erase
                     // a client-side error (e.g. audio capture failing to
@@ -299,6 +365,15 @@ final class AppModel: ObservableObject {
                     if self.lastErrorMessage == nil {
                         self.lastErrorMessage = "disconnected from server"
                     }
+                    // Root-cause fix: this is the "randomly disconnects,
+                    // then pressing Connect does nothing" scenario --
+                    // capture whatever the coordinator determined was
+                    // resumable BEFORE disconnect() discards this
+                    // coordinator entirely, so the next manual "Connect"
+                    // tap (connectResumingIfPending()) has something
+                    // correct to resume instead of always starting fresh.
+                    self.pendingResumeTurnId = resumableTurnId
+                    print("AppModel: connection closed unexpectedly -- pendingResumeTurnId=\(String(describing: resumableTurnId))")
                     self.disconnect()
                     return true
                 }
@@ -321,9 +396,9 @@ struct ContentView: View {
 
             Button(model.isConnected ? "Disconnect" : "Connect") {
                 if model.isConnected {
-                    model.disconnect()
+                    model.disconnectUserInitiated()
                 } else {
-                    Task { await model.connect() }
+                    Task { await model.connectResumingIfPending() }
                 }
             }
 
@@ -337,9 +412,13 @@ struct ContentView: View {
                     )
                 }
                 .tint(model.isMicMuted ? .red : .accentColor)
+
+                Button("New Story", role: .destructive) {
+                    Task { await model.startNewStory() }
+                }
             }
 
-            Text("State: \(String(describing: model.state))")
+            Text("State: \(String(describing: model.state))  ·  Turn: \(model.currentTurnId)")
                 .font(.headline)
 
             if let error = model.lastErrorMessage {
@@ -365,6 +444,27 @@ struct ContentView: View {
 
             List(Array(model.latencyHistory.enumerated()), id: \.offset) { _, latency in
                 Text(String(format: "VAD→stopped: %.1fms", latency.vadFireToPlaybackStoppedMillis))
+            }
+
+            // Debug log -- see SessionCoordinator.debugLog's doc comment
+            // for exactly what lands here (turn_id-mismatch discards and
+            // resume-path events, not every diagnostic print in the app).
+            // Added while diagnosing the disconnect/reconnect bug, to make
+            // "did the reconnect actually resume the right turn" visible
+            // without needing an attached Xcode console.
+            if !model.debugLog.isEmpty {
+                Text("Debug log").font(.caption).foregroundColor(.secondary)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(model.debugLog.enumerated()), id: \.offset) { _, line in
+                            Text(line)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 100)
             }
 
             Spacer()
