@@ -1,4 +1,8 @@
 .claude/settings.local.json
+# Nested worktree checkouts -- these carry their own .git *file* (not a
+# nested repo dir), so `git add -A` here would otherwise walk into them and
+# try to stage everything inside, .venv/.build caches included.
+.claude/worktrees/
 .superpowers/
 .venv/
 .env
