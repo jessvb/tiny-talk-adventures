@@ -59,12 +59,25 @@ class Interrupt:
     turn_id: int
 
 
-ClientMessage = SpeechStart | SpeechEnd | Interrupt
+@dataclass(frozen=True)
+class ObjectSeen:
+    """The child took a photo and on-device Vision classified it; label is
+    the recognized object's plain-English name (e.g. "teddy bear").
+    Deliberately carries no turn_id, unlike SpeechStart/Interrupt -- taking
+    a photo isn't tied to a specific turn boundary, it's queued and woven
+    into whichever turn happens next. See
+    docs/superpowers/specs/2026-08-29-object-recognition-design.md."""
+
+    label: str
+
+
+ClientMessage = SpeechStart | SpeechEnd | Interrupt | ObjectSeen
 
 _CLIENT_MESSAGE_TYPES: dict[str, type] = {
     "speech_start": SpeechStart,
     "speech_end": SpeechEnd,
     "interrupt": Interrupt,
+    "object_seen": ObjectSeen,
 }
 _TYPES_REQUIRING_TURN_ID = (SpeechStart, Interrupt)
 
@@ -89,6 +102,11 @@ def decode_client_message(raw: str) -> ClientMessage:
         if not isinstance(turn_id, int):
             raise ProtocolError(f"{kind} requires an integer turn_id: {raw!r}")
         return message_type(turn_id=turn_id)
+    if message_type is ObjectSeen:
+        label = payload.get("label")
+        if not isinstance(label, str) or not label.strip():
+            raise ProtocolError(f"object_seen requires a non-empty string label: {raw!r}")
+        return ObjectSeen(label=label)
     return message_type()
 
 
