@@ -21,6 +21,9 @@ public enum ClientMessage: Sendable, Equatable {
     case speechStart(turnId: Int)
     case speechEnd
     case interrupt(turnId: Int)
+    /// See object_recognition.py / this file's `ClientMessage` mirror --
+    /// deliberately no turn_id, matching protocol.py's ObjectSeen.
+    case objectSeen(label: String)
 
     public func encode() -> String {
         // Field order and separators are fixed here (no JSONEncoder) so the
@@ -32,7 +35,28 @@ public enum ClientMessage: Sendable, Equatable {
             return #"{"type":"speech_end"}"#
         case .interrupt(let turnId):
             return #"{"type":"interrupt","turn_id":\#(turnId)}"#
+        case .objectSeen(let label):
+            return #"{"type":"object_seen","label":"\#(Self.jsonEscaped(label))"}"#
         }
+    }
+
+    /// Escapes the two characters that would otherwise break JSON's
+    /// string-literal syntax. label is the only free-text field this
+    /// file ever puts on the wire (every other field is a fixed type
+    /// string or an Int) -- this keeps the file's "no JSONEncoder, exact
+    /// wire bytes" style while still producing valid JSON for arbitrary
+    /// text, rather than assuming Vision's labels never contain a quote
+    /// or backslash.
+    private static func jsonEscaped(_ s: String) -> String {
+        var result = ""
+        for scalar in s.unicodeScalars {
+            switch scalar {
+            case "\"": result += "\\\""
+            case "\\": result += "\\\\"
+            default: result.unicodeScalars.append(scalar)
+            }
+        }
+        return result
     }
 }
 
