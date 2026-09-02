@@ -28,13 +28,13 @@ def test_consume_guidance_clears_the_pending_label():
 
 def test_second_record_seen_before_consumption_overwrites_the_first():
     tracker = ObjectTracker()
-    tracker.record_seen("teddy bear")
-    tracker.record_seen("couch")
+    tracker.record_seen("elephant")
+    tracker.record_seen("backpack")
 
     guidance = tracker.consume_guidance()
 
-    assert "couch" in guidance
-    assert "teddy bear" not in guidance
+    assert "backpack" in guidance
+    assert "elephant" not in guidance
 
 
 def test_unsafe_label_is_discarded_and_produces_no_guidance():
