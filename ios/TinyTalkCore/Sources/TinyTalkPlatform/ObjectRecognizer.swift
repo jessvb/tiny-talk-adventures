@@ -30,7 +30,7 @@ public final class VisionObjectRecognizer: @unchecked Sendable {
 
     private let threshold: Float
 
-    public init(confidenceThreshold: Float = Self.defaultConfidenceThreshold) {
+    public init(confidenceThreshold: Float = VisionObjectRecognizer.defaultConfidenceThreshold) {
         self.threshold = confidenceThreshold
     }
 
