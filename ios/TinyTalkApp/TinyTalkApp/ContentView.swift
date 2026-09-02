@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 import TinyTalkCore
 import TinyTalkPlatform
@@ -13,9 +14,11 @@ final class AppModel: ObservableObject {
     @Published var latencyHistory: [InterruptLatency] = []
     @Published var isConnected = false
     @Published var isMicMuted = false
+    @Published var objectRecognitionHint: String?
 
     private var coordinator: SessionCoordinator?
     private var audioEngine: RealAudioEngine?
+    private let objectRecognizer = VisionObjectRecognizer()
     private var runLoop: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
     /// Ordered pipe from the audio tap's real-time callback into the
@@ -183,6 +186,50 @@ final class AppModel: ObservableObject {
         Task { await coordinatorToUpdate?.setMuted(newValue) }
     }
 
+    /// Checks camera permission/availability before presenting the
+    /// picker -- per the design spec's error handling, the button must
+    /// be disabled or point to Settings rather than presenting a picker
+    /// that can't work (e.g. no camera on the Simulator, or a denied
+    /// permission).
+    func requestCameraAccessAndShowPicker() async -> Bool {
+        guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+            lastErrorMessage = "no camera available on this device."
+            return false
+        }
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            return true
+        case .notDetermined:
+            return await AVCaptureDevice.requestAccess(for: .video)
+        default:
+            lastErrorMessage = "camera access denied. Check Settings > Privacy > Camera > TinyTalkApp."
+            return false
+        }
+    }
+
+    /// Runs on-device classification and, on success, forwards the label
+    /// to the server. Every failure path here (no confident label,
+    /// Vision throwing, no active coordinator) ends in the same local
+    /// "try again" hint rather than an error -- per the design spec, a
+    /// failed or ambiguous photo attempt must never block or degrade the
+    /// core voice turn, and a confusing error is worse than just letting
+    /// the child try again.
+    func handlePhotoTaken(_ image: UIImage) async {
+        objectRecognitionHint = nil
+        guard let coordinator else { return }
+        do {
+            guard let recognized = try await objectRecognizer.recognize(image: image) else {
+                objectRecognitionHint = "Couldn't quite tell what that is -- try again?"
+                return
+            }
+            print("AppModel: recognized \(recognized.label) (confidence=\(recognized.confidence))")
+            await coordinator.sendObjectSeen(label: recognized.label)
+        } catch {
+            print("AppModel: object recognition failed: \(error)")
+            objectRecognitionHint = "Couldn't quite tell what that is -- try again?"
+        }
+    }
+
     /// Called when the app is backgrounded (phone locked, user switches
     /// apps, etc.) -- real on-device testing found the connection just
     /// dying uncleanly in this situation (iOS suspends the app; the mic/
@@ -309,9 +356,55 @@ final class AppModel: ObservableObject {
     }
 }
 
+/// Thin SwiftUI wrapper around the standard system camera --
+/// UIImagePickerController, not a custom AVCaptureSession preview, since
+/// this is a single on-demand photo per the design spec, not a
+/// continuous live view.
+struct CameraPicker: UIViewControllerRepresentable {
+    let onImagePicked: (UIImage) -> Void
+    let onCancel: () -> Void
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: CameraPicker
+
+        init(_ parent: CameraPicker) {
+            self.parent = parent
+        }
+
+        func imagePickerController(
+            _ picker: UIImagePickerController,
+            didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+        ) {
+            picker.dismiss(animated: true)
+            guard let image = info[.originalImage] as? UIImage else {
+                parent.onCancel()
+                return
+            }
+            parent.onImagePicked(image)
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            picker.dismiss(animated: true)
+            parent.onCancel()
+        }
+    }
+}
+
 struct ContentView: View {
     @StateObject private var model = AppModel()
     @Environment(\.scenePhase) private var scenePhase
+    @State private var showingCamera = false
 
     var body: some View {
         VStack(spacing: 16) {
@@ -337,6 +430,15 @@ struct ContentView: View {
                     )
                 }
                 .tint(model.isMicMuted ? .red : .accentColor)
+
+                Button {
+                    Task {
+                        guard await model.requestCameraAccessAndShowPicker() else { return }
+                        showingCamera = true
+                    }
+                } label: {
+                    Label("Show Me Something", systemImage: "camera.fill")
+                }
             }
 
             Text("State: \(String(describing: model.state))")
@@ -344,6 +446,10 @@ struct ContentView: View {
 
             if let error = model.lastErrorMessage {
                 Text("Error: \(error)").foregroundColor(.red)
+            }
+
+            if let hint = model.objectRecognitionHint {
+                Text(hint).foregroundColor(.secondary)
             }
 
             Text("Heard: \(model.lastTranscript)")
@@ -388,6 +494,16 @@ struct ContentView: View {
             default:
                 break
             }
+        }
+        .sheet(isPresented: $showingCamera) {
+            CameraPicker(
+                onImagePicked: { image in
+                    showingCamera = false
+                    Task { await model.handlePhotoTaken(image) }
+                },
+                onCancel: { showingCamera = false }
+            )
+            .ignoresSafeArea()
         }
     }
 }
