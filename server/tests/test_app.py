@@ -304,9 +304,11 @@ class SlowSession:
         self.handled_at: list[float] = []
         self.current_turn_id = 0
         self.disconnects = 0
+        self.transport_generation = 0
 
     def rebind_transport(self, transport) -> None:
         self.transport = transport
+        self.transport_generation += 1
 
     async def replay_last_turn(self) -> None:
         return None
@@ -380,3 +382,34 @@ async def test_a_flooded_queue_drops_audio_but_never_control_frames():
 
     assert '{"type":"speech_end"}' in session.handled
     assert len([item for item in session.handled if isinstance(item, bytes)]) <= 8
+
+
+async def test_a_superseded_connection_stops_processing_and_leaves_cleanup_to_its_replacement():
+    """Only one connection may drive the shared session at a time.
+
+    The session (and so the single streaming STT utterance inside it) is
+    shared across connections by design. Now that a dead connection drains
+    what it already read instead of stopping at one message, a reconnect
+    arriving during that drain would otherwise have two connections feeding
+    the same STT session at once -- interleaving two children's utterances
+    into one transcript, and running two MLX calls from two threads. Worse,
+    the old connection's handle_disconnect() would then reset the STT
+    session the NEW connection had already started filling.
+    """
+    session = SlowSession(per_message_delay=0.01)
+    superseded = FakeWebSocket([f"stale-{i}".encode() for i in range(40)])
+    draining = asyncio.create_task(handle_connection(superseded, session=session))
+    await asyncio.sleep(0.05)
+    handled_before_takeover = len(session.handled)
+
+    await handle_connection(FakeWebSocket([]), session=session)
+    await draining
+
+    assert len(session.handled) - handled_before_takeover <= 2, (
+        "the superseded connection kept feeding the session after a newer "
+        "connection took it over"
+    )
+    assert session.disconnects == 1, (
+        "the superseded connection ran session cleanup that belongs to the "
+        "connection that replaced it"
+    )

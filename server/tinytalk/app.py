@@ -151,6 +151,11 @@ async def handle_connection(
     single inline loop used to."""
     transport = WebSocketTransport(websocket)
     session.rebind_transport(transport)
+    # This handler outlives its own socket by however long the drain in the
+    # finally block takes, so "am I still the connection driving this
+    # session?" stops being obvious and has to be asked explicitly -- see
+    # rebind_transport()'s docstring for what goes wrong otherwise.
+    generation = session.transport_generation
     logger.info("client connected")
     # Deliver anything left over from before this connection existed --
     # a turn that finished (or made partial progress) while nobody was
@@ -184,13 +189,14 @@ async def handle_connection(
         not after: clearing afterwards would discard a wakeup posted by the
         reader while this was mid-dispatch, and the worker would sleep on a
         non-empty queue."""
-        while True:
+        while session.transport_generation == generation:
             arrived.clear()
-            while inbound:
+            while inbound and session.transport_generation == generation:
                 await dispatch(inbound.popleft())
             if reader_done:
                 return
             await arrived.wait()
+        logger.info("stopping message processing -- a newer connection owns the session")
 
     worker = asyncio.create_task(process_inbound())
     try:
@@ -243,13 +249,22 @@ async def handle_connection(
                 dropped_audio_frames,
                 INBOUND_QUEUE_MAXSIZE,
             )
-        # Deliberately session.handle_disconnect(), not session.aclose():
-        # an in-flight turn (e.g. the child backgrounded the app while
-        # waiting for a reply) must be left running, not cancelled -- see
-        # handle_disconnect()'s docstring. The session survives; only this
-        # one connection is going away.
-        await session.handle_disconnect()
-        logger.info("client disconnected")
+        if session.transport_generation != generation:
+            # A newer connection took the session over while this one was
+            # draining. Its cleanup is not ours to run: handle_disconnect()
+            # resets STT mid-utterance, which would wipe an utterance the
+            # new connection has already started. (Written as an if/else
+            # rather than an early return -- a `return` inside `finally`
+            # silently swallows whatever exception was propagating.)
+            logger.info("client disconnected (session already owned by a newer connection)")
+        else:
+            # Deliberately session.handle_disconnect(), not session.aclose():
+            # an in-flight turn (e.g. the child backgrounded the app while
+            # waiting for a reply) must be left running, not cancelled -- see
+            # handle_disconnect()'s docstring. The session survives; only this
+            # one connection is going away.
+            await session.handle_disconnect()
+            logger.info("client disconnected")
 
 
 async def serve() -> None:

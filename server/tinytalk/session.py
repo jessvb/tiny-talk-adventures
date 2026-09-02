@@ -80,6 +80,10 @@ class SessionRunner:
         conversation: Conversation | None = None,
     ) -> None:
         self._transport = transport
+        # Starts at 0 rather than 1: app.py builds this session around a
+        # NullTransport before any client exists, and the first real
+        # connection's rebind_transport() is what makes it generation 1.
+        self._transport_generation = 0
         # Guards every actual transport send (both a live turn's own sends
         # and replay_last_turn()'s catch-up sends) so the two can never
         # interleave: without this, a reconnect landing mid-turn could let a
@@ -192,14 +196,33 @@ class SessionRunner:
         if self._turn_task is not None:
             await asyncio.gather(self._turn_task, return_exceptions=True)
 
+    @property
+    def transport_generation(self) -> int:
+        """Bumped by every rebind_transport() call, so a connection handler
+        can tell whether it still owns this session. Exactly one connection
+        does at a time -- see rebind_transport()'s docstring."""
+        return self._transport_generation
+
     def rebind_transport(self, transport: Transport) -> None:
         """Point this session at a new connection's transport. Called by
         app.py on every connect, including a reconnect after a disconnect
         mid-turn -- the still-running turn task's own sends (guarded by
         _transport_lock, same as replay_last_turn()) will start reaching
-        the new connection as soon as this returns."""
+        the new connection as soon as this returns.
+
+        Bumping the generation here is what makes "the newest connection
+        owns the session" enforceable rather than merely conventional. It
+        matters because a handler outlives its own socket by however long
+        it takes to finish processing what that socket already delivered
+        (see app.py's handle_connection): without this, a reconnect landing
+        during that window would have two handlers feeding the one shared
+        streaming STT session -- interleaving two utterances into a single
+        transcript, running two MLX calls from two threads at once, and
+        letting the older handler's handle_disconnect() reset an utterance
+        the newer connection had already started."""
         logger.info("transport rebound (session state=%s)", self._machine.state.name)
         self._transport = transport
+        self._transport_generation += 1
 
     async def replay_last_turn(self) -> None:
         """Resend everything buffered for the current/most recent turn to

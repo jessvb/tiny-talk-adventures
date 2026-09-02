@@ -854,3 +854,15 @@ async def test_animal_free_first_turn_gets_the_nudge(transport, monkeypatch, tmp
 
     system_message = llm.calls[0][0]
     assert "what animal should be in the story" in system_message["content"]
+
+
+async def test_rebinding_the_transport_bumps_the_generation(transport):
+    """app.py's handle_connection uses this to tell whether it still owns
+    the session -- see rebind_transport()'s docstring."""
+    session = SessionRunner(transport=transport, stt=FakeStt(), llm=FakeLlm(), tts=FakeTts())
+
+    assert session.transport_generation == 0
+    session.rebind_transport(FakeTransport())
+    assert session.transport_generation == 1
+    session.rebind_transport(FakeTransport())
+    assert session.transport_generation == 2
