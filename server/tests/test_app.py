@@ -1,5 +1,10 @@
+import asyncio
+import time
+from unittest.mock import patch
+
 from conftest import FakeLlm, FakeStt, FakeTts
 from tinytalk import config
+from tinytalk import app as app_module
 from tinytalk.app import WebSocketTransport, build_llm, handle_connection
 from tinytalk.engines import EngineError
 from tinytalk.llm_groq import GroqLlm
@@ -264,3 +269,114 @@ async def test_abrupt_disconnect_is_handled_without_an_unhandled_exception():
     # case, since STT's own per-utterance reset (normally triggered by
     # finish()) never got a chance to fire.
     assert stt.resets == 1
+
+
+class RecordingWebSocket(FakeWebSocket):
+    """Records when the socket-reading loop actually drained the last
+    inbound frame, so a test can assert reading is not gated on how long
+    processing those frames takes."""
+
+    def __init__(self, incoming: list[str | bytes]) -> None:
+        super().__init__(incoming)
+        self.read_finished_at: float | None = None
+
+    def __aiter__(self):
+        async def generate():
+            for item in self._incoming:
+                yield item
+                # A real socket read suspends; without this the reader
+                # would starve the worker and the test would prove nothing.
+                await asyncio.sleep(0)
+            self.read_finished_at = time.perf_counter()
+
+        return generate()
+
+
+class SlowSession:
+    """A SessionRunner stand-in whose per-message work is far slower than
+    the inbound stream, which is the real situation on hardware: measured
+    from production logs, KyutaiStt.feed() decodes roughly 4x slower than
+    realtime, so audio arrives faster than it can possibly be consumed."""
+
+    def __init__(self, per_message_delay: float = 0.02) -> None:
+        self.per_message_delay = per_message_delay
+        self.handled: list[str | bytes] = []
+        self.handled_at: list[float] = []
+        self.current_turn_id = 0
+        self.disconnects = 0
+
+    def rebind_transport(self, transport) -> None:
+        self.transport = transport
+
+    async def replay_last_turn(self) -> None:
+        return None
+
+    async def _work(self, item: str | bytes) -> None:
+        await asyncio.sleep(self.per_message_delay)
+        self.handled.append(item)
+        self.handled_at.append(time.perf_counter())
+
+    async def handle_audio(self, pcm: bytes) -> None:
+        await self._work(pcm)
+
+    async def handle_text(self, raw: str) -> None:
+        await self._work(raw)
+
+    async def handle_disconnect(self) -> None:
+        self.disconnects += 1
+
+
+async def test_socket_reading_is_not_gated_on_slow_message_handling():
+    """The disconnect bug's root cause, as a test.
+
+    websockets pauses reading the TCP socket entirely once more than
+    max_queue (16) frames are waiting -- and a paused socket never reads
+    the client's keepalive PONG either, so the server kills its own
+    healthy connection ping_interval + ping_timeout (40s) later. That can
+    only happen if the read loop is gated on per-message work, so the
+    guarantee to hold is: the reader drains the socket without waiting for
+    processing to catch up.
+    """
+    frames: list[str | bytes] = [b"\x00" * 64 for _ in range(20)]
+    frames.append('{"type":"speech_end"}')
+    socket = RecordingWebSocket(frames)
+    session = SlowSession(per_message_delay=0.02)
+
+    await handle_connection(socket, session=session)
+
+    assert session.handled == frames, "every frame must still be handled, in order"
+    assert socket.read_finished_at is not None
+    assert socket.read_finished_at < session.handled_at[-1], (
+        "the socket was still being read only because processing had finished -- "
+        "reading is gated on per-message work"
+    )
+
+
+async def test_a_barge_in_discards_audio_still_queued_for_the_abandoned_utterance():
+    """Audio sitting in the queue ahead of an interrupt belongs to the
+    utterance the child just talked over, which the server is about to
+    abandon anyway. Feeding it costs ~4x realtime for nothing and is what
+    lets a backlog build in the first place."""
+    stale: list[str | bytes] = [f"stale-{i}".encode() for i in range(8)]
+    fresh: list[str | bytes] = [f"fresh-{i}".encode() for i in range(3)]
+    socket = FakeWebSocket([*stale, '{"type":"interrupt","turn_id":2}', *fresh])
+    session = SlowSession(per_message_delay=0)
+
+    await handle_connection(socket, session=session)
+
+    assert session.handled == ['{"type":"interrupt","turn_id":2}', *fresh]
+
+
+async def test_a_flooded_queue_drops_audio_but_never_control_frames():
+    """A bounded queue keeps a runaway client from growing memory without
+    limit, but dropping a speech_end/interrupt would strand the session --
+    so only audio is ever droppable."""
+    flood: list[str | bytes] = [f"audio-{i}".encode() for i in range(64)]
+    socket = FakeWebSocket([*flood, '{"type":"speech_end"}'])
+    session = SlowSession(per_message_delay=0)
+
+    with patch.object(app_module, "INBOUND_QUEUE_MAXSIZE", 8):
+        await handle_connection(socket, session=session)
+
+    assert '{"type":"speech_end"}' in session.handled
+    assert len([item for item in session.handled if isinstance(item, bytes)]) <= 8
