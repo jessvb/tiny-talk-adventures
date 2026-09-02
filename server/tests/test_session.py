@@ -809,3 +809,73 @@ async def test_animal_free_first_turn_gets_the_nudge(transport, monkeypatch, tmp
 
     system_message = llm.calls[0][0]
     assert "what animal should be in the story" in system_message["content"]
+
+
+OBJECT_SEEN = '{"type": "object_seen", "label": "teddy bear"}'
+
+
+async def test_object_seen_adds_weave_in_guidance_to_the_next_turns_llm_call(transport):
+    llm = FakeLlm()
+    session = make_session(transport, llm=llm)
+
+    await session.handle_text(OBJECT_SEEN)
+    await run_full_turn(session)
+
+    system_message = llm.calls[0][0]
+    assert "teddy bear" in system_message["content"]
+    assert "inspire" in system_message["content"].lower()
+
+
+async def test_object_seen_guidance_is_only_used_once(transport):
+    llm = FakeLlm()
+    session = make_session(transport, llm=llm)
+
+    await session.handle_text(OBJECT_SEEN)
+    await run_full_turn(session)
+
+    llm.chunks = ["A dragon then!"]
+    await session.handle_text('{"type": "speech_start", "turn_id": 2}')
+    await session.handle_audio(b"\x03\x04")
+    await session.handle_text(SPEECH_END)
+    await session.wait_for_turn()
+
+    second_system_message = llm.calls[1][0]
+    assert "teddy bear" not in second_system_message["content"]
+
+
+async def test_no_object_seen_message_sends_no_object_guidance(transport):
+    llm = FakeLlm()
+    session = make_session(transport, llm=llm)
+
+    await run_full_turn(session)
+
+    system_message = llm.calls[0][0]
+    assert "showed you a photo" not in system_message["content"]
+
+
+async def test_unsafe_object_label_is_discarded(transport):
+    llm = FakeLlm()
+    session = make_session(transport, llm=llm)
+
+    await session.handle_text('{"type": "object_seen", "label": "a bloody knife"}')
+    await run_full_turn(session)
+
+    system_message = llm.calls[0][0]
+    assert "knife" not in system_message["content"]
+
+
+async def test_reaching_story_done_resets_the_object_tracker(transport, monkeypatch):
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.save_story",
+        lambda conversation, **kwargs: None,
+    )
+    llm = FakeLlm(chunks=["And they all lived ", "happily ever after."])
+    session = make_session(transport, llm=llm)
+
+    await session.handle_text(OBJECT_SEEN)
+    await run_full_turn(session)
+
+    assert session._object_recognition._pending_label is None, (
+        "a story-ending turn must reset the object tracker to a fresh instance, "
+        "same as _conversation/_story_arc/_animal_facts"
+    )

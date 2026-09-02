@@ -25,8 +25,10 @@ from .animal_facts import AnimalFactTracker
 from .audio import TTS_SAMPLE_RATE, split_sentences
 from .conversation import Conversation
 from .engines import EngineError, LlmEngine, SttEngine, TtsEngine
+from .object_recognition import ObjectTracker
 from .protocol import (
     Interrupt,
+    ObjectSeen,
     ProtocolError,
     SpeechEnd,
     SpeechStart,
@@ -92,6 +94,7 @@ class SessionRunner:
         self._conversation = conversation or Conversation()
         self._story_arc = StoryArc()
         self._animal_facts = AnimalFactTracker()
+        self._object_recognition = ObjectTracker()
         self._machine = TurnStateMachine()
         self._turn_task: asyncio.Task | None = None
         # (sentence text, estimated real-world time.monotonic() at which
@@ -141,6 +144,8 @@ class SessionRunner:
                 await self._finish_listening()
             case Interrupt(turn_id=turn_id):
                 await self._interrupt(turn_id)
+            case ObjectSeen(label=label):
+                self._object_recognition.record_seen(label)
 
     async def handle_audio(self, pcm: bytes) -> None:
         # Audio arriving outside LISTENING is stale — a frame in flight when
@@ -410,6 +415,9 @@ class SessionRunner:
             )
             if fact_guidance:
                 guidance = f"{guidance}\n\n{fact_guidance}"
+            object_guidance = self._object_recognition.consume_guidance()
+            if object_guidance:
+                guidance = f"{guidance}\n\n{object_guidance}"
             if not transcript.strip():
                 guidance = f"{guidance}\n\n{_STT_FAILURE_GUIDANCE}"
             messages = self._conversation.to_messages(
@@ -481,6 +489,7 @@ class SessionRunner:
                 self._conversation = Conversation()
                 self._story_arc = StoryArc()
                 self._animal_facts = AnimalFactTracker()
+                self._object_recognition = ObjectTracker()
         except asyncio.CancelledError:
             raise
         except EngineError as exc:
