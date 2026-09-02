@@ -233,6 +233,19 @@ public actor SessionCoordinator {
         }
     }
 
+    /// Sends a recognized object's label to the server, to be woven into
+    /// whichever turn happens next -- see object_recognition.py's
+    /// ObjectTracker for how the server queues it. Deliberately not
+    /// gated on `machine.state`: taking a photo is not tied to a turn
+    /// boundary (per the design spec), so this is safe to call from
+    /// .idle, .listening, .waitingForReply, or .speaking alike. Best
+    /// effort, same as every other outgoing send in this file -- a
+    /// failure here must not surface as a user-facing error; the child
+    /// can just try the camera again.
+    public func sendObjectSeen(label: String) async {
+        try? await connection.send(.objectSeen(label: label))
+    }
+
     /// Appends to the pre-roll ring buffer, evicting the oldest chunks once
     /// the ~200ms byte cap is exceeded. Only called while NOT .listening, or
     /// while isFlushing is true -- once .listening AND not flushing,

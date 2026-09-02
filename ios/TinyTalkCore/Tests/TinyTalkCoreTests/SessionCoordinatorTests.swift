@@ -1016,6 +1016,17 @@ final class SessionCoordinatorTests: XCTestCase {
         runLoop.cancel()
     }
 
+    func testSendObjectSeenSendsTheLabelToTheServer() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+
+        await coordinator.sendObjectSeen(label: "teddy bear")
+
+        XCTAssertEqual(connection.sentMessages, [.objectSeen(label: "teddy bear")])
+    }
+
     /// Auto-mute and manual mute are independent flags, OR'd together --
     /// a standing manual mute (e.g. a parent stepping away) must still
     /// apply even once auto-mute itself would have cleared on reaching
