@@ -873,9 +873,10 @@ async def test_reaching_story_done_resets_the_object_tracker(transport, monkeypa
     session = make_session(transport, llm=llm)
 
     await session.handle_text(OBJECT_SEEN)
+    old_tracker = session._object_recognition
     await run_full_turn(session)
 
-    assert session._object_recognition._pending_label is None, (
+    assert session._object_recognition is not old_tracker, (
         "a story-ending turn must reset the object tracker to a fresh instance, "
         "same as _conversation/_story_arc/_animal_facts"
     )
