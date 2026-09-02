@@ -216,7 +216,10 @@ final class AppModel: ObservableObject {
     /// the child try again.
     func handlePhotoTaken(_ image: UIImage) async {
         objectRecognitionHint = nil
-        guard let coordinator else { return }
+        guard let coordinator else {
+            objectRecognitionHint = "Couldn't quite tell what that is -- try again?"
+            return
+        }
         do {
             guard let recognized = try await objectRecognizer.recognize(image: image) else {
                 objectRecognitionHint = "Couldn't quite tell what that is -- try again?"
