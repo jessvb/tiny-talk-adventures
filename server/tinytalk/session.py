@@ -145,6 +145,14 @@ class SessionRunner:
             case Interrupt(turn_id=turn_id):
                 await self._interrupt(turn_id)
             case ObjectSeen(label=label):
+                # The feature's one safety decision -- log receipt and the
+                # accept/discard outcome here rather than threading logging
+                # into ObjectTracker.record_seen() itself: safety.is_safe()
+                # is a cheap, pure check (see safety.py), so re-running it
+                # here purely for visibility, right before the same check
+                # runs for real inside record_seen(), is fine.
+                accepted = safety.is_safe(label)
+                logger.info("object_seen: %r (accepted=%s)", label, accepted)
                 self._object_recognition.record_seen(label)
 
     async def handle_audio(self, pcm: bytes) -> None:

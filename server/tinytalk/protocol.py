@@ -28,6 +28,10 @@ tell a late reply for an old, already-abandoned utterance apart from a
 legitimate reply for its current one -- confirmed on real hardware to cause
 a reply being silently misattributed to the wrong turn, or dropped
 entirely, when the child spoke faster than the server could keep up.
+
+`object_seen` is deliberately exempt from both the turn_id contract above
+and the speech_start/interrupt ordering requirement -- see the ObjectSeen
+dataclass's own docstring for why.
 """
 
 from __future__ import annotations
@@ -106,7 +110,7 @@ def decode_client_message(raw: str) -> ClientMessage:
         label = payload.get("label")
         if not isinstance(label, str) or not label.strip():
             raise ProtocolError(f"object_seen requires a non-empty string label: {raw!r}")
-        return ObjectSeen(label=label)
+        return ObjectSeen(label=label.strip())
     return message_type()
 
 
