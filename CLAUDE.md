@@ -38,6 +38,26 @@ changes.
   not used here: Kyutai STT's MLX backend needs native Metal/Neural Engine
   access, which Docker Desktop on macOS can't provide.
 
+## Running the server
+
+Full setup/troubleshooting (first-time venv creation, Ollama, Kyutai STT,
+Kokoro TTS, iOS build): README.md's Setup section. Quick reference for
+day-to-day use once that one-time setup is done — two terminals:
+
+```bash
+# Terminal 1 — Ollama (skip if already running: curl http://127.0.0.1:11434/)
+ollama serve
+
+# Terminal 2 — the voice/dialog server
+cd server && source .venv/bin/activate && python -m tinytalk.app
+```
+
+Server config (LLM backend choice, API keys) loads automatically from
+`server/.env` if present — copy `server/.env.example` to `server/.env` and
+fill in real values. Everything in it is optional; with nothing set the
+server runs fully local against Ollama and skips features needing a key
+(e.g. animal-fact lookups).
+
 ## Working process
 
 This project uses the `superpowers` skill set for design and implementation:
