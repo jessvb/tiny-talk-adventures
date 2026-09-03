@@ -1,9 +1,11 @@
 import asyncio
+import logging
 import time
 from unittest.mock import patch
 
 from conftest import FakeLlm, FakeStt, FakeTts
 from tinytalk import config
+from tinytalk.audio import MIC_SAMPLE_RATE
 from tinytalk import app as app_module
 from tinytalk.app import WebSocketTransport, build_llm, handle_connection
 from tinytalk.engines import EngineError
@@ -412,4 +414,52 @@ async def test_a_superseded_connection_stops_processing_and_leaves_cleanup_to_it
     assert session.disconnects == 1, (
         "the superseded connection ran session cleanup that belongs to the "
         "connection that replaced it"
+    )
+
+
+async def test_a_dead_connection_stops_draining_its_backlog_instead_of_grinding_on():
+    """Cleanup must not sit and chew through a backlog nobody is waiting for.
+
+    Confirmed on real hardware, from a live stack dump of a wedged server:
+    with STT decoding ~2.3x slower than realtime, a connection whose phone
+    had long since gone away spent THIRTEEN MINUTES inside this cleanup,
+    feeding queued audio to MLX and pinning the GPU. handle_disconnect()
+    only runs after that drain, so the session stayed wedged for the whole
+    time too. Finishing what was already read is worth a bounded wait, not
+    an unbounded one.
+    """
+    backlog: list[str | bytes] = [b"\x00" * 64 for _ in range(200)]
+    socket = FakeWebSocket(backlog)
+    # Fully draining this would take 200 * 0.05 = 10s.
+    session = SlowSession(per_message_delay=0.05)
+
+    with patch.object(app_module, "POST_DISCONNECT_DRAIN_SECONDS", 0.2):
+        started = time.perf_counter()
+        await handle_connection(socket, session=session)
+        elapsed = time.perf_counter() - started
+
+    assert elapsed < 3.0, f"cleanup ground on for {elapsed:.1f}s instead of giving up"
+    assert len(session.handled) < len(backlog), "the whole backlog was drained anyway"
+    assert session.disconnects == 1, "session cleanup never ran"
+
+
+async def test_stt_falling_behind_realtime_is_logged_loudly(caplog):
+    """The single log line that would have made this bug obvious.
+
+    When STT cannot keep up, the server goes completely silent -- no turn
+    starts, nothing is logged, and the app just waits. That is exactly what
+    made the real incident take an hour to diagnose: thirteen minutes of
+    solid GPU work with not one line of output. Queued audio that STT has
+    not consumed is the direct measure of falling behind, so say so.
+    """
+    one_second_of_audio = b"\x00" * (2 * MIC_SAMPLE_RATE)
+    socket = FakeWebSocket([one_second_of_audio for _ in range(6)])
+    session = SlowSession(per_message_delay=0)
+
+    with caplog.at_level(logging.WARNING, logger="tinytalk.app"):
+        await handle_connection(socket, session=session)
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("behind realtime" in message for message in warnings), (
+        f"a growing STT backlog was never reported; got {warnings}"
     )

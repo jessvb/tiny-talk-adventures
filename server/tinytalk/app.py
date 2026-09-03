@@ -16,6 +16,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from . import config
+from .audio import MIC_SAMPLE_RATE
 from .engines import EngineError, LlmEngine, SttEngine, TtsEngine
 from .llm_groq import GroqLlm
 from .llm_ollama import OllamaLlm
@@ -34,6 +35,27 @@ logger = logging.getLogger(__name__)
 # that streams audio forever without ever sending speech_end grows memory
 # to a bounded ceiling rather than without limit.
 INBOUND_QUEUE_MAXSIZE = 512
+
+# How much unprocessed speech may pile up before the server says out loud
+# that STT is not keeping up. Decoupling the read loop from processing (see
+# handle_connection) stopped a backlog from killing the connection, but it
+# cannot make STT any faster -- and a backlog now shows up as the app simply
+# waiting, with the server logging absolutely nothing. That silence is what
+# made the real incident take an hour to diagnose (thirteen minutes of solid
+# GPU work, not one line of output), so a backlog past a couple of seconds
+# gets said plainly, once per utterance.
+STT_LAG_WARN_SECONDS = 3.0
+
+# Ceiling on how long a connection that has already gone away may keep
+# working through what it had already read. Some of it is worth finishing --
+# a speech_end read just before the socket died is what starts the turn a
+# reconnect can be given (see the finally block) -- but only for a bounded
+# time. Confirmed on real hardware from a live stack dump: with STT running
+# slower than realtime, one wedged connection sat here for THIRTEEN MINUTES
+# after the phone was gone, pinning the GPU and holding the shared session
+# hostage (handle_disconnect() runs only once this finishes). Comfortably
+# clears a healthy queue plus one STT flush (measured worst case ~8s).
+POST_DISCONNECT_DRAIN_SECONDS = 20.0
 
 # Control frames meaning "the utterance that was in progress is over and
 # is being thrown away". Any audio still queued AHEAD of one of these
@@ -169,6 +191,11 @@ async def handle_connection(
     arrived = asyncio.Event()
     reader_done = False
     dropped_audio_frames = 0
+    # Unprocessed speech still sitting in `inbound`, in bytes. Tracked
+    # incrementally rather than summed on demand so the reader stays free of
+    # anything that grows with queue depth. See STT_LAG_WARN_SECONDS.
+    queued_audio_bytes = 0
+    lag_reported = False
 
     async def dispatch(message: str | bytes) -> None:
         try:
@@ -189,10 +216,14 @@ async def handle_connection(
         not after: clearing afterwards would discard a wakeup posted by the
         reader while this was mid-dispatch, and the worker would sleep on a
         non-empty queue."""
+        nonlocal queued_audio_bytes
         while session.transport_generation == generation:
             arrived.clear()
             while inbound and session.transport_generation == generation:
-                await dispatch(inbound.popleft())
+                message = inbound.popleft()
+                if isinstance(message, bytes):
+                    queued_audio_bytes -= len(message)
+                await dispatch(message)
             if reader_done:
                 return
             await arrived.wait()
@@ -207,6 +238,8 @@ async def handle_connection(
                     kept = [item for item in inbound if not isinstance(item, bytes)]
                     inbound.clear()
                     inbound.extend(kept)
+                    queued_audio_bytes = 0
+                    lag_reported = False
                     logger.info(
                         "barge-in: dropped %d queued audio frame(s) belonging to the "
                         "abandoned utterance",
@@ -218,6 +251,18 @@ async def handle_connection(
                 dropped_audio_frames += 1
                 continue
             inbound.append(message)
+            if isinstance(message, bytes):
+                queued_audio_bytes += len(message)
+                queued_seconds = queued_audio_bytes / (2 * MIC_SAMPLE_RATE)
+                if queued_seconds >= STT_LAG_WARN_SECONDS and not lag_reported:
+                    lag_reported = True
+                    logger.warning(
+                        "STT is running behind realtime -- %.1fs of speech is queued and "
+                        "still undecoded. The child's turn cannot start until it drains, "
+                        "so expect a long wait. Check for memory pressure (a swapped-out "
+                        "model decodes far slower) and see TINYTALK_STT_REPO.",
+                        queued_seconds,
+                    )
             arrived.set()
     except ConnectionClosed:
         # `async for message in websocket` itself raises this when the
@@ -241,7 +286,20 @@ async def handle_connection(
         # replay_last_turn() later delivers on reconnect.
         reader_done = True
         arrived.set()
-        await worker
+        try:
+            await asyncio.wait_for(worker, POST_DISCONNECT_DRAIN_SECONDS)
+        except asyncio.TimeoutError:
+            # wait_for has already cancelled the worker. Whatever was still
+            # queued belonged to an utterance whose owner is gone, and
+            # handle_disconnect() below abandons the partial utterance and
+            # resets STT, so nothing is left half-fed.
+            logger.warning(
+                "gave up draining this connection's backlog after %.0fs -- %d message(s) "
+                "still queued when the client was already gone. STT is running far behind "
+                "realtime; see the warning above.",
+                POST_DISCONNECT_DRAIN_SECONDS,
+                len(inbound),
+            )
         if dropped_audio_frames:
             logger.warning(
                 "dropped %d audio frame(s): more than %d frames were queued unprocessed "
