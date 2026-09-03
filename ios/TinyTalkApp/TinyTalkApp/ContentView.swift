@@ -191,18 +191,33 @@ final class AppModel: ObservableObject {
     /// be disabled or point to Settings rather than presenting a picker
     /// that can't work (e.g. no camera on the Simulator, or a denied
     /// permission).
-    func requestCameraAccessAndShowPicker() async -> Bool {
+    func requestCameraAccess() async -> Bool {
         guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
-            lastErrorMessage = "no camera available on this device."
+            // Routed to objectRecognitionHint, not lastErrorMessage --
+            // lastErrorMessage is sticky by design for fatal connection/
+            // audio errors (see startPollingState()'s disconnect handling
+            // below), and a camera hiccup is a "try again" condition, not
+            // session-fatal. Setting lastErrorMessage here would also risk
+            // masking a later real disconnect, since the poller only fills
+            // it in when it's still nil.
+            objectRecognitionHint = "no camera available on this device."
             return false
         }
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
             return true
         case .notDetermined:
-            return await AVCaptureDevice.requestAccess(for: .video)
+            let granted = await AVCaptureDevice.requestAccess(for: .video)
+            if !granted {
+                // requestAccess resolves to false the first time the child
+                // taps "Don't Allow" on the system prompt itself -- without
+                // this, that path left no message at all and the button
+                // just silently did nothing.
+                objectRecognitionHint = "camera access denied. Check Settings > Privacy > Camera > TinyTalkApp."
+            }
+            return granted
         default:
-            lastErrorMessage = "camera access denied. Check Settings > Privacy > Camera > TinyTalkApp."
+            objectRecognitionHint = "camera access denied. Check Settings > Privacy > Camera > TinyTalkApp."
             return false
         }
     }
@@ -389,7 +404,6 @@ struct CameraPicker: UIViewControllerRepresentable {
             _ picker: UIImagePickerController,
             didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
         ) {
-            picker.dismiss(animated: true)
             guard let image = info[.originalImage] as? UIImage else {
                 parent.onCancel()
                 return
@@ -398,7 +412,6 @@ struct CameraPicker: UIViewControllerRepresentable {
         }
 
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
-            picker.dismiss(animated: true)
             parent.onCancel()
         }
     }
@@ -436,7 +449,7 @@ struct ContentView: View {
 
                 Button {
                     Task {
-                        guard await model.requestCameraAccessAndShowPicker() else { return }
+                        guard await model.requestCameraAccess() else { return }
                         showingCamera = true
                     }
                 } label: {
