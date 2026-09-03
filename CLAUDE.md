@@ -38,63 +38,6 @@ changes.
   not used here: Kyutai STT's MLX backend needs native Metal/Neural Engine
   access, which Docker Desktop on macOS can't provide.
 
-## Running the server
-
-Full setup/troubleshooting (first-time venv creation, Ollama, Kyutai STT,
-Kokoro TTS, iOS build): README.md's Setup section. Quick reference for
-day-to-day use once that one-time setup is done — two terminals, using
-this checkout's own path (swap in the exact worktree path below if
-testing a feature branch instead):
-
-```bash
-# Terminal 1 — Ollama (skip if already running: curl http://127.0.0.1:11434/)
-ollama serve
-
-# Terminal 2 — the voice/dialog server
-cd ~/Development/claude-tests/tiny-talk-adventures/server
-source .venv/bin/activate
-python -m tinytalk.app
-```
-
-Server config (LLM backend choice, API keys) loads automatically from
-`server/.env` if present — copy `server/.env.example` to `server/.env` and
-fill in real values. Everything in it is optional; with nothing set the
-server runs fully local against Ollama and skips features needing a key
-(e.g. animal-fact lookups).
-
-## Opening the iOS app in Xcode
-
-Open the project directly — no `xcodegen generate` needed unless
-`project.yml` changed since the committed `.xcodeproj` was last
-regenerated:
-
-```bash
-open ~/Development/claude-tests/tiny-talk-adventures/ios/TinyTalkApp/TinyTalkApp.xcodeproj
-```
-
-Testing a feature branch instead: substitute the worktree path below.
-
-## Working in worktrees
-
-Most feature branches live in a git worktree at
-`.claude/worktrees/<name>/` (branch `worktree-<name>`), checked out
-alongside this main checkout — several can exist at once. When telling
-the user to run a command, open a project, or otherwise act outside the
-current tool call, always give the **full path to the exact directory in
-play** — `~` for the home directory is fine to keep it short, but never a
-bare `cd server` or "open the Xcode project." The same relative path
-resolves to a different worktree/branch depending on where the user's
-shell or Xcode happens to already be, and a generic instruction risks
-testing the wrong branch's code. For a worktree named `object-recognition`,
-for example:
-
-```bash
-cd ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/object-recognition/server
-```
-```bash
-open ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/object-recognition/ios/TinyTalkApp/TinyTalkApp.xcodeproj
-```
-
 ## Working process
 
 This project uses the `superpowers` skill set for design and implementation:
@@ -105,8 +48,35 @@ This project uses the `superpowers` skill set for design and implementation:
 3. Model/library choices that affect feasibility (what runs on this
    hardware, current best free models) should be verified against current
    information rather than assumed — this space moves fast.
-4. Commit in small, manageable commits as work progresses, rather than
-   batching large chunks of unrelated work into one commit.
+4. Commit to worktrees in small, manageable commits as work progresses, rather 
+   than batching large chunks of unrelated work into one commit.
+5. Create PRs for the user to review before merging features to main (see
+   "Testing on-device" below for what to tell them first).
+
+## Testing on-device
+
+Most feature branches live in a git worktree at `.claude/worktrees/<name>/`
+(branch `worktree-<name>`) alongside this main checkout — several can
+exist at once. Before merging a feature to main, tell the user exactly
+what and how to test on-device: the **full path** (`~` for home is fine)
+to the exact worktree directory to `cd` into for server commands, the
+commands to run the server (and anything else it needs, like `ollama`),
+and/or the full path to `open` in Xcode for a phone rebuild. Never a bare
+`cd server` or "open the Xcode project" — a relative path resolves to
+whichever worktree the shell or Xcode already happens to be in and can
+silently test the wrong branch. Example, for a worktree named
+`object-recognition`:
+
+```bash
+cd ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/object-recognition/server
+```
+```bash
+open ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/object-recognition/ios/TinyTalkApp/TinyTalkApp.xcodeproj
+```
+
+The actual run commands (activating the venv, starting Ollama, etc.) live
+in README.md's Setup section — keep it up-to-date as the one place they're
+documented, rather than duplicating them here.
 
 ## Current focus
 
