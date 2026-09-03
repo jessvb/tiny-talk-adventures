@@ -40,13 +40,11 @@ public enum ClientMessage: Sendable, Equatable {
         }
     }
 
-    /// Escapes the two characters that would otherwise break JSON's
-    /// string-literal syntax. label is the only free-text field this
-    /// file ever puts on the wire (every other field is a fixed type
-    /// string or an Int) -- this keeps the file's "no JSONEncoder, exact
-    /// wire bytes" style while still producing valid JSON for arbitrary
-    /// text, rather than assuming Vision's labels never contain a quote
-    /// or backslash.
+    /// Escapes the characters that could appear in a Vision classification
+    /// label and break JSON's string syntax. Not a general-purpose JSON
+    /// escaper -- control characters (U+0000-U+001F) are not handled,
+    /// because the only value reaching this function is an identifier
+    /// from Vision's fixed taxonomy.
     private static func jsonEscaped(_ s: String) -> String {
         var result = ""
         for scalar in s.unicodeScalars {

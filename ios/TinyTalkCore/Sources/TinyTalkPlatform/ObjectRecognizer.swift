@@ -51,9 +51,21 @@ public final class VisionObjectRecognizer: @unchecked Sendable {
         } catch {
             throw ObjectRecognizerError.classificationFailed(error)
         }
-        let candidates = (request.results ?? []).map {
-            ClassificationCandidate(label: $0.identifier, confidence: $0.confidence)
-        }
+        // VNClassifyImageRequest returns Apple's full ~1300-label taxonomy
+        // with confidences that are NOT calibrated probabilities -- a flat
+        // `confidence >= threshold` comparison over the raw scores is not
+        // how Apple's own docs say to filter these. hasMinimumPrecision
+        // asks Vision's own calibration data "would this label be right at
+        // least 70% of the time it fires, even at very low recall (1%)?"
+        // -- i.e. precision-favoring, since a wrong guess weaving into a
+        // kid's story is worse than a missed one. Applied before
+        // selectTopClassification, which still does its own threshold
+        // comparison over what survives -- that function stays a pure,
+        // Vision-agnostic seam (see ObjectRecognition.swift) and is
+        // unaware this filtering step exists.
+        let candidates = (request.results ?? [])
+            .filter { $0.hasMinimumPrecision(0.7, forRecall: 0.01) }
+            .map { ClassificationCandidate(label: $0.identifier, confidence: $0.confidence) }
         return selectTopClassification(candidates, threshold: threshold)
     }
 }
