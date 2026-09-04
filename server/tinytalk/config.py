@@ -61,7 +61,32 @@ GROQ_MODEL = os.environ.get("TINYTALK_GROQ_MODEL", "llama-3.1-8b-instant")
 # call. See animal_facts.py.
 ANIMAL_FACTS_API_KEY = os.environ.get("ANIMAL_FACTS_API_KEY", "")
 
-STT_HF_REPO = os.environ.get("TINYTALK_STT_REPO", "kyutai/stt-2.6b-en-mlx")
+# The 1b, not the 2.6b, because the 2.6b cannot decode in realtime on this
+# Mac and the pipeline has no way to slow a talking child down. Measured
+# 2026-09-03 with tools/stt_realtime_probe.py, machine otherwise idle:
+#
+#   stt-2.6b-en-mlx   1.7-2.3x SLOWER than realtime, 5.6-7.5s finish() flush
+#   stt-1b-en_fr-mlx  0.77x realtime (23% headroom), 1.1s finish() flush
+#
+# Every second the 2.6b spent behind was a second of audio piling up
+# unprocessed, without bound -- the root cause of the whole "app randomly
+# disconnects" saga. Before the read loop was decoupled from processing,
+# that backlog paused the TCP socket, the keepalive PONG went unread and
+# the server hung up on a healthy client 40s later; afterwards it stopped
+# disconnecting and started hanging instead, because the turn simply never
+# began. Neither is fixable downstream: the only cure is STT that keeps up.
+#
+# It also frees ~3.1GB (5.7GB footprint -> 2.6GB), which matters on a 16GB
+# machine also holding Ollama and Kokoro -- the 2.6b was running with
+# hundreds of MB swapped out, and every page fault showed up as a decode
+# spike (worst frame 1682ms vs the 1b's 92ms, for 80ms of audio).
+#
+# The tradeoff is real: this is a smaller, bilingual (en+fr) model, so
+# expect somewhat lower transcription accuracy than the 2.6b's. Worth it --
+# accuracy is moot on a turn that never finishes. Set TINYTALK_STT_REPO to
+# go back, and run tools/stt_realtime_probe.py before trusting any change
+# here; it exits non-zero if the configured model cannot keep up.
+STT_HF_REPO = os.environ.get("TINYTALK_STT_REPO", "kyutai/stt-1b-en_fr-mlx")
 
 KOKORO_LANG_CODE = os.environ.get("TINYTALK_TTS_LANG", "a")
 KOKORO_VOICE = os.environ.get("TINYTALK_TTS_VOICE", "af_heart")

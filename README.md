@@ -115,8 +115,15 @@ provide — containers there run inside a Linux VM with no Metal passthrough.)
    of "Running the server" below when you run `pip install -e ".[dev]"` inside
    the venv. Once the venv is active, you can test it standalone:
    ```
-   python -m moshi_mlx.run_inference --hf-repo kyutai/stt-2.6b-en-mlx <audio-file> --temp 0
+   python -m moshi_mlx.run_inference --hf-repo kyutai/stt-1b-en_fr-mlx <audio-file> --temp 0
    ```
+   The 1b is the default rather than the 2.6b for a hard reason, not a
+   preference: measured on this Mac, the 2.6b decodes 1.7-2.3x *slower*
+   than realtime, so audio piles up faster than it can be transcribed and
+   the turn never starts. The 1b runs at 0.77x realtime. See
+   `STT_HF_REPO`'s comment in `server/tinytalk/config.py`, and check any
+   change with `server/tools/stt_realtime_probe.py` (exits non-zero if the
+   configured model cannot keep up).
 6. **Kokoro TTS** — also already declared in `server/pyproject.toml`; no manual
    installation needed. Like Kyutai STT, it installs automatically with
    `pip install -e ".[dev]"` in step 3 of "Running the server" below.
@@ -144,6 +151,23 @@ apps (browsers, IDEs, VMs) before testing — with them running, expect slow
 replies or an occasional failed turn from Ollama specifically, not from
 this server's own code. See the design spec's "Open questions / risks" for
 what was actually measured.
+
+This is not just a latency concern. Audio arrives from the phone at exactly
+realtime and there is no way to slow a talking child down, so STT that
+decodes slower than realtime falls behind without bound and the turn never
+starts. That was the root cause of the long-running "app randomly
+disconnects" bug (see `STT_HF_REPO` in `server/tinytalk/config.py`), and
+memory pressure makes it worse: a swapped-out model's worst decode step
+measured 1682ms against 92ms for a resident one. To check the machine's
+current state at any time:
+
+```
+cd server && .venv/bin/python tools/stt_realtime_probe.py
+```
+
+It prints the realtime factor and the swap situation, and exits non-zero if
+STT cannot keep up. If it fails, close memory-heavy apps and re-run before
+suspecting anything else.
 
 **First setup (one-time only):** Create the virtualenv and install all
 dependencies (`tinytalk` itself, Kyutai STT, Kokoro TTS, and test tools) —
