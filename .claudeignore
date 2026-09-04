@@ -1,0 +1,33 @@
+# Duplicate work-tree checkouts (feature branches) -- full copies of this
+# repo, including vendored/build content. Never treat as source of truth.
+# An agent running *inside* one of these has that worktree as its own root
+# and needs its own copy of this file for the same effect -- this entry
+# only keeps the *outer* session from wandering into them.
+.claude/worktrees/
+
+# Tracked binary asset -- no useful text content, bloats reads
+ios/TinyTalkApp/TinyTalkApp/silero_vad.onnx
+
+# Python virtualenv, caches, build metadata
+server/.venv/
+server/**/__pycache__/
+server/.pytest_cache/
+server/*.egg-info/
+
+# Swift/Xcode build artifacts and local machine state
+ios/TinyTalkCore/.build/
+ios/TinyTalkCore/.swiftpm/
+ios/**/xcuserdata/
+
+# Secrets / machine-local config
+server/.env
+ios/TinyTalkApp/Local.xcconfig
+
+# Generated runtime data -- story session transcripts are child conversation
+# content; keep out of default context per this project's privacy-first
+# constraint (see CLAUDE.md)
+server/data/
+
+# OS noise
+.DS_Store
+*.swp

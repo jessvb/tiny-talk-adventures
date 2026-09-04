@@ -7,6 +7,16 @@ environment variable where it is convenient during development.
 from __future__ import annotations
 
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Resolved relative to this file, not the process cwd, so `.env` loads
+# whether the server is started from `server/` (the documented way) or
+# anywhere else. Real shell-exported env vars still win (load_dotenv's
+# default override=False), so `export FOO=bar` before starting the server
+# continues to take precedence over `.env`, same as before this existed.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 SERVER_HOST = os.environ.get("TINYTALK_HOST", "0.0.0.0")
 SERVER_PORT = int(os.environ.get("TINYTALK_PORT", "8765"))
