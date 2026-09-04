@@ -78,6 +78,41 @@ The actual run commands (activating the venv, starting Ollama, etc.) live
 in README.md's Setup section — keep it up-to-date as the one place they're
 documented, rather than duplicating them here.
 
+## Testing changes on-device
+
+There is no CI and no simulator-only coverage for the iOS app's real
+audio/network behavior — most changes are only actually verified by the
+household running them on the real phone and Mac. After implementing
+ANY change, before considering the task done, give explicit, concrete
+instructions for testing it on-device — don't wait to be asked, and
+don't treat "tests pass" as sufficient on its own. Cover all of these,
+every time:
+
+1. **Where the code lives.** Name the exact worktree directory (e.g.
+   `.claude/worktrees/<name>/`) — this project works across multiple
+   parallel worktrees at once, so "the code" is ambiguous without this.
+2. **Does the server need restarting?** `server/tinytalk/app.py` has no
+   auto-reload — any change to server Python code requires killing and
+   restarting the running `python -m tinytalk.app` process before it
+   takes effect. Give the exact commands for that specific worktree
+   (`cd server`, that worktree's own `.venv`, `python -m tinytalk.app`),
+   not just "restart the server". If the change is test-only or
+   docs-only, say so explicitly instead of making the user restart for
+   nothing.
+3. **Does the iOS app need rebuilding?** Any change under `ios/` needs a
+   fresh Build & Run from Xcode onto the device — say so explicitly. If
+   the change is server-only, say explicitly that no rebuild is needed
+   and the currently-installed build is still fine.
+4. **Fresh-worktree gotcha:** `ios/TinyTalkApp/Local.xcconfig`
+   (`DEVELOPMENT_TEAM`, gitignored) does not exist in a newly created
+   worktree and must be recreated there before Xcode can build it — copy
+   the value from that worktree's own `Local.xcconfig.example` (same
+   Apple Developer Team ID works across all worktrees; it's the user's
+   own account, not a secret).
+5. **What to actually do and look for.** A short, concrete test script —
+   what to say or tap, and what result confirms it worked (a specific
+   log line, a specific UI state) — not just "try it and see."
+
 ## Current focus
 
 The voice/dialog pipeline's server (interruptible speech I/O between phone

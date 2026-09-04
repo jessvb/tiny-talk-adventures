@@ -28,6 +28,7 @@ from .engines import EngineError, LlmEngine, SttEngine, TtsEngine
 from .object_recognition import ObjectTracker
 from .protocol import (
     Interrupt,
+    NewStory,
     ObjectSeen,
     ProtocolError,
     SpeechEnd,
@@ -81,6 +82,10 @@ class SessionRunner:
         conversation: Conversation | None = None,
     ) -> None:
         self._transport = transport
+        # Starts at 0 rather than 1: app.py builds this session around a
+        # NullTransport before any client exists, and the first real
+        # connection's rebind_transport() is what makes it generation 1.
+        self._transport_generation = 0
         # Guards every actual transport send (both a live turn's own sends
         # and replay_last_turn()'s catch-up sends) so the two can never
         # interleave: without this, a reconnect landing mid-turn could let a
@@ -154,6 +159,42 @@ class SessionRunner:
                 accepted = safety.is_safe(label)
                 logger.info("object_seen: %r (accepted=%s)", label, accepted)
                 self._object_recognition.record_seen(label)
+            case NewStory():
+                await self.handle_new_story()
+
+    async def handle_new_story(self) -> None:
+        """Abandon the current story (if any) and start fresh, without
+        tearing down the connection or session -- a debug/testing
+        affordance for resetting without a full reconnect. Cancels any
+        in-flight turn (nothing to salvage -- the story it belonged to is
+        being discarded) and clears the replay buffer, so nothing from the
+        old story can ever be replayed to a later connection under a
+        turn_id the new story reuses. Deliberately does NOT reset
+        _current_turn_id: turn_id just keeps incrementing across stories
+        within the same connection, the same way it already does across
+        ordinary turns -- resetting it would risk exactly the kind of
+        turn_id collision this whole area of the codebase already has
+        enough trouble with."""
+        await self._cancel_turn(record_spoken=False)
+        if self._machine.state is State.LISTENING:
+            self._stt.reset()
+        self._turn_replay_buffer = []
+        self._conversation = Conversation()
+        self._story_arc = StoryArc()
+        self._animal_facts = AnimalFactTracker()
+        self._object_recognition = ObjectTracker()
+        self._machine = TurnStateMachine()
+        # Said out loud because the child tapping "New Story" is a real
+        # event with no other trace: everything above is a silent in-memory
+        # reset, so a log that didn't mention it left no way to tell whether
+        # the tap had even reached the server. turn_id is included precisely
+        # because it does NOT reset here -- that surprises people (the app
+        # displays it as "Turn"), so the log should say it plainly.
+        logger.info(
+            "new story: conversation, story arc and replay buffer cleared "
+            "(turn_id stays at %d -- it numbers messages, not story turns)",
+            self._current_turn_id,
+        )
 
     async def handle_audio(self, pcm: bytes) -> None:
         # Audio arriving outside LISTENING is stale — a frame in flight when
@@ -180,14 +221,33 @@ class SessionRunner:
         if self._turn_task is not None:
             await asyncio.gather(self._turn_task, return_exceptions=True)
 
+    @property
+    def transport_generation(self) -> int:
+        """Bumped by every rebind_transport() call, so a connection handler
+        can tell whether it still owns this session. Exactly one connection
+        does at a time -- see rebind_transport()'s docstring."""
+        return self._transport_generation
+
     def rebind_transport(self, transport: Transport) -> None:
         """Point this session at a new connection's transport. Called by
         app.py on every connect, including a reconnect after a disconnect
         mid-turn -- the still-running turn task's own sends (guarded by
         _transport_lock, same as replay_last_turn()) will start reaching
-        the new connection as soon as this returns."""
+        the new connection as soon as this returns.
+
+        Bumping the generation here is what makes "the newest connection
+        owns the session" enforceable rather than merely conventional. It
+        matters because a handler outlives its own socket by however long
+        it takes to finish processing what that socket already delivered
+        (see app.py's handle_connection): without this, a reconnect landing
+        during that window would have two handlers feeding the one shared
+        streaming STT session -- interleaving two utterances into a single
+        transcript, running two MLX calls from two threads at once, and
+        letting the older handler's handle_disconnect() reset an utterance
+        the newer connection had already started."""
         logger.info("transport rebound (session state=%s)", self._machine.state.name)
         self._transport = transport
+        self._transport_generation += 1
 
     async def replay_last_turn(self) -> None:
         """Resend everything buffered for the current/most recent turn to
@@ -290,6 +350,21 @@ class SessionRunner:
         await self._cancel_turn(record_spoken=True)
         self._current_turn_id = turn_id
         self._transition(Event.SPEECH_START)
+        # Both of these get called "turn" and they are NOT the same thing.
+        # turn_id is a protocol message-routing id: it exists so a reply
+        # arriving after a reconnect can be matched to the utterance that
+        # asked for it, and it deliberately never resets -- not across
+        # stories, not on new_story (see handle_new_story). The story stage
+        # is the one that actually tracks story progress, and it DOES reset.
+        # The iOS debug UI shows turn_id, labelled just "Turn", which reads
+        # exactly like story progress and is not: a real session produced
+        # "the app still says turn 2 after New Story" and neither number
+        # appeared anywhere in the log to settle it. Log both, together.
+        logger.info(
+            "utterance started: turn_id=%d, story stage %s",
+            turn_id,
+            self._story_arc.stage.name,
+        )
 
     async def _finish_listening(self) -> None:
         if self._machine.state is not State.LISTENING:

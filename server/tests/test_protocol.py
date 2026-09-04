@@ -4,6 +4,7 @@ import pytest
 
 from tinytalk.protocol import (
     Interrupt,
+    NewStory,
     ObjectSeen,
     ProtocolError,
     SpeechEnd,
@@ -24,6 +25,7 @@ from tinytalk.protocol import (
         ('{"type": "speech_end"}', SpeechEnd()),
         ('{"type": "interrupt", "turn_id": 7}', Interrupt(turn_id=7)),
         ('{"type": "object_seen", "label": "teddy bear"}', ObjectSeen(label="teddy bear")),
+        ('{"type": "new_story"}', NewStory()),
     ],
 )
 def test_decodes_each_client_message_type(raw, expected):

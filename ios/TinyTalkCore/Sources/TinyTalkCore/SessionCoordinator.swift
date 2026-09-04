@@ -83,6 +83,45 @@ public actor SessionCoordinator {
     /// actor; the UI's disconnect() is what retires it (by discarding this
     /// coordinator entirely and creating a fresh one on reconnect).
     public private(set) var isClosed = false
+    /// Set the instant a disconnect is OBSERVED here (see
+    /// consumeServerEvents()'s .closed case below) to whichever turn_id
+    /// should be resumed on the next connect() -- or nil if there was
+    /// nothing in flight to resume (state was .idle or .listening at the
+    /// moment of disconnect). This is the counterpart to
+    /// handleAppBackgrounded()'s existing PROACTIVE capture of activeTurnId
+    /// before an intentional disconnect: that path works because the app
+    /// itself chooses to disconnect and can read live state first. A
+    /// disconnect this coordinator discovers on its own -- a network drop,
+    /// a server hiccup, exactly what "the app is open and waiting, then it
+    /// randomly disconnects" looks like -- has no such proactive caller, so
+    /// it must be captured HERE, at the exact moment .closed is observed.
+    /// Confirmed as the root cause of a real bug: by the time any caller
+    /// notices isClosed via polling, machine.state has ALREADY been walked
+    /// back to .idle by this same .closed handling, so the information
+    /// would otherwise already be lost -- leaving a plain manual
+    /// reconnect with no way to resume, silently discarding whatever the
+    /// server replays because currentTurnId resets to 0 on a fresh
+    /// coordinator and never matches.
+    public private(set) var resumableTurnIdAtDisconnect: Int?
+
+    /// A bounded, most-recent-last log of this coordinator's highest-value
+    /// diagnostic messages -- specifically the turn_id-mismatch discards
+    /// (consumeServerEvents()) and resume-path events (resume()) that,
+    /// prior to this being surfaced in the UI (see ContentView.swift), were
+    /// only ever visible in Xcode's console. Deliberately NOT every
+    /// print() in this file (the waiting-ditty loop alone would print
+    /// every few seconds for as long as a turn takes) -- just the events
+    /// that actually help diagnose whether a reconnect resumed correctly.
+    public private(set) var debugLog: [String] = []
+    private static let debugLogCap = 50
+
+    private func logDebug(_ message: String) {
+        print(message)
+        debugLog.append(message)
+        if debugLog.count > Self.debugLogCap {
+            debugLog.removeFirst(debugLog.count - Self.debugLogCap)
+        }
+    }
 
     /// Roughly how much recently-captured mic audio to retain so it can be
     /// flushed as pre-roll the instant a turn/barge-in starts -- see
@@ -368,6 +407,16 @@ public actor SessionCoordinator {
                 turnContinuation?.finish()
                 turnContinuation = nil
                 turnTask?.cancel()
+                // Captured BEFORE machine.handle(.disconnected) below
+                // overwrites machine.state -- see resumableTurnIdAtDisconnect's
+                // doc comment for why this has to happen exactly here.
+                // Same criteria handleAppBackgrounded() already uses: only
+                // a reply actually in flight (or already spoken, waiting to
+                // be heard) is resumable -- .idle/.listening have nothing
+                // to pick back up.
+                let wasResumable = machine.state == .waitingForReply || machine.state == .speaking
+                resumableTurnIdAtDisconnect = wasResumable ? currentTurnId : nil
+                logDebug("SessionCoordinator: connection closed while \(machine.state) -- resumableTurnIdAtDisconnect=\(String(describing: resumableTurnIdAtDisconnect))")
                 // A disconnect mid-turn must not leave the coordinator
                 // stuck outside .idle forever -- mirrors the server's own
                 // _fail_turn state walk-back on failure. .disconnected is
@@ -404,7 +453,7 @@ public actor SessionCoordinator {
 
             isCurrentTurnAudio = eventTurnId == currentTurnId
             guard isCurrentTurnAudio else {
-                print("SessionCoordinator: discarding \(event) -- turn_id \(eventTurnId) does not match current turn \(currentTurnId)")
+                logDebug("SessionCoordinator: discarding \(event) -- turn_id \(eventTurnId) does not match current turn \(currentTurnId)")
                 continue
             }
 
@@ -510,11 +559,11 @@ public actor SessionCoordinator {
     /// play() call needed to move later.
     public func resume(turnId: Int) async {
         guard (try? machine.handle(.resumed)) != nil else {
-            print("SessionCoordinator: resume(turnId: \(turnId)) ignored -- not fresh/.idle (state=\(machine.state))")
+            logDebug("SessionCoordinator: resume(turnId: \(turnId)) ignored -- not fresh/.idle (state=\(machine.state))")
             return
         }
         currentTurnId = turnId
-        print("SessionCoordinator: resumed into .waitingForReply for turn_id=\(turnId)")
+        logDebug("SessionCoordinator: resumed into .waitingForReply for turn_id=\(turnId)")
         // "Press the mute button" for the wait, same as handleSpeechEnd() --
         // there is nothing new to say until this replayed/resumed turn
         // finishes.
@@ -560,7 +609,7 @@ public actor SessionCoordinator {
             // window: cancel() is synchronous, so this check reliably
             // catches a stale turn on its very next loop iteration.
             if Task.isCancelled {
-                print("SessionCoordinator: discarding \(event) -- this turn was cancelled")
+                logDebug("SessionCoordinator: discarding \(event) -- this turn was cancelled")
                 return
             }
             switch event {
@@ -633,6 +682,34 @@ public actor SessionCoordinator {
         turnTask = nil
         connection.close()
         vad.close()
+    }
+
+    /// Debug/testing affordance: abandon whatever's happening and start a
+    /// fresh story, without a full disconnect/reconnect. Mirrors
+    /// interrupt()'s teardown of any in-flight turn (nothing to salvage --
+    /// the story it belonged to is being discarded server-side too, see
+    /// SessionRunner.handle_new_story()), but lands in .idle rather than
+    /// .listening, since nothing new is starting yet. currentTurnId is
+    /// deliberately left alone -- it just keeps incrementing across
+    /// stories within the same connection, the same way it already does
+    /// across ordinary turns, matching the server's own choice not to
+    /// reset turn_id numbering either.
+    public func newStory() async {
+        stopWaitingDitty()
+        audio.stopPlaybackImmediately()
+        turnContinuation?.finish()
+        turnContinuation = nil
+        turnTask?.cancel()
+        turnTask = nil
+        // .disconnected is legal from every state and always lands in
+        // .idle (see SessionState.swift) -- exactly the unconditional
+        // "abandon whatever this was, reset" transition needed here too.
+        _ = try? machine.handle(.disconnected)
+        await setMuted(false)
+        lastTranscript = ""
+        lastReply = ""
+        lastErrorMessage = nil
+        try? await connection.send(.newStory)
     }
 
     private func interrupt() async {

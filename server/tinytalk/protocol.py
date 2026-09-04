@@ -75,13 +75,23 @@ class ObjectSeen:
     label: str
 
 
-ClientMessage = SpeechStart | SpeechEnd | Interrupt | ObjectSeen
+@dataclass(frozen=True)
+class NewStory:
+    """The client wants to abandon the current story and start a fresh
+    one, without tearing down the connection or session -- see
+    SessionRunner.handle_new_story(). No turn_id: unlike speech_start/
+    interrupt, this isn't itself the start of a turn, so there is nothing
+    for it to be echoed back against."""
+
+
+ClientMessage = SpeechStart | SpeechEnd | Interrupt | ObjectSeen | NewStory
 
 _CLIENT_MESSAGE_TYPES: dict[str, type] = {
     "speech_start": SpeechStart,
     "speech_end": SpeechEnd,
     "interrupt": Interrupt,
     "object_seen": ObjectSeen,
+    "new_story": NewStory,
 }
 _TYPES_REQUIRING_TURN_ID = (SpeechStart, Interrupt)
 

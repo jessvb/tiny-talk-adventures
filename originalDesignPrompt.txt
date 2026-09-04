@@ -1,0 +1,17 @@
+Design our magical, voice-based storybook iPhone app for kids, Tiny Talk Adventures. There are two modes: Story Creation and Story Reading. The landing screen includes:
+- "Tiny Talk Adventures" logo
+- A mascot: Elsie the Elephant (see attached image: Elsie is cute, nerdy, and wears glasses and a book on her head as a hat)
+- A whimsical library background (see attached image)
+- Buttons for Create a Story and Read Stories (note: Read Stories is only selectable once the child has created a story)
+- Anything else you think is necessary/helpful
+
+In Story Creation, a child collaboratively writes a story together with Elsie the Elephant, a cute, nerdy voice-based agent. There is:
+- Dialog speech bubbles, similar to iMessage, where the child's recognised speech, and Elsie's responses appear
+  - Storybook images can be "sent" as messages by Elsie
+  - The child can send images from their environment to inspire the story
+- A mute mic button
+- A hamburger menu, including "New Story", "Read Stories", etc.
+- Anything else you think is necessary/helpful
+
+
+In Read Stories, a child is able to revisit stories they wrote. The dialog and images from the story creation mode are converted into a storybook that the child can flip through by swiping. It looks like pages in a storybook.

@@ -24,6 +24,11 @@ public enum ClientMessage: Sendable, Equatable {
     /// See object_recognition.py / this file's `ClientMessage` mirror --
     /// deliberately no turn_id, matching protocol.py's ObjectSeen.
     case objectSeen(label: String)
+    /// Abandon the current story and start fresh, without tearing down
+    /// the connection -- see server/tinytalk/session.py's
+    /// handle_new_story(). No turn_id: mirrors protocol.py's NewStory,
+    /// which isn't itself the start of a turn.
+    case newStory
 
     public func encode() -> String {
         // Field order and separators are fixed here (no JSONEncoder) so the
@@ -37,6 +42,8 @@ public enum ClientMessage: Sendable, Equatable {
             return #"{"type":"interrupt","turn_id":\#(turnId)}"#
         case .objectSeen(let label):
             return #"{"type":"object_seen","label":"\#(Self.jsonEscaped(label))"}"#
+        case .newStory:
+            return #"{"type":"new_story"}"#
         }
     }
 

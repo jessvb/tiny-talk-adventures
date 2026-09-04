@@ -33,6 +33,10 @@ final class ProtocolTests: XCTestCase {
         )
     }
 
+    func testNewStoryEncodesExactType() {
+        XCTAssertEqual(ClientMessage.newStory.encode(), #"{"type":"new_story"}"#)
+    }
+
     func testDecodesTranscriptPartial() throws {
         let event = try decodeServerEvent(#"{"type": "transcript_partial", "text": "a fox", "turn_id": 5}"#)
         guard case .transcriptPartial(let text, let turnId) = event else {
