@@ -170,6 +170,17 @@ class SessionRunner:
         self._story_arc = StoryArc()
         self._animal_facts = AnimalFactTracker()
         self._machine = TurnStateMachine()
+        # Said out loud because the child tapping "New Story" is a real
+        # event with no other trace: everything above is a silent in-memory
+        # reset, so a log that didn't mention it left no way to tell whether
+        # the tap had even reached the server. turn_id is included precisely
+        # because it does NOT reset here -- that surprises people (the app
+        # displays it as "Turn"), so the log should say it plainly.
+        logger.info(
+            "new story: conversation, story arc and replay buffer cleared "
+            "(turn_id stays at %d -- it numbers messages, not story turns)",
+            self._current_turn_id,
+        )
 
     async def handle_audio(self, pcm: bytes) -> None:
         # Audio arriving outside LISTENING is stale — a frame in flight when
@@ -325,6 +336,21 @@ class SessionRunner:
         await self._cancel_turn(record_spoken=True)
         self._current_turn_id = turn_id
         self._transition(Event.SPEECH_START)
+        # Both of these get called "turn" and they are NOT the same thing.
+        # turn_id is a protocol message-routing id: it exists so a reply
+        # arriving after a reconnect can be matched to the utterance that
+        # asked for it, and it deliberately never resets -- not across
+        # stories, not on new_story (see handle_new_story). The story stage
+        # is the one that actually tracks story progress, and it DOES reset.
+        # The iOS debug UI shows turn_id, labelled just "Turn", which reads
+        # exactly like story progress and is not: a real session produced
+        # "the app still says turn 2 after New Story" and neither number
+        # appeared anywhere in the log to settle it. Log both, together.
+        logger.info(
+            "utterance started: turn_id=%d, story stage %s",
+            turn_id,
+            self._story_arc.stage.name,
+        )
 
     async def _finish_listening(self) -> None:
         if self._machine.state is not State.LISTENING:

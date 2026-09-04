@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import json
 
 from conftest import FailingLlm, FakeLlm, FakeStt, FakeTransport, FakeTts
@@ -866,3 +867,42 @@ async def test_rebinding_the_transport_bumps_the_generation(transport):
     assert session.transport_generation == 1
     session.rebind_transport(FakeTransport())
     assert session.transport_generation == 2
+
+
+async def test_starting_an_utterance_records_which_turn_id_and_story_stage_it_belongs_to(
+    caplog, transport
+):
+    """Two different counters both get called "turn" in this codebase, and
+    confusing them is easy: turn_id is a protocol message-routing id that
+    deliberately never resets (the app shows it as "Turn: N"), while the
+    story arc's own stage is what actually advances through a story and
+    DOES reset on new_story. A real session left no way to tell which was
+    which -- the server logged neither -- so "the app still says turn 2
+    after New Story" could not be answered from the log at all.
+    """
+    session = make_session(transport)
+
+    with caplog.at_level(logging.INFO, logger="tinytalk.session"):
+        await session.handle_text(SPEECH_START)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("turn_id=1" in message and "story stage" in message for message in messages), (
+        f"an utterance must say which turn_id and story stage it belongs to; got {messages}"
+    )
+
+
+async def test_new_story_says_so_in_the_log(caplog, transport):
+    """handle_new_story() resets the conversation, the story arc and the
+    replay buffer, and logged not one word about it. From a real session's
+    log there was no way to tell whether the child's New Story tap had even
+    reached the server, let alone taken effect."""
+    session = make_session(transport)
+    await session.handle_text(SPEECH_START)
+
+    with caplog.at_level(logging.INFO, logger="tinytalk.session"):
+        await session.handle_new_story()
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("new story" in message.lower() for message in messages), (
+        f"starting a new story must be visible in the log; got {messages}"
+    )
