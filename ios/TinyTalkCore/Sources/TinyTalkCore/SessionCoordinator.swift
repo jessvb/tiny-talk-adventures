@@ -43,6 +43,14 @@ public actor SessionCoordinator {
     /// dedicated tests pass their own fake audio to exercise this feature.
     private let waitingDittyAudio: Data?
     private var dittyTask: Task<Void, Never>?
+    /// How long the ditty is allowed to loop before this gives up and
+    /// treats the turn as failed -- see startWaitingDitty()/
+    /// handleDittyTimeout(). Without this, a server that goes quiet mid-turn
+    /// (for any reason other than the ones stopWaitingDitty() already
+    /// covers) loops the jingle forever with no feedback -- a real failure
+    /// was observed looping ~5 minutes before this existed. 45s default:
+    /// generous headroom over any real multi-second STT/LLM/TTS reply.
+    private let dittyTimeoutSeconds: TimeInterval
     /// The turn_id sent on the most recent speechStart/interrupt -- see
     /// Protocol.swift's module doc comment for the full rationale.
     /// Confirmed necessary on real hardware: the server's read loop is
@@ -205,12 +213,14 @@ public actor SessionCoordinator {
         connection: any ServerConnecting,
         audio: any AudioPlaying,
         vad: any VoiceActivityDetecting,
-        waitingDittyAudio: Data? = nil
+        waitingDittyAudio: Data? = nil,
+        dittyTimeoutSeconds: TimeInterval = 45
     ) {
         self.connection = connection
         self.audio = audio
         self.vad = vad
         self.waitingDittyAudio = waitingDittyAudio
+        self.dittyTimeoutSeconds = dittyTimeoutSeconds
     }
 
     /// Runs for the coordinator's whole lifetime. Call once. Cancel the
@@ -323,17 +333,25 @@ public actor SessionCoordinator {
     /// no ditty audio was configured (see waitingDittyAudio's doc comment).
     /// Each loop iteration awaits a full play() call, so the ditty's own
     /// baked-in trailing silence (see WaitingDitty.audio) paces the loop --
-    /// no separate timer/sleep needed.
+    /// no separate timer/sleep needed. Bounded by dittyTimeoutSeconds: past
+    /// that, handleDittyTimeout() runs instead of looping again.
     private func startWaitingDitty() {
         guard let waitingDittyAudio, dittyTask == nil else {
             print("SessionCoordinator: startWaitingDitty() no-op (audio configured=\(waitingDittyAudio != nil), already running=\(dittyTask != nil))")
             return
         }
         print("SessionCoordinator: starting ditty loop")
+        let dittyStartedAt = Date()
+        let dittyTimeoutSeconds = dittyTimeoutSeconds
         dittyTask = Task { [weak self] in
             guard let self else { return }
             var iteration = 0
             while !Task.isCancelled {
+                if Date().timeIntervalSince(dittyStartedAt) >= dittyTimeoutSeconds {
+                    print("SessionCoordinator: ditty loop timed out after \(iteration) iteration(s)")
+                    await self.handleDittyTimeout()
+                    return
+                }
                 iteration += 1
                 print("SessionCoordinator: ditty loop iteration \(iteration) calling play()")
                 await self.audio.play(waitingDittyAudio)
@@ -355,6 +373,30 @@ public actor SessionCoordinator {
         dittyTask?.cancel()
         dittyTask = nil
         audio.stopPlaybackImmediately()
+    }
+
+    /// Fires when the ditty has been looping for dittyTimeoutSeconds with no
+    /// reply -- treats the wait as failed rather than continuing silently
+    /// forever. Mirrors runTurn()'s own .message(.error) handling (the same
+    /// situation: the wait is over, and not because a reply arrived),
+    /// reusing the .turnEnd transition rather than adding a new state, and
+    /// relying on the same turnContinuation-is-nil discard every other
+    /// abandoned-turn path already uses to make a late reply harmless if the
+    /// server responds after this gave up. Guards on still being
+    /// .waitingForReply since the ditty loop's timeout check and this call
+    /// aren't atomic -- a real reply can start playing (stopWaitingDitty()
+    /// already cancelling this very task) in the narrow window between the
+    /// loop's check and this method actually running.
+    private func handleDittyTimeout() async {
+        guard machine.state == .waitingForReply else { return }
+        stopWaitingDitty()
+        turnContinuation?.finish()
+        turnContinuation = nil
+        turnTask?.cancel()
+        turnTask = nil
+        await setMuted(false)
+        lastErrorMessage = "The agent took too long thinking. Can you say something to wake them up?"
+        _ = try? machine.handle(.turnEnd)
     }
 
     private func consumeVADEvents() async {

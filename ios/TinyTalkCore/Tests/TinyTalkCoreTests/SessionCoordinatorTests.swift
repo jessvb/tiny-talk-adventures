@@ -943,6 +943,90 @@ final class SessionCoordinatorTests: XCTestCase {
         runLoop.cancel()
     }
 
+    /// The timeout that bounds the ditty loop when the server goes quiet
+    /// for longer than expected -- see SessionCoordinator's
+    /// dittyTimeoutSeconds. Confirms the abandoned-turn path lands the
+    /// same place a normal reply/error/turn_end would: back in .idle,
+    /// unmuted, with an on-screen message instead of looping forever.
+    func testWaitingDittyTimesOutAndReturnsToIdleWithAnErrorIfNoReplyArrives() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        audio.playDelayNanos = 5_000_000 // a couple of iterations before the timeout fires
+        let vad = FakeVAD()
+        let dittyAudio = Data([0xAA, 0xBB])
+        let coordinator = SessionCoordinator(
+            connection: connection, audio: audio, vad: vad,
+            waitingDittyAudio: dittyAudio, dittyTimeoutSeconds: 0.03
+        )
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        // No reply ever arrives -- let the timeout fire.
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        let stateAfterTimeout = await coordinator.state
+        XCTAssertEqual(
+            stateAfterTimeout, .idle,
+            "a timed-out turn must return to idle, same as a normal turn_end, so the child can just try again"
+        )
+        let errorAfterTimeout = await coordinator.lastErrorMessage
+        XCTAssertEqual(
+            errorAfterTimeout,
+            "The agent took too long thinking. Can you say something to wake them up?"
+        )
+        let mutedAfterTimeout = await coordinator.isMuted
+        XCTAssertFalse(mutedAfterTimeout, "must unmute once the wait is abandoned, same as every other end-of-wait path")
+
+        // The loop must have genuinely stopped, not just paused.
+        let countRightAfterTimeout = audio.played.count
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(
+            audio.played.count, countRightAfterTimeout,
+            "the ditty loop must stop once it times out, not keep looping forever"
+        )
+
+        runLoop.cancel()
+    }
+
+    /// A reply that finally arrives AFTER the timeout already gave up on
+    /// this turn must not resurrect it -- confirms the abandon path relies
+    /// on the same turnContinuation-is-nil discard the rest of the
+    /// coordinator already uses for stale/abandoned turns, rather than
+    /// needing its own separate guard.
+    func testLateReplyAfterDittyTimeoutIsDiscarded() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        audio.playDelayNanos = 5_000_000
+        let vad = FakeVAD()
+        let dittyAudio = Data([0xAA, 0xBB])
+        let coordinator = SessionCoordinator(
+            connection: connection, audio: audio, vad: vad,
+            waitingDittyAudio: dittyAudio, dittyTimeoutSeconds: 0.03
+        )
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 100_000_000) // let the timeout fire
+
+        // The server finally replies, long after the client gave up.
+        connection.emit(.message(.responseText("hi", turnId: 1)))
+        connection.emit(.audio(Data([1, 2, 3])))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let stateAfterLateReply = await coordinator.state
+        XCTAssertEqual(stateAfterLateReply, .idle, "a late reply for an abandoned turn must not resurrect it")
+        XCTAssertFalse(
+            audio.played.contains(Data([1, 2, 3])),
+            "a late reply for an already-abandoned turn must never be played"
+        )
+
+        runLoop.cancel()
+    }
+
     /// The mute button's whole point: while muted, captured mic audio must
     /// never reach the VAD at all, not just be withheld from the server --
     /// see SessionCoordinator.isMuted's doc comment for why that's a
