@@ -21,6 +21,11 @@ public enum ClientMessage: Sendable, Equatable {
     case speechStart(turnId: Int)
     case speechEnd
     case interrupt(turnId: Int)
+    /// Abandon the current story and start fresh, without tearing down
+    /// the connection -- see server/tinytalk/session.py's
+    /// handle_new_story(). No turn_id: mirrors protocol.py's NewStory,
+    /// which isn't itself the start of a turn.
+    case newStory
 
     public func encode() -> String {
         // Field order and separators are fixed here (no JSONEncoder) so the
@@ -32,6 +37,8 @@ public enum ClientMessage: Sendable, Equatable {
             return #"{"type":"speech_end"}"#
         case .interrupt(let turnId):
             return #"{"type":"interrupt","turn_id":\#(turnId)}"#
+        case .newStory:
+            return #"{"type":"new_story"}"#
         }
     }
 }

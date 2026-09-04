@@ -6,14 +6,17 @@ Binary frames are mic audio; text frames are JSON control messages.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import signal
+from collections import deque
 
 import websockets
 from websockets.exceptions import ConnectionClosed
 
 from . import config
+from .audio import MIC_SAMPLE_RATE
 from .engines import EngineError, LlmEngine, SttEngine, TtsEngine
 from .llm_groq import GroqLlm
 from .llm_ollama import OllamaLlm
@@ -23,6 +26,58 @@ from .stt_kyutai import KyutaiStt
 from .tts_kokoro import KokoroTts
 
 logger = logging.getLogger(__name__)
+
+# Ceiling on how many not-yet-processed inbound frames may sit in this
+# server's own queue. Deliberately generous: with reading decoupled from
+# processing (see handle_connection), the queue holds at most the tail of
+# a single utterance -- a few hundred KB -- and the child's own VAD ends
+# utterances long before this. It exists purely so a misbehaving client
+# that streams audio forever without ever sending speech_end grows memory
+# to a bounded ceiling rather than without limit.
+INBOUND_QUEUE_MAXSIZE = 512
+
+# How much unprocessed speech may pile up before the server says out loud
+# that STT is not keeping up. Decoupling the read loop from processing (see
+# handle_connection) stopped a backlog from killing the connection, but it
+# cannot make STT any faster -- and a backlog now shows up as the app simply
+# waiting, with the server logging absolutely nothing. That silence is what
+# made the real incident take an hour to diagnose (thirteen minutes of solid
+# GPU work, not one line of output), so a backlog past a couple of seconds
+# gets said plainly, once per utterance.
+STT_LAG_WARN_SECONDS = 3.0
+
+# Ceiling on how long a connection that has already gone away may keep
+# working through what it had already read. Some of it is worth finishing --
+# a speech_end read just before the socket died is what starts the turn a
+# reconnect can be given (see the finally block) -- but only for a bounded
+# time. Confirmed on real hardware from a live stack dump: with STT running
+# slower than realtime, one wedged connection sat here for THIRTEEN MINUTES
+# after the phone was gone, pinning the GPU and holding the shared session
+# hostage (handle_disconnect() runs only once this finishes). Comfortably
+# clears a healthy queue plus one STT flush (measured worst case ~8s).
+POST_DISCONNECT_DRAIN_SECONDS = 20.0
+
+# Control frames meaning "the utterance that was in progress is over and
+# is being thrown away". Any audio still queued AHEAD of one of these
+# belongs to that abandoned utterance, so feeding it to STT is pure waste
+# -- and at roughly 4x realtime (measured on this hardware), waste that
+# actively builds the backlog this whole design exists to avoid.
+# speech_end is deliberately NOT in this set: the audio queued ahead of it
+# is exactly that utterance's content.
+_UTTERANCE_ABANDONING_TYPES = frozenset({"speech_start", "interrupt", "new_story"})
+
+
+def _abandons_queued_utterance(raw: str) -> bool:
+    """Cheap, lenient peek at a control frame's type.
+
+    Deliberately does not go through decode_client_message(): a malformed
+    frame is the dispatch worker's problem to report properly, and the
+    reader must never do anything that can raise or take real time."""
+    try:
+        payload = json.loads(raw)
+        return payload.get("type") in _UTTERANCE_ABANDONING_TYPES
+    except (ValueError, AttributeError):
+        return False
 
 
 class WebSocketTransport:
@@ -86,27 +141,129 @@ async def handle_connection(
     """One call per WebSocket connection, but `session` is shared across all
     of them (see serve()) -- a reconnect after the phone app was backgrounded
     rebinds the SAME session onto the new socket rather than starting fresh,
-    so an in-flight or just-finished turn can still reach the child."""
+    so an in-flight or just-finished turn can still reach the child.
+
+    Reading the socket and processing what was read are two separate tasks,
+    and that separation is load-bearing rather than stylistic. It is the fix
+    for a real, reproduced bug: the server killing its own perfectly healthy
+    connection roughly 40 seconds after the child said something.
+
+    The mechanism, confirmed against websockets 17.1's own source
+    (asyncio/connection.py wires the frame assembler's high-water mark
+    straight to `transport.pause_reading`): once more than `max_queue` (16
+    by default) frames are waiting to be handed to application code,
+    websockets stops reading the TCP socket entirely. Not just data frames
+    -- ALL bytes, including the client's keepalive PONG. The keepalive task
+    then hits `ping_interval + ping_timeout` (20 + 20 = the observed 40s)
+    without seeing a pong and closes the connection as dead, with the
+    control frame that was queued behind the audio (a speech_end, say)
+    never processed at all.
+
+    Processing here is far slower than the inbound stream -- KyutaiStt.feed()
+    decodes at roughly 4x realtime on this hardware -- so awaiting it inline
+    in the read loop meant every utterance longer than a second or two built
+    a backlog, paused the socket, and started a 40-second fuse. Short
+    utterances finished draining in time and survived, which is exactly why
+    it presented as a random disconnect rather than a reproducible one.
+
+    So: the reader below does nothing that can block. It drains frames into
+    `inbound` and immediately goes back to the socket, which keeps pongs
+    flowing no matter how far behind processing falls. Ordering is fully
+    preserved -- one worker consumes the queue serially, exactly as the
+    single inline loop used to."""
     transport = WebSocketTransport(websocket)
     session.rebind_transport(transport)
+    # This handler outlives its own socket by however long the drain in the
+    # finally block takes, so "am I still the connection driving this
+    # session?" stops being obvious and has to be asked explicitly -- see
+    # rebind_transport()'s docstring for what goes wrong otherwise.
+    generation = session.transport_generation
     logger.info("client connected")
     # Deliver anything left over from before this connection existed --
     # a turn that finished (or made partial progress) while nobody was
     # connected to hear it. A no-op if there's nothing buffered.
     await session.replay_last_turn()
+
+    # A deque rather than an asyncio.Queue purely because a barge-in needs
+    # to remove already-queued audio from the middle (see the reader loop);
+    # asyncio.Queue offers no way to do that.
+    inbound: deque[str | bytes] = deque()
+    arrived = asyncio.Event()
+    reader_done = False
+    dropped_audio_frames = 0
+    # Unprocessed speech still sitting in `inbound`, in bytes. Tracked
+    # incrementally rather than summed on demand so the reader stays free of
+    # anything that grows with queue depth. See STT_LAG_WARN_SECONDS.
+    queued_audio_bytes = 0
+    lag_reported = False
+
+    async def dispatch(message: str | bytes) -> None:
+        try:
+            if isinstance(message, bytes):
+                await session.handle_audio(message)
+            else:
+                await session.handle_text(message)
+        except EngineError as exc:
+            logger.error("engine failure handling message: %s", exc)
+            await transport.send_text(encode_error(str(exc), session.current_turn_id))
+        except Exception:  # noqa: BLE001 - one bad frame must not kill the socket
+            logger.exception("unexpected failure handling message")
+            await transport.send_text(encode_error("internal error", session.current_turn_id))
+
+    async def process_inbound() -> None:
+        """Consumes `inbound` serially, for as long as the reader is alive
+        or anything is still queued. `arrived` is cleared BEFORE the drain,
+        not after: clearing afterwards would discard a wakeup posted by the
+        reader while this was mid-dispatch, and the worker would sleep on a
+        non-empty queue."""
+        nonlocal queued_audio_bytes
+        while session.transport_generation == generation:
+            arrived.clear()
+            while inbound and session.transport_generation == generation:
+                message = inbound.popleft()
+                if isinstance(message, bytes):
+                    queued_audio_bytes -= len(message)
+                await dispatch(message)
+            if reader_done:
+                return
+            await arrived.wait()
+        logger.info("stopping message processing -- a newer connection owns the session")
+
+    worker = asyncio.create_task(process_inbound())
     try:
         async for message in websocket:
-            try:
-                if isinstance(message, bytes):
-                    await session.handle_audio(message)
-                else:
-                    await session.handle_text(message)
-            except EngineError as exc:
-                logger.error("engine failure handling message: %s", exc)
-                await transport.send_text(encode_error(str(exc), session.current_turn_id))
-            except Exception:  # noqa: BLE001 - one bad frame must not kill the socket
-                logger.exception("unexpected failure handling message")
-                await transport.send_text(encode_error("internal error", session.current_turn_id))
+            if isinstance(message, str) and _abandons_queued_utterance(message):
+                stale = [item for item in inbound if isinstance(item, bytes)]
+                if stale:
+                    kept = [item for item in inbound if not isinstance(item, bytes)]
+                    inbound.clear()
+                    inbound.extend(kept)
+                    queued_audio_bytes = 0
+                    lag_reported = False
+                    logger.info(
+                        "barge-in: dropped %d queued audio frame(s) belonging to the "
+                        "abandoned utterance",
+                        len(stale),
+                    )
+            elif isinstance(message, bytes) and len(inbound) >= INBOUND_QUEUE_MAXSIZE:
+                # Only ever audio: dropping a speech_end/interrupt would
+                # strand the session waiting for something that never comes.
+                dropped_audio_frames += 1
+                continue
+            inbound.append(message)
+            if isinstance(message, bytes):
+                queued_audio_bytes += len(message)
+                queued_seconds = queued_audio_bytes / (2 * MIC_SAMPLE_RATE)
+                if queued_seconds >= STT_LAG_WARN_SECONDS and not lag_reported:
+                    lag_reported = True
+                    logger.warning(
+                        "STT is running behind realtime -- %.1fs of speech is queued and "
+                        "still undecoded. The child's turn cannot start until it drains, "
+                        "so expect a long wait. Check for memory pressure (a swapped-out "
+                        "model decodes far slower) and see TINYTALK_STT_REPO.",
+                        queued_seconds,
+                    )
+            arrived.set()
     except ConnectionClosed:
         # `async for message in websocket` itself raises this when the
         # connection drops abnormally mid-read (e.g. a keepalive ping
@@ -120,13 +277,52 @@ async def handle_connection(
         # for something expected.
         logger.info("connection dropped abnormally (not a clean close)")
     finally:
-        # Deliberately session.handle_disconnect(), not session.aclose():
-        # an in-flight turn (e.g. the child backgrounded the app while
-        # waiting for a reply) must be left running, not cancelled -- see
-        # handle_disconnect()'s docstring. The session survives; only this
-        # one connection is going away.
-        await session.handle_disconnect()
-        logger.info("client disconnected")
+        # Let the worker finish what the socket already delivered before
+        # tearing anything down -- the same semantics the old inline loop
+        # had, where a message that had been read was always fully handled.
+        # This matters for a real case: the child speaks and immediately
+        # backgrounds the app, so speech_end is already in the queue when
+        # the socket dies. Draining it is what starts the turn that
+        # replay_last_turn() later delivers on reconnect.
+        reader_done = True
+        arrived.set()
+        try:
+            await asyncio.wait_for(worker, POST_DISCONNECT_DRAIN_SECONDS)
+        except asyncio.TimeoutError:
+            # wait_for has already cancelled the worker. Whatever was still
+            # queued belonged to an utterance whose owner is gone, and
+            # handle_disconnect() below abandons the partial utterance and
+            # resets STT, so nothing is left half-fed.
+            logger.warning(
+                "gave up draining this connection's backlog after %.0fs -- %d message(s) "
+                "still queued when the client was already gone. STT is running far behind "
+                "realtime; see the warning above.",
+                POST_DISCONNECT_DRAIN_SECONDS,
+                len(inbound),
+            )
+        if dropped_audio_frames:
+            logger.warning(
+                "dropped %d audio frame(s): more than %d frames were queued unprocessed "
+                "-- the client streamed audio without ever ending the utterance",
+                dropped_audio_frames,
+                INBOUND_QUEUE_MAXSIZE,
+            )
+        if session.transport_generation != generation:
+            # A newer connection took the session over while this one was
+            # draining. Its cleanup is not ours to run: handle_disconnect()
+            # resets STT mid-utterance, which would wipe an utterance the
+            # new connection has already started. (Written as an if/else
+            # rather than an early return -- a `return` inside `finally`
+            # silently swallows whatever exception was propagating.)
+            logger.info("client disconnected (session already owned by a newer connection)")
+        else:
+            # Deliberately session.handle_disconnect(), not session.aclose():
+            # an in-flight turn (e.g. the child backgrounded the app while
+            # waiting for a reply) must be left running, not cancelled -- see
+            # handle_disconnect()'s docstring. The session survives; only this
+            # one connection is going away.
+            await session.handle_disconnect()
+            logger.info("client disconnected")
 
 
 async def serve() -> None:
@@ -215,7 +411,20 @@ async def serve() -> None:
     asyncio.get_running_loop().add_signal_handler(signal.SIGINT, on_sigint)
 
     async with websockets.serve(
-        handler, config.SERVER_HOST, config.SERVER_PORT, max_size=None
+        handler,
+        config.SERVER_HOST,
+        config.SERVER_PORT,
+        max_size=None,
+        # Spelled out rather than left implicit, because these two defaults
+        # ARE the disconnect bug's stopwatch: websockets closes a connection
+        # ping_interval + ping_timeout (20 + 20 = 40s) after the last pong it
+        # managed to read. When the read loop was gated on STT (see
+        # handle_connection), a paused socket meant pongs went unread and
+        # this fired on a connection that was perfectly healthy. Left at the
+        # library defaults on purpose -- with reading decoupled, a keepalive
+        # timeout now means what it should: the network really is gone.
+        ping_interval=20,
+        ping_timeout=20,
     ):
         await shutdown_requested.wait()
         logger.info("no longer accepting new connections")
