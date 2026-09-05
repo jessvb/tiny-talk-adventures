@@ -350,10 +350,16 @@ public actor SessionCoordinator {
     /// that, handleDittyTimeout() runs instead of looping again.
     private func startWaitingDitty() {
         guard let waitingDittyAudio, dittyTask == nil else {
-            print("SessionCoordinator: startWaitingDitty() no-op (audio configured=\(waitingDittyAudio != nil), already running=\(dittyTask != nil))")
+            // logDebug, not print: this is the single highest-signal line
+            // for diagnosing "the ditty didn't resume after backgrounding"
+            // on a real device with no cable attached (see debugLog's own
+            // doc comment for why most ditty-loop prints stay excluded from
+            // it -- this one is a rare, one-shot event, not per-iteration
+            // noise).
+            logDebug("SessionCoordinator: startWaitingDitty() no-op (audio configured=\(waitingDittyAudio != nil), already running=\(dittyTask != nil))")
             return
         }
-        print("SessionCoordinator: starting ditty loop")
+        logDebug("SessionCoordinator: starting ditty loop")
         let dittyStartedAt = Date()
         let dittyTimeoutSeconds = dittyTimeoutSeconds
         dittyTask = Task { [weak self] in
@@ -675,7 +681,12 @@ public actor SessionCoordinator {
     /// playback past the point where a ditty makes sense.
     public func startResumedWaitingDitty() {
         guard machine.state == .waitingForReply else {
-            print("SessionCoordinator: startResumedWaitingDitty() no-op -- state is \(machine.state), not .waitingForReply")
+            // logDebug, not print -- see startWaitingDitty()'s matching
+            // comment. This is the line that tells us whether the resumed
+            // reply had already fully arrived (expected no-op, see
+            // testStartResumedWaitingDittyIsANoOpIfTheTurnAlreadyFinished)
+            // versus something else preventing the ditty from starting.
+            logDebug("SessionCoordinator: startResumedWaitingDitty() no-op -- state is \(machine.state), not .waitingForReply")
             return
         }
         startWaitingDitty()
