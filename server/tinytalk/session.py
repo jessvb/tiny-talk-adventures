@@ -25,9 +25,11 @@ from .animal_facts import AnimalFactTracker
 from .audio import TTS_SAMPLE_RATE, split_sentences
 from .conversation import Conversation
 from .engines import EngineError, LlmEngine, SttEngine, TtsEngine
+from .object_recognition import ObjectTracker
 from .protocol import (
     Interrupt,
     NewStory,
+    ObjectSeen,
     ProtocolError,
     SpeechEnd,
     SpeechStart,
@@ -97,6 +99,7 @@ class SessionRunner:
         self._conversation = conversation or Conversation()
         self._story_arc = StoryArc()
         self._animal_facts = AnimalFactTracker()
+        self._object_recognition = ObjectTracker()
         self._machine = TurnStateMachine()
         self._turn_task: asyncio.Task | None = None
         # (sentence text, estimated real-world time.monotonic() at which
@@ -146,6 +149,16 @@ class SessionRunner:
                 await self._finish_listening()
             case Interrupt(turn_id=turn_id):
                 await self._interrupt(turn_id)
+            case ObjectSeen(label=label):
+                # The feature's one safety decision -- log receipt and the
+                # accept/discard outcome here rather than threading logging
+                # into ObjectTracker.record_seen() itself: safety.is_safe()
+                # is a cheap, pure check (see safety.py), so re-running it
+                # here purely for visibility, right before the same check
+                # runs for real inside record_seen(), is fine.
+                accepted = safety.is_safe(label)
+                logger.info("object_seen: %r (accepted=%s)", label, accepted)
+                self._object_recognition.record_seen(label)
             case NewStory():
                 await self.handle_new_story()
 
@@ -169,6 +182,7 @@ class SessionRunner:
         self._conversation = Conversation()
         self._story_arc = StoryArc()
         self._animal_facts = AnimalFactTracker()
+        self._object_recognition = ObjectTracker()
         self._machine = TurnStateMachine()
         # Said out loud because the child tapping "New Story" is a real
         # event with no other trace: everything above is a silent in-memory
@@ -484,6 +498,9 @@ class SessionRunner:
             )
             if fact_guidance:
                 guidance = f"{guidance}\n\n{fact_guidance}"
+            object_guidance = self._object_recognition.consume_guidance()
+            if object_guidance:
+                guidance = f"{guidance}\n\n{object_guidance}"
             if not transcript.strip():
                 guidance = f"{guidance}\n\n{_STT_FAILURE_GUIDANCE}"
             messages = self._conversation.to_messages(
@@ -555,6 +572,7 @@ class SessionRunner:
                 self._conversation = Conversation()
                 self._story_arc = StoryArc()
                 self._animal_facts = AnimalFactTracker()
+                self._object_recognition = ObjectTracker()
         except asyncio.CancelledError:
             raise
         except EngineError as exc:

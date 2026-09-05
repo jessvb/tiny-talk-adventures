@@ -14,6 +14,25 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(ClientMessage.interrupt(turnId: 7).encode(), #"{"type":"interrupt","turn_id":7}"#)
     }
 
+    func testObjectSeenEncodesTheLabel() {
+        XCTAssertEqual(
+            ClientMessage.objectSeen(label: "teddy bear").encode(),
+            #"{"type":"object_seen","label":"teddy bear"}"#
+        )
+    }
+
+    func testObjectSeenEscapesQuotesAndBackslashesInTheLabel() {
+        // Vision's ~1300-category taxonomy is plain English words in
+        // practice, but the encoder must still produce valid JSON for
+        // any string -- this is the one field on the wire (unlike
+        // turn_id, always an Int) that isn't safe to interpolate
+        // unescaped.
+        XCTAssertEqual(
+            ClientMessage.objectSeen(label: #"a "cool" robot\thing"#).encode(),
+            #"{"type":"object_seen","label":"a \"cool\" robot\\thing"}"#
+        )
+    }
+
     func testNewStoryEncodesExactType() {
         XCTAssertEqual(ClientMessage.newStory.encode(), #"{"type":"new_story"}"#)
     }

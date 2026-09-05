@@ -21,6 +21,9 @@ public enum ClientMessage: Sendable, Equatable {
     case speechStart(turnId: Int)
     case speechEnd
     case interrupt(turnId: Int)
+    /// See object_recognition.py / this file's `ClientMessage` mirror --
+    /// deliberately no turn_id, matching protocol.py's ObjectSeen.
+    case objectSeen(label: String)
     /// Abandon the current story and start fresh, without tearing down
     /// the connection -- see server/tinytalk/session.py's
     /// handle_new_story(). No turn_id: mirrors protocol.py's NewStory,
@@ -37,9 +40,28 @@ public enum ClientMessage: Sendable, Equatable {
             return #"{"type":"speech_end"}"#
         case .interrupt(let turnId):
             return #"{"type":"interrupt","turn_id":\#(turnId)}"#
+        case .objectSeen(let label):
+            return #"{"type":"object_seen","label":"\#(Self.jsonEscaped(label))"}"#
         case .newStory:
             return #"{"type":"new_story"}"#
         }
+    }
+
+    /// Escapes the characters that could appear in a Vision classification
+    /// label and break JSON's string syntax. Not a general-purpose JSON
+    /// escaper -- control characters (U+0000-U+001F) are not handled,
+    /// because the only value reaching this function is an identifier
+    /// from Vision's fixed taxonomy.
+    private static func jsonEscaped(_ s: String) -> String {
+        var result = ""
+        for scalar in s.unicodeScalars {
+            switch scalar {
+            case "\"": result += "\\\""
+            case "\\": result += "\\\\"
+            default: result.unicodeScalars.append(scalar)
+            }
+        }
+        return result
     }
 }
 

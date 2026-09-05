@@ -28,6 +28,10 @@ tell a late reply for an old, already-abandoned utterance apart from a
 legitimate reply for its current one -- confirmed on real hardware to cause
 a reply being silently misattributed to the wrong turn, or dropped
 entirely, when the child spoke faster than the server could keep up.
+
+`object_seen` is deliberately exempt from both the turn_id contract above
+and the speech_start/interrupt ordering requirement -- see the ObjectSeen
+dataclass's own docstring for why.
 """
 
 from __future__ import annotations
@@ -60,6 +64,18 @@ class Interrupt:
 
 
 @dataclass(frozen=True)
+class ObjectSeen:
+    """The child took a photo and on-device Vision classified it; label is
+    the recognized object's plain-English name (e.g. "teddy bear").
+    Deliberately carries no turn_id, unlike SpeechStart/Interrupt -- taking
+    a photo isn't tied to a specific turn boundary, it's queued and woven
+    into whichever turn happens next. See
+    docs/superpowers/specs/2026-08-29-object-recognition-design.md."""
+
+    label: str
+
+
+@dataclass(frozen=True)
 class NewStory:
     """The client wants to abandon the current story and start a fresh
     one, without tearing down the connection or session -- see
@@ -68,12 +84,13 @@ class NewStory:
     for it to be echoed back against."""
 
 
-ClientMessage = SpeechStart | SpeechEnd | Interrupt | NewStory
+ClientMessage = SpeechStart | SpeechEnd | Interrupt | ObjectSeen | NewStory
 
 _CLIENT_MESSAGE_TYPES: dict[str, type] = {
     "speech_start": SpeechStart,
     "speech_end": SpeechEnd,
     "interrupt": Interrupt,
+    "object_seen": ObjectSeen,
     "new_story": NewStory,
 }
 _TYPES_REQUIRING_TURN_ID = (SpeechStart, Interrupt)
@@ -99,6 +116,11 @@ def decode_client_message(raw: str) -> ClientMessage:
         if not isinstance(turn_id, int):
             raise ProtocolError(f"{kind} requires an integer turn_id: {raw!r}")
         return message_type(turn_id=turn_id)
+    if message_type is ObjectSeen:
+        label = payload.get("label")
+        if not isinstance(label, str) or not label.strip():
+            raise ProtocolError(f"object_seen requires a non-empty string label: {raw!r}")
+        return ObjectSeen(label=label.strip())
     return message_type()
 
 

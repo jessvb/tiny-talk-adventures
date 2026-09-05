@@ -21,6 +21,7 @@ targets:
       path: TinyTalkApp/Info.plist
       properties:
         NSMicrophoneUsageDescription: "Tiny Talk Adventures needs the microphone to hear the story you're telling together."
+        NSCameraUsageDescription: "Tiny Talk Adventures needs the camera so you can show it something to put in the story."
     dependencies:
       - package: TinyTalkCore
         product: TinyTalkCore

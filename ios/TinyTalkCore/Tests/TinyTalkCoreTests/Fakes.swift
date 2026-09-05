@@ -43,10 +43,16 @@ final class FakeAudio: AudioPlaying, @unchecked Sendable {
     }
 }
 
+/// Thrown by FakeConnection.send(_:) when sendMessageError is set --
+/// stands in for a real URLSessionWebSocketTask write failure (e.g. a
+/// half-dead socket that hasn't yet failed a receive() call).
+struct FakeSendError: Error, Equatable {}
+
 final class FakeConnection: ServerConnecting, @unchecked Sendable {
     private let lock = NSLock()
     private var _sentMessages: [ClientMessage] = []
     private var _sentAudio: [Data] = []
+    private var _sendMessageError: Error?
     /// Interleaved record of everything sent, in the order the fake
     /// actually observed it -- unlike sentMessages/sentAudio (which split
     /// control frames and audio into separate arrays and so can't reveal
@@ -88,6 +94,14 @@ final class FakeConnection: ServerConnecting, @unchecked Sendable {
         get { lock.withLock { _sendAudioDelayNanos } }
         set { lock.withLock { _sendAudioDelayNanos = newValue } }
     }
+    /// When set, send(_:) throws this instead of recording the message --
+    /// simulates a control-frame write failing (e.g. a socket that's
+    /// already degraded but hasn't yet failed a receive() call). Lock-
+    /// protected so a test can flip it mid-run.
+    var sendMessageError: Error? {
+        get { lock.withLock { _sendMessageError } }
+        set { lock.withLock { _sendMessageError = newValue } }
+    }
 
     init() {
         (stream, continuation) = AsyncStream<ServerConnectionEvent>.makeStream()
@@ -97,6 +111,9 @@ final class FakeConnection: ServerConnecting, @unchecked Sendable {
         let delay = sendMessageDelayNanos
         if delay > 0 {
             try? await Task.sleep(nanoseconds: delay)
+        }
+        if let error = sendMessageError {
+            throw error
         }
         lock.withLock {
             _sentMessages.append(message)
