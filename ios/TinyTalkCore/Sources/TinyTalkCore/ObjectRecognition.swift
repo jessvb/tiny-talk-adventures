@@ -28,6 +28,20 @@ public struct RecognizedObject: Sendable, Equatable {
     }
 }
 
+/// ImageNet-1000 classifiers (e.g. FastViT) ship class labels as raw,
+/// comma-separated WordNet synonym lists -- "teddy, teddy bear",
+/// "studio couch, day bed" -- rather than a single clean noun, unlike
+/// VNClassifyImageRequest's own taxonomy (already single terms). Takes
+/// the first (canonical WordNet) synonym; it doesn't need to be the most
+/// colloquial phrasing since the LLM has creative license to reinterpret
+/// it anyway (see the object-recognition design spec's weave-in
+/// guidance). Falls back to the original string if it's empty (no
+/// comma-separated first component to take).
+public func primaryLabel(from rawIdentifier: String) -> String {
+    let first = rawIdentifier.split(separator: ",", maxSplits: 1).first.map(String.init) ?? rawIdentifier
+    return first.trimmingCharacters(in: .whitespaces)
+}
+
 /// Picks the highest-confidence candidate, if any clears `threshold`.
 /// candidates is expected in Vision's own already-sorted (descending
 /// confidence) order, but this does not assume that -- it scans for the
