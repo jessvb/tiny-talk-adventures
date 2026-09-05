@@ -12,8 +12,17 @@ struct OnboardingView: View {
 
     var body: some View {
         ZStack {
+            ElsieImage(zoom: 1.3, anchorX: 0.5, anchorY: 0.32)
+                .blur(radius: 3)
+                .saturation(0.9)
+                .ignoresSafeArea()
+
             LinearGradient(
-                colors: [TTA.Palette.woodDark, TTA.Palette.wood, TTA.Palette.paper],
+                colors: [
+                    TTA.Palette.paper.opacity(0.82),
+                    TTA.Palette.paper.opacity(0.4),
+                    TTA.Palette.woodDark.opacity(0.78),
+                ],
                 startPoint: .top,
                 endPoint: .bottom
             )

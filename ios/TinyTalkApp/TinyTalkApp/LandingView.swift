@@ -9,8 +9,15 @@ struct LandingView: View {
 
     var body: some View {
         ZStack {
+            ElsieImage(zoom: 1.1, anchorX: 0.46, anchorY: 0.4)
+                .ignoresSafeArea()
+
             LinearGradient(
-                colors: [TTA.Palette.woodDark, TTA.Palette.wood.opacity(0.85), TTA.Palette.paper],
+                colors: [
+                    TTA.Palette.woodDark.opacity(0.1),
+                    TTA.Palette.woodDark.opacity(0.32),
+                    TTA.Palette.woodDark.opacity(0.88),
+                ],
                 startPoint: .top,
                 endPoint: .bottom
             )
@@ -29,12 +36,8 @@ struct LandingView: View {
                 .padding(.horizontal, 20)
                 .padding(.top, 8)
 
-                Spacer()
-
-                ElsieAvatar(state: .idle, isMuted: false, diameter: 104)
-
                 signPlaque
-                    .padding(.top, 18)
+                    .padding(.top, 24)
 
                 Spacer()
 
@@ -47,7 +50,7 @@ struct LandingView: View {
                     .buttonStyle(.ttaPrimary)
 
                     VStack(spacing: 9) {
-                        Text("📖  Read Stories")
+                        Label("Read Stories", systemImage: "book.closed.fill")
                             .font(TTA.Typography.display(22))
                             .foregroundColor(TTA.Palette.cream.opacity(0.55))
                             .frame(maxWidth: .infinity)

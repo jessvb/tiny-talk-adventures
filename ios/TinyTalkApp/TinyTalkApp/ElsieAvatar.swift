@@ -6,12 +6,10 @@ import TinyTalkCore
 /// waitingForReply/speaking) and mute flag -- not the design mock's own
 /// fake demo state.
 ///
-/// Placeholder art, deliberately: the real illustrated character photo
-/// (assets/elsie-library.jpeg in the Claude Design project) is larger than
-/// the design-sync API's 256KiB read cap and came back truncated when
-/// fetched during this pass. Swap the book icon below for an Image once
-/// the real asset is sourced at full resolution (e.g. exported by hand from
-/// the design project and dragged into an Assets.xcassets catalog).
+/// Uses the real character photo (Assets.xcassets/Elsie.imageset, provided
+/// directly by the user after the design-sync API's 256KiB cap truncated
+/// the same asset -- see ElsieImage.swift), tightly cropped to her face via
+/// ElsieImage, approximating the design's own 340%-zoom avatar crop.
 struct ElsieAvatar: View {
     var state: SessionState
     var isMuted: Bool
@@ -43,21 +41,9 @@ struct ElsieAvatar: View {
                     value: shimmer
                 )
 
-            Circle()
-                .fill(
-                    RadialGradient(
-                        colors: [TTA.Palette.gold.opacity(0.9), TTA.Palette.scarf],
-                        center: .topLeading,
-                        startRadius: 2,
-                        endRadius: diameter * 0.8
-                    )
-                )
+            ElsieImage(zoom: 3.4, anchorY: 0.4)
                 .frame(width: diameter - 12, height: diameter - 12)
-                .overlay(
-                    Image(systemName: "book.fill")
-                        .font(.system(size: (diameter - 12) * 0.38, weight: .semibold))
-                        .foregroundColor(TTA.Palette.cream)
-                )
+                .clipShape(Circle())
                 .overlay(Circle().strokeBorder(TTA.Palette.cream, lineWidth: 3))
                 .shadow(color: .black.opacity(0.25), radius: 6, y: 3)
                 .saturation(isMuted ? 0 : 1)

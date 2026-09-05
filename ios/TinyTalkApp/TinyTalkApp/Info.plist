@@ -18,9 +18,11 @@
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Tiny Talk Adventures needs the microphone to hear the story you're telling together.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Tiny Talk Adventures needs the camera so you can show it something to put in the story.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Tiny Talk Adventures needs the microphone to hear the story you're telling together.</string>
+	<key>UILaunchScreen</key>
+	<dict/>
 </dict>
 </plist>
