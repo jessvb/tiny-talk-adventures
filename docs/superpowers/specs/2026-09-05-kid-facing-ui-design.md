@@ -52,18 +52,22 @@ built-in empty-library state (disabled + "No stories yet — make one with me
 first!") -- since that's already the correct real state with zero saved
 stories.
 
-## Asset gap
+## Asset gap (resolved)
 
 The design project's photo assets (`assets/elsie-library.jpeg`,
 `uploads/ElsieTheElephant.jpeg`) are each larger than the design-sync
 `get_file` API's 256KiB read cap and came back truncated
 (`"truncated":true` in the response, confirmed by rendering the partial
 JPEG -- the bottom two-thirds decoded as solid color). There is no
-larger-file read path available. Both screens use a drawn placeholder
-avatar (`ElsieAvatar.swift`) instead of the real illustrated character
-photo until it's sourced at full resolution some other way (e.g. exported
-by hand from the Design project's UI and dragged into an Assets.xcassets
-catalog).
+larger-file read path available.
+
+Resolved: the user supplied the same photo at full resolution directly
+(dropped into a local screenshots folder), confirmed complete by
+rendering it. It's bundled at `Assets.xcassets/Elsie.imageset/elsie.jpeg`
+and used via a new `ElsieImage` view (a `GeometryReader`-based crop/zoom
+helper approximating CSS's `background-size`/`background-position`) for
+both the avatar's tight face crop and the Landing/Onboarding full-bleed
+backgrounds -- see `ElsieImage.swift`.
 
 ## Font substitution
 
@@ -74,6 +78,24 @@ done here to avoid guessing at font-hosting URLs mid-implementation. San
 Francisco's built-in `.rounded` and `.serif` designs stand in for now (see
 `DesignSystem.swift`'s `TTA.Typography`) -- both ship with iOS already and
 land close to the same intent.
+
+## Full-bleed rendering bug (resolved)
+
+The first on-device pass rendered with black bars above/below the app's
+content on every screen, and the native camera picker sheet only covered
+part of the screen too. Root cause: `Info.plist` had no `UILaunchScreen`
+key. Without one, iOS runs the whole app window -- SwiftUI content and any
+natively-presented UIKit view controller alike -- in a legacy
+compatibility-sized canvas rather than the device's real screen bounds,
+letterboxed on a modern device. This predates this pass (the scaffold
+never declared one), just never surfaced before because the original
+bare-bones debug UI never had full-bleed colored content to make the gap
+visible. Fixed by adding `UILaunchScreen: {}` to `project.yml`'s
+`info.properties`. Confirmed fixed via on-device-equivalent (Simulator)
+screenshots on Onboarding, Landing, and Settings; the camera picker itself
+can only be verified on a real device (the Simulator has no camera
+hardware at all, so `requestCameraAccess()` short-circuits before ever
+presenting it) but shares the identical root cause, already proven fixed.
 
 ## Architecture
 
@@ -86,9 +108,13 @@ wire protocol**:
   the design's own color spec), type helpers (`TTA.Typography`),
   `ChunkyButtonStyle` (the design's signature "5-6px bottom edge" pressable
   button) and `IconButtonStyle`.
-- **`ElsieAvatar.swift`** -- the placeholder character avatar with a
-  listening-ring animation driven by real `SessionState`/mute, used on all
-  four screens.
+- **`ElsieAvatar.swift`** -- the circular character avatar (real photo, via
+  `ElsieImage`) with a listening-ring animation driven by real
+  `SessionState`/mute, used on all four screens.
+- **`ElsieImage.swift`** -- crops/zooms the bundled Elsie photo to
+  approximate CSS `background-size`/`background-position`, for both the
+  avatar's tight face crop and the Landing/Onboarding full-bleed
+  backgrounds.
 - **`AppModel.swift`** -- unchanged session/connection logic (moved out of
   `ContentView.swift` verbatim), plus:
   - `AppScreen` (`.onboarding`/`.landing`/`.creating`/`.settings`) as
@@ -146,8 +172,9 @@ session's own final instructions.
   separate follow-up (for visual review only) before the arc-stage
   protocol message and persistence read API exist for real, or wait until
   both are built.
-- The real character photo assets still need to be sourced at full
-  resolution some other way -- see "Asset gap" above.
+- `ElsieImage`'s crop parameters (`zoom`/`anchorX`/`anchorY` per call site)
+  were tuned by eye against Simulator screenshots, not derived from any
+  precise face-position data -- may need further on-device nudging.
 - `AppModel.turns`' turn_id-boundary heuristic (see its doc comment) can in
   principle miss a poll tick right as a new turn starts; low-stakes for a
   presentation-only chat history, unconfirmed whether it's ever visible in
