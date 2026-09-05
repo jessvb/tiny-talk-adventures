@@ -332,6 +332,90 @@ final class SessionCoordinatorTests: XCTestCase {
         runLoop.cancel()
     }
 
+    /// Root-cause regression test for a real on-device bug: the app got
+    /// permanently stuck showing "waitingForReply" after taking photos
+    /// mid-turn, confirmed via a real server log that the server's own
+    /// session state was still LISTENING at the moment of disconnect --
+    /// i.e. it never received speech_end at all. handleSpeechEnd() flips
+    /// machine.state to .waitingForReply SYNCHRONOUSLY, before sending
+    /// speech_end; the old code wrapped that send in `try?`, silently
+    /// discarding a failure and leaving the coordinator waiting forever for
+    /// a reply the server never knew to generate. Nothing would notice
+    /// until the WebSocket's separate receive loop eventually failed on its
+    /// own -- confirmed on real hardware to take tens of seconds.
+    func testSpeechEndSendFailureWalksStateBackToIdleInsteadOfStickingInWaitingForReply() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.sendMessageError = FakeSendError()
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let state = await coordinator.state
+        XCTAssertEqual(state, .idle, "a failed speech_end send must not leave the coordinator stuck in .waitingForReply")
+        let isClosed = await coordinator.isClosed
+        XCTAssertTrue(isClosed, "a failed send is as trustworthy a disconnect signal as the receive side observing .closed")
+
+        runLoop.cancel()
+    }
+
+    /// Same failure mode, one step earlier: a failed speech_start send must
+    /// not leave the coordinator stuck in .listening waiting for a turn
+    /// that was never actually announced to the server.
+    func testSpeechStartSendFailureWalksStateBackToIdle() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        connection.sendMessageError = FakeSendError()
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let state = await coordinator.state
+        XCTAssertEqual(state, .idle, "a failed speech_start send must not leave the coordinator stuck in .listening")
+        let isClosed = await coordinator.isClosed
+        XCTAssertTrue(isClosed)
+
+        runLoop.cancel()
+    }
+
+    /// Same failure mode again, on the barge-in path: a failed interrupt
+    /// send must not leave the coordinator stuck believing a barge-in is
+    /// still in progress.
+    func testInterruptSendFailureWalksStateBackToIdle() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.message(.responseText("hi", turnId: 1)))
+        connection.emit(.audio(Data([1, 2, 3]))) // state is now .speaking
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        connection.sendMessageError = FakeSendError()
+        vad.fire(.speechStart) // barge-in: .speaking -> interrupt()
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let state = await coordinator.state
+        XCTAssertEqual(state, .idle, "a failed interrupt send must not leave the coordinator stuck mid-barge-in")
+        let isClosed = await coordinator.isClosed
+        XCTAssertTrue(isClosed)
+
+        runLoop.cancel()
+    }
+
     /// Regression coverage for the per-turn AsyncStream handoff: after an
     /// interrupt tears one down, a fresh turn must work normally, not be
     /// left in a broken state by the previous turn's cleanup.
@@ -1159,6 +1243,17 @@ final class SessionCoordinatorTests: XCTestCase {
         )
 
         runLoop.cancel()
+    }
+
+    func testSendObjectSeenSendsTheLabelToTheServer() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+
+        await coordinator.sendObjectSeen(label: "teddy bear")
+
+        XCTAssertEqual(connection.sentMessages, [.objectSeen(label: "teddy bear")])
     }
 
     /// Auto-mute and manual mute are independent flags, OR'd together --

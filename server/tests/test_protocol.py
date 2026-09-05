@@ -5,6 +5,7 @@ import pytest
 from tinytalk.protocol import (
     Interrupt,
     NewStory,
+    ObjectSeen,
     ProtocolError,
     SpeechEnd,
     SpeechStart,
@@ -23,11 +24,27 @@ from tinytalk.protocol import (
         ('{"type": "speech_start", "turn_id": 3}', SpeechStart(turn_id=3)),
         ('{"type": "speech_end"}', SpeechEnd()),
         ('{"type": "interrupt", "turn_id": 7}', Interrupt(turn_id=7)),
+        ('{"type": "object_seen", "label": "teddy bear"}', ObjectSeen(label="teddy bear")),
         ('{"type": "new_story"}', NewStory()),
     ],
 )
 def test_decodes_each_client_message_type(raw, expected):
     assert decode_client_message(raw) == expected
+
+
+def test_decode_rejects_object_seen_missing_label():
+    with pytest.raises(ProtocolError, match="label"):
+        decode_client_message('{"type": "object_seen"}')
+
+
+def test_decode_rejects_object_seen_non_string_label():
+    with pytest.raises(ProtocolError, match="label"):
+        decode_client_message('{"type": "object_seen", "label": 5}')
+
+
+def test_decode_rejects_object_seen_blank_label():
+    with pytest.raises(ProtocolError, match="label"):
+        decode_client_message('{"type": "object_seen", "label": "   "}')
 
 
 def test_decode_rejects_invalid_json():

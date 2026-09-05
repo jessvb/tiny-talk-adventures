@@ -272,6 +272,19 @@ public actor SessionCoordinator {
         }
     }
 
+    /// Sends a recognized object's label to the server, to be woven into
+    /// whichever turn happens next -- see object_recognition.py's
+    /// ObjectTracker for how the server queues it. Deliberately not
+    /// gated on `machine.state`: taking a photo is not tied to a turn
+    /// boundary (per the design spec), so this is safe to call from
+    /// .idle, .listening, .waitingForReply, or .speaking alike. Best
+    /// effort, same as every other outgoing send in this file -- a
+    /// failure here must not surface as a user-facing error; the child
+    /// can just try the camera again.
+    public func sendObjectSeen(label: String) async {
+        try? await connection.send(.objectSeen(label: label))
+    }
+
     /// Appends to the pre-roll ring buffer, evicting the oldest chunks once
     /// the ~200ms byte cap is exceeded. Only called while NOT .listening, or
     /// while isFlushing is true -- once .listening AND not flushing,
@@ -357,6 +370,57 @@ public actor SessionCoordinator {
         audio.stopPlaybackImmediately()
     }
 
+    /// Shared connection-lost recovery -- runs whether the loss was
+    /// discovered on the receive side (consumeServerEvents()'s `.closed`
+    /// case, the WebSocket's own receiveLoop() eventually failing a
+    /// task.receive()) or the send side (an outbound control-frame send
+    /// throwing in handleSpeechStart()/handleSpeechEnd()/interrupt()).
+    ///
+    /// The send side matters because machine.state is updated
+    /// SYNCHRONOUSLY, before the control frame's own send -- e.g.
+    /// handleSpeechEnd() flips to .waitingForReply, then sends speech_end.
+    /// If that send throws, the old code (`try? await connection.send(...)`)
+    /// silently discarded the error and carried on as if it had succeeded:
+    /// the server was never actually told the utterance ended (confirmed
+    /// against a real server log: session state stayed LISTENING), so no
+    /// reply could ever arrive, and nothing here would notice until
+    /// receiveLoop()'s own task.receive() eventually failed on its own --
+    /// confirmed on real hardware to take tens of seconds, during which the
+    /// app just sat showing .waitingForReply with no way to recover. Being
+    /// told a send failed is a strictly earlier, equally trustworthy signal
+    /// that the connection is gone, so this reacts to it immediately
+    /// instead of waiting for the receive side to eventually agree.
+    ///
+    /// Idempotent -- safe to call a second time if the receive side later
+    /// also independently observes `.closed` for the same underlying
+    /// failure, since every mutation here is already a no-op by then.
+    private func handleConnectionLost(reason: String) async {
+        stopWaitingDitty()
+        // Auto-unmute so this coordinator's own state stays consistent for
+        // whatever brief window remains before the UI observes isClosed and
+        // discards it (see isClosed's doc comment).
+        await setMuted(false)
+        turnContinuation?.finish()
+        turnContinuation = nil
+        turnTask?.cancel()
+        // Captured BEFORE machine.handle(.disconnected) below overwrites
+        // machine.state -- see resumableTurnIdAtDisconnect's doc comment for
+        // why this has to happen exactly here. Same criteria
+        // handleAppBackgrounded() already uses: only a reply actually in
+        // flight (or already spoken, waiting to be heard) is resumable --
+        // .idle/.listening have nothing to pick back up.
+        let wasResumable = machine.state == .waitingForReply || machine.state == .speaking
+        resumableTurnIdAtDisconnect = wasResumable ? currentTurnId : nil
+        logDebug("SessionCoordinator: \(reason) -- resumableTurnIdAtDisconnect=\(String(describing: resumableTurnIdAtDisconnect))")
+        // A disconnect mid-turn must not leave the coordinator stuck outside
+        // .idle forever -- mirrors the server's own _fail_turn state
+        // walk-back on failure. .disconnected is legal from every state (see
+        // SessionState.swift), so this is always safe to call regardless of
+        // current state.
+        _ = try? machine.handle(.disconnected)
+        isClosed = true
+    }
+
     private func consumeVADEvents() async {
         for await event in vad.events() {
             switch event {
@@ -382,41 +446,16 @@ public actor SessionCoordinator {
         var isCurrentTurnAudio = false
         for await event in connection.events() {
             if case .closed = event {
-                stopWaitingDitty()
-                // This is the real disconnect path -- runTurn()'s own
-                // .closed case is unreachable in practice, since this
+                // This is the real receive-side disconnect path -- runTurn()'s
+                // own .closed case is unreachable in practice, since this
                 // handler intercepts .closed before it could ever be
-                // forwarded into turnContinuation. Auto-unmute here, not
-                // there, so this coordinator's own state stays consistent
-                // for whatever brief window remains before the UI observes
-                // isClosed and discards it (see isClosed's doc comment).
-                await setMuted(false)
-                turnContinuation?.finish()
-                turnContinuation = nil
-                turnTask?.cancel()
-                // Captured BEFORE machine.handle(.disconnected) below
-                // overwrites machine.state -- see resumableTurnIdAtDisconnect's
-                // doc comment for why this has to happen exactly here.
-                // Same criteria handleAppBackgrounded() already uses: only
-                // a reply actually in flight (or already spoken, waiting to
-                // be heard) is resumable -- .idle/.listening have nothing
-                // to pick back up.
-                let wasResumable = machine.state == .waitingForReply || machine.state == .speaking
-                resumableTurnIdAtDisconnect = wasResumable ? currentTurnId : nil
-                logDebug("SessionCoordinator: connection closed while \(machine.state) -- resumableTurnIdAtDisconnect=\(String(describing: resumableTurnIdAtDisconnect))")
-                // A disconnect mid-turn must not leave the coordinator
-                // stuck outside .idle forever -- mirrors the server's own
-                // _fail_turn state walk-back on failure. .disconnected is
-                // legal from every state (see SessionState.swift), so this
-                // is always safe to call regardless of current state.
-                _ = try? machine.handle(.disconnected)
+                // forwarded into turnContinuation.
+                await handleConnectionLost(reason: "connection closed while \(machine.state)")
                 // Nothing else (state walking back to .idle looks just like
                 // a normal idle state) tells a UI the connection actually
-                // died -- see isClosed's doc comment. Must be set before
-                // returning, since this loop -- and therefore this actor's
-                // only observer of connection.events() -- is about to stop
-                // running for good.
-                isClosed = true
+                // died -- see isClosed's doc comment. This loop -- and
+                // therefore this actor's only observer of connection.events()
+                // -- is about to stop running for good.
                 return
             }
 
@@ -483,7 +522,16 @@ public actor SessionCoordinator {
         // it synchronously), so without this, a captureAudio() call
         // delivered during the send's suspension would race it.
         isFlushing = true
-        try? await connection.send(.speechStart(turnId: currentTurnId))
+        do {
+            try await connection.send(.speechStart(turnId: currentTurnId))
+        } catch {
+            // See handleConnectionLost's doc comment: a failed send here
+            // means the server never learned this turn started, so there is
+            // nothing to flush a pre-roll buffer toward -- react the same
+            // way a receive-side disconnect would.
+            await handleConnectionLost(reason: "speech_start send failed while \(machine.state)")
+            return
+        }
         await flushPreRoll()
     }
 
@@ -499,7 +547,21 @@ public actor SessionCoordinator {
         // time that nested call runs, so its own top guard immediately
         // no-ops it.
         await setMuted(true)
-        try? await connection.send(.speechEnd)
+        do {
+            try await connection.send(.speechEnd)
+        } catch {
+            // The exact bug this guards against: machine.state is already
+            // .waitingForReply at this point (set synchronously above). If
+            // this send fails and is silently ignored, the server is never
+            // told the utterance ended -- confirmed against a real server
+            // log staying in LISTENING -- so no reply can ever arrive and
+            // the app is stuck showing .waitingForReply with nothing to
+            // recover it. React the same way a receive-side disconnect
+            // would, immediately, instead of relying on receiveLoop() to
+            // eventually notice on its own.
+            await handleConnectionLost(reason: "speech_end send failed while \(machine.state)")
+            return
+        }
         let (turnStream, continuation) = AsyncStream<ServerConnectionEvent>.makeStream()
         turnContinuation = continuation
         turnTask = Task { [weak self] in
@@ -727,7 +789,14 @@ public actor SessionCoordinator {
         // See the matching comment in handleSpeechStart(): must be set
         // before the control frame's own await below, for the same reason.
         isFlushing = true
-        try? await connection.send(.interrupt(turnId: currentTurnId))
+        do {
+            try await connection.send(.interrupt(turnId: currentTurnId))
+        } catch {
+            // Same reasoning as handleSpeechEnd()'s catch block: a failed
+            // send here must not be silently ignored.
+            await handleConnectionLost(reason: "interrupt send failed while \(machine.state)")
+            return
+        }
         await flushPreRoll()
     }
 }
