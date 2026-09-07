@@ -460,6 +460,8 @@ final class AppModel: ObservableObject {
                 let history = await coordinator.latencyHistory
                 let transcript = await coordinator.lastTranscript
                 let reply = await coordinator.lastReply
+                let transcriptTurnId = await coordinator.lastTranscriptTurnId
+                let replyTurnId = await coordinator.lastReplyTurnId
                 let errorMessage = await coordinator.lastErrorMessage
                 let closed = await coordinator.isClosed
                 let muted = await coordinator.isMuted
@@ -488,17 +490,28 @@ final class AppModel: ObservableObject {
                     self.debugLog = log
                     // Turn history for the story screen's chat view -- see
                     // StoryTurn's doc comment. Appends at most once per
-                    // turn_id per speaker, keyed off currentTurnId rather
-                    // than text equality so a repeated phrase (e.g. the
-                    // child saying "hi" in two different turns) still gets
-                    // its own bubble.
-                    if !transcript.isEmpty, turnId != self.lastAppendedTranscriptTurnId {
+                    // turn_id per speaker, keyed off the turn_id the
+                    // transcript/reply TEXT ITSELF belongs to
+                    // (lastTranscriptTurnId/lastReplyTurnId) -- NOT off
+                    // activeTurnId/turnId (the CURRENT/latest turn), which
+                    // can already have advanced to a new turn the instant
+                    // the child starts talking again, before that new
+                    // turn's own transcript/reply have arrived. Keying off
+                    // activeTurnId was confirmed on real hardware to
+                    // duplicate the previous bubble the moment the child
+                    // spoke again, and then silently skip the real new
+                    // turn once it did arrive (already marked "seen" under
+                    // the wrong id) -- the UI appeared backed up by one
+                    // turn. Keyed off turn_id rather than text equality so
+                    // a repeated phrase (e.g. the child saying "hi" in two
+                    // different turns) still gets its own bubble.
+                    if !transcript.isEmpty, let transcriptTurnId, transcriptTurnId != self.lastAppendedTranscriptTurnId {
                         self.turns.append(StoryTurn(speaker: .child, text: transcript))
-                        self.lastAppendedTranscriptTurnId = turnId
+                        self.lastAppendedTranscriptTurnId = transcriptTurnId
                     }
-                    if !reply.isEmpty, turnId != self.lastAppendedReplyTurnId {
+                    if !reply.isEmpty, let replyTurnId, replyTurnId != self.lastAppendedReplyTurnId {
                         self.turns.append(StoryTurn(speaker: .elsie, text: reply))
-                        self.lastAppendedReplyTurnId = turnId
+                        self.lastAppendedReplyTurnId = replyTurnId
                     }
                     // Only overwrite with a real server error -- a nil here
                     // just means "no server error yet," and must not erase

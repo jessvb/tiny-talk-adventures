@@ -15,9 +15,32 @@ struct StoryView: View {
 
     var body: some View {
         ZStack {
+            // Explicit full-bleed background behind everything -- without
+            // this, an empty ScrollView (model.turns == [], no error/hint/
+            // thinking row) was observed on real hardware to collapse to a
+            // thin centered column instead of claiming the full screen
+            // width, leaving the raw black window background showing on
+            // both sides until the first message arrived.
+            TTA.Palette.outerPaper.ignoresSafeArea()
+
             VStack(spacing: 0) {
                 header
                 conversation
+                // Always visible regardless of scroll position or whether
+                // the conversation has any content yet -- previously lived
+                // inside the scrollable content, where it was easy to miss
+                // (or, before the empty-ScrollView fix above, could be
+                // hidden behind the collapsed/black conversation area
+                // entirely). This is the only feedback the child/parent
+                // gets when the camera button's permission check fails.
+                if let hint = model.objectRecognitionHint {
+                    Text(hint)
+                        .font(TTA.Typography.body(13))
+                        .foregroundColor(TTA.Palette.inkSoft)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                        .background(TTA.Palette.paper)
+                }
                 bottomBar
             }
 
@@ -93,14 +116,17 @@ struct StoryView: View {
                     if model.state == .waitingForReply {
                         thinkingRow.id("thinking")
                     }
-                    if let hint = model.objectRecognitionHint {
-                        Text(hint)
-                            .font(TTA.Typography.body(13))
-                            .foregroundColor(TTA.Palette.inkSoft)
-                    }
                 }
                 .padding(16)
+                // Without an explicit width, an otherwise-empty VStack (no
+                // turns yet, no error, not thinking) has near-zero natural
+                // size -- confirmed on real hardware to leave the ScrollView
+                // collapsed to a thin centered column with the raw window
+                // background showing on both sides, instead of claiming the
+                // full width offered by its parent.
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(TTA.Palette.outerPaper)
             .onChange(of: model.turns.count) { _ in
                 withAnimation { proxy.scrollTo(model.turns.last?.id, anchor: .bottom) }

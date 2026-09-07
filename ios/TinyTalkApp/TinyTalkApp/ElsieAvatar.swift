@@ -41,7 +41,7 @@ struct ElsieAvatar: View {
                     value: shimmer
                 )
 
-            ElsieImage(zoom: 3.4, anchorY: 0.4)
+            ElsieImage(zoom: 2.1, anchorY: 0.44)
                 .frame(width: diameter - 12, height: diameter - 12)
                 .clipShape(Circle())
                 .overlay(Circle().strokeBorder(TTA.Palette.cream, lineWidth: 3))
