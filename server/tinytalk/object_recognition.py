@@ -15,10 +15,14 @@ from . import safety
 
 _WEAVE_IN_TEMPLATE = (
     "The child just showed you a photo of a {label}. Let it inspire what "
-    "happens next -- it doesn't have to appear literally. A teddy bear "
-    "could become a real bear character, a couch could become a "
-    "mountain shaped like one, a computer could become a robot. Weave "
-    "something inspired by it naturally into the action, not as an aside."
+    "happens next -- it doesn't have to appear literally, but something "
+    "recognizable about it (its species, size, color, shape, or "
+    "personality) must carry through to whatever you introduce. A teddy "
+    "bear could become a real bear character, a couch could become a "
+    "mountain shaped like one, a computer could become a robot -- each "
+    "keeps a clear thread back to the original. If the child's own words "
+    "call for a new character, creature, or animal, make THIS the one "
+    "that shows up, rather than inventing an unrelated one."
 )
 
 
