@@ -81,6 +81,21 @@ public actor SessionCoordinator {
     /// empty strings.
     public private(set) var lastTranscript: String = ""
     public private(set) var lastReply: String = ""
+    /// Which turn_id lastTranscript/lastReply actually belong to -- NOT the
+    /// same thing as activeTurnId (currentTurnId, whichever turn is now in
+    /// progress). A poll-loop UI building a running history (e.g. AppModel's
+    /// turns array) needs this: activeTurnId can already have advanced to a
+    /// NEW turn (handleSpeechStart() bumps it the instant the child starts
+    /// talking again) while lastTranscript/lastReply still hold the
+    /// PREVIOUS turn's text, since that new turn's own transcriptFinal/
+    /// responseText haven't arrived yet. Keying a dedup check off
+    /// activeTurnId instead of these was confirmed on real hardware to
+    /// duplicate the previous turn's bubble the moment the child spoke
+    /// again, and then silently swallow the real new turn's text once it
+    /// did arrive (already "seen" under the wrong turn_id) -- the UI
+    /// appeared backed up by exactly one turn.
+    public private(set) var lastTranscriptTurnId: Int?
+    public private(set) var lastReplyTurnId: Int?
     public private(set) var lastErrorMessage: String?
     /// Flips to true the moment consumeServerEvents() sees the connection
     /// close. A poll-loop UI (e.g. AppModel) has no other way to learn
@@ -752,11 +767,13 @@ public actor SessionCoordinator {
                 _ = try? machine.handle(.turnEnd)
                 turnContinuation = nil
                 return
-            case .message(.transcriptFinal(let text, _)):
+            case .message(.transcriptFinal(let text, let turnId)):
                 lastTranscript = text
+                lastTranscriptTurnId = turnId
                 continue
-            case .message(.responseText(let text, _)):
+            case .message(.responseText(let text, let turnId)):
                 lastReply = text
+                lastReplyTurnId = turnId
                 continue
             case .message(.transcriptPartial(_, _)):
                 continue
@@ -810,6 +827,8 @@ public actor SessionCoordinator {
         await setMuted(false)
         lastTranscript = ""
         lastReply = ""
+        lastTranscriptTurnId = nil
+        lastReplyTurnId = nil
         lastErrorMessage = nil
         try? await connection.send(.newStory)
     }

@@ -22,6 +22,13 @@ targets:
       properties:
         NSMicrophoneUsageDescription: "Tiny Talk Adventures needs the microphone to hear the story you're telling together."
         NSCameraUsageDescription: "Tiny Talk Adventures needs the camera so you can show it something to put in the story."
+        # Without this key (even empty), iOS has no declared launch screen and
+        # falls back to a legacy fixed-size compatibility window instead of
+        # the device's real screen bounds -- on an iPhone 13 Pro this showed
+        # up as the whole app (SwiftUI content AND native sheets like the
+        # camera picker) rendering letterboxed with black bars top/bottom,
+        # confirmed by comparing on-device screenshots against the design.
+        UILaunchScreen: {}
     dependencies:
       - package: TinyTalkCore
         product: TinyTalkCore
