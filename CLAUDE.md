@@ -118,7 +118,29 @@ every time:
 The voice/dialog pipeline's server (interruptible speech I/O between phone
 and Mac server) is implemented and merged to `main` — see
 `docs/superpowers/specs/2026-08-12-voice-dialog-pipeline-design.md` for the
-approved design. One piece remains: `server/tinytalk/stt_kyutai.py`'s
-recognizer is a deliberate stub pending exploration of the real `moshi_mlx`
-API (see README.md's "Known limitation" note). Next up after that: the iOS
-phone client.
+approved design. `server/tinytalk/stt_kyutai.py`'s recognizer is a full,
+real implementation against `moshi_mlx` (streaming decode via `LmGen`,
+correct silence-padding and per-utterance cache resets) — no longer a stub.
+The iOS phone client's core loop (Onboarding/Landing/Story/Settings, design
+1a) is also implemented and merged — see
+`docs/superpowers/specs/2026-09-05-kid-facing-ui-design.md`.
+
+Three threads are open right now, each blocked on something other than
+more unsupervised implementation work:
+
+- **Object recognition** (PR #8, branch `worktree-object-recognition`):
+  code-complete, swaps in a bundled FastViT Core ML model and fixes a
+  story-weave-in bug found on-device. Blocked on the user confirming the
+  last on-device test (does the recognized object's identity survive into
+  the next story turn) and merging.
+- **A backgrounding bug** (worktree `ditty-resume-backgrounding`, no PR
+  yet): the waiting "ditty" doesn't always resume after the app is
+  backgrounded and foregrounded. Mid systematic-debugging — evidence
+  logging has been added (a debug-log panel in Settings) but the bug
+  hasn't been reproduced with it yet. Blocked on an on-device repro
+  session.
+- **Library / Reading / The End screens:** deferred when the core loop UI
+  shipped (PR #9) because the server has no arc-stage wire message, no
+  story-conclude action, and no read/list API in `story_store.py`. This is
+  a new sub-project and needs a `superpowers:brainstorming` session and an
+  approved spec before implementation, per "Working process" above.
