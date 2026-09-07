@@ -924,6 +924,65 @@ final class SessionCoordinatorTests: XCTestCase {
         runLoop.cancel()
     }
 
+    /// A UI building a running turn history (e.g. AppModel.turns) needs to
+    /// know which turn lastTranscript/lastReply actually belong to -- NOT
+    /// just activeTurnId (the CURRENT turn), which can already have
+    /// advanced before that new turn's own text arrives. Confirmed on real
+    /// hardware to duplicate the previous turn's bubble and then silently
+    /// skip the real new one when a UI keyed its dedup check off
+    /// activeTurnId instead -- see AppModel.swift's turns-history doc
+    /// comment.
+    func testLastTranscriptAndReplyTurnIdReflectWhichTurnTheTextBelongsTo() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart) // turn 1
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.message(.transcriptFinal("hello there", turnId: 1)))
+        connection.emit(.message(.responseText("what animal should we meet", turnId: 1)))
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let transcriptTurnIdAfterTurn1 = await coordinator.lastTranscriptTurnId
+        let replyTurnIdAfterTurn1 = await coordinator.lastReplyTurnId
+        XCTAssertEqual(transcriptTurnIdAfterTurn1, 1)
+        XCTAssertEqual(replyTurnIdAfterTurn1, 1)
+
+        // The child starts talking again -- activeTurnId advances to 2
+        // immediately (handleSpeechStart() bumps it synchronously), well
+        // before turn 2's own transcript/reply have arrived.
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        let activeTurnIdMidTurn2 = await coordinator.activeTurnId
+        XCTAssertEqual(activeTurnIdMidTurn2, 2, "activeTurnId must already reflect the new turn")
+        let transcriptTurnIdMidTurn2 = await coordinator.lastTranscriptTurnId
+        let replyTurnIdMidTurn2 = await coordinator.lastReplyTurnId
+        let transcriptMidTurn2 = await coordinator.lastTranscript
+        XCTAssertEqual(transcriptTurnIdMidTurn2, 1, "lastTranscriptTurnId must still point at turn 1 -- turn 2's transcript hasn't arrived yet")
+        XCTAssertEqual(replyTurnIdMidTurn2, 1, "lastReplyTurnId must still point at turn 1 for the same reason")
+        XCTAssertEqual(transcriptMidTurn2, "hello there", "the text itself must still be turn 1's, unchanged, until turn 2's own transcriptFinal arrives")
+
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.message(.transcriptFinal("what about a fox", turnId: 2)))
+        connection.emit(.message(.responseText("a fox it is", turnId: 2)))
+        connection.emit(.message(.turnEnd(turnId: 2)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let transcriptTurnIdAfterTurn2 = await coordinator.lastTranscriptTurnId
+        let replyTurnIdAfterTurn2 = await coordinator.lastReplyTurnId
+        XCTAssertEqual(transcriptTurnIdAfterTurn2, 2)
+        XCTAssertEqual(replyTurnIdAfterTurn2, 2)
+
+        runLoop.cancel()
+    }
+
     /// waitingDittyAudio defaults to nil specifically so every OTHER test
     /// in this file (which doesn't pass it) stays completely unaffected --
     /// these are the only tests that opt in to exercise the feature itself.
