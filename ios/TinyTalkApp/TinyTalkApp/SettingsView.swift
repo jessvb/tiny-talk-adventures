@@ -9,6 +9,12 @@ import SwiftUI
 /// existed in the bare-bones harness (state/turn id/latency/debug log).
 struct SettingsView: View {
     @ObservedObject var model: AppModel
+    /// Reached only via a long-press on "UNDER THE HOOD" below, not a
+    /// visible button -- this is a developer tool for reproducing bugs
+    /// (e.g. the backgrounding/foregrounding ditty-resume issue) by
+    /// watching the coordinator's debugLog live, not something a curious
+    /// child tapping around Settings should stumble into.
+    @State private var showDebugLogSheet = false
 
     var body: some View {
         ZStack {
@@ -25,6 +31,9 @@ struct SettingsView: View {
                     .padding(20)
                 }
             }
+        }
+        .sheet(isPresented: $showDebugLogSheet) {
+            DebugLogSheet(model: model)
         }
     }
 
@@ -106,6 +115,11 @@ struct SettingsView: View {
                 .font(TTA.Typography.display(12))
                 .tracking(1.5)
                 .foregroundColor(TTA.Palette.inkSoft)
+                // Secret menu: hold for a second to see the full debugLog,
+                // not just its count. No visual affordance on purpose.
+                .onLongPressGesture(minimumDuration: 1.0) {
+                    showDebugLogSheet = true
+                }
 
             VStack(alignment: .leading, spacing: 6) {
                 infoRow("state", "\(model.state)")
@@ -143,6 +157,43 @@ struct SettingsView: View {
                 .background(TTA.Palette.cream)
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(TTA.Palette.wood.opacity(0.3), lineWidth: 1.5))
+        }
+    }
+}
+
+/// Full contents of SessionCoordinator.debugLog, live -- @ObservedObject
+/// (not a snapshot array) so this keeps updating while open, which is the
+/// whole point: background the app, foreground it, and watch entries
+/// appear here in real time without having to reopen the sheet.
+struct DebugLogSheet: View {
+    @ObservedObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    if model.debugLog.isEmpty {
+                        Text("No debug log entries yet.")
+                            .foregroundColor(.secondary)
+                    } else {
+                        ForEach(Array(model.debugLog.enumerated()), id: \.offset) { _, entry in
+                            Text(entry)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+                .padding()
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .navigationTitle("Debug log (\(model.debugLog.count))")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
         }
     }
 }
