@@ -181,3 +181,38 @@ def test_update_story_rewrite_returns_false_for_unknown_id(tmp_path):
         stories_dir=tmp_path,
     )
     assert ok is False
+
+
+def test_list_stories_skips_corrupt_files_with_missing_required_fields(tmp_path):
+    """Corrupt/truncated files missing required fields should be skipped,
+    not crash the entire listing. One bad file must never break browsing."""
+    # Write a valid story
+    valid = save_story(make_conversation(), stories_dir=tmp_path)
+    valid_id = story_id_from_path(valid)
+
+    # Write a corrupt file (missing both id and created_at)
+    corrupt_path = tmp_path / "20260908T000000-corrupt.json"
+    corrupt_path.write_text(json.dumps({"turns": []}))
+
+    # list_stories should skip the corrupt file and return only the valid one
+    summaries = list_stories(stories_dir=tmp_path)
+
+    assert len(summaries) == 1
+    assert summaries[0]["id"] == valid_id
+
+
+def test_list_stories_skips_files_with_corrupt_encoding(tmp_path):
+    """Non-UTF8 files should be skipped, not crash the listing."""
+    # Write a valid story
+    valid = save_story(make_conversation(), stories_dir=tmp_path)
+    valid_id = story_id_from_path(valid)
+
+    # Write a file with invalid UTF-8
+    corrupt_path = tmp_path / "20260908T000000-badutf8.json"
+    corrupt_path.write_bytes(b"\x80\x81\x82\x83")
+
+    # list_stories should skip the corrupt file and return only the valid one
+    summaries = list_stories(stories_dir=tmp_path)
+
+    assert len(summaries) == 1
+    assert summaries[0]["id"] == valid_id

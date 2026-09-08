@@ -85,19 +85,25 @@ def list_stories(*, stories_dir: Path = STORIES_DIR) -> list[dict]:
     for path in stories_dir.glob("*.json"):
         try:
             payload = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError) as exc:
+            story_id = payload.get("id")
+            created_at = payload.get("created_at")
+            # Skip files that don't have the required fields (corrupt schema)
+            if story_id is None or created_at is None:
+                logger.error("skipping story %s: missing required fields", path)
+                continue
+            pages = payload.get("pages")
+            summaries.append(
+                {
+                    "id": story_id,
+                    "title": payload.get("title"),
+                    "created_at": created_at,
+                    "page_count": len(pages) if pages else 0,
+                    "rewrite_status": payload.get("rewrite_status", "pending"),
+                }
+            )
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError, KeyError) as exc:
             logger.error("failed to read story %s: %s", path, exc)
             continue
-        pages = payload.get("pages")
-        summaries.append(
-            {
-                "id": payload["id"],
-                "title": payload.get("title"),
-                "created_at": payload["created_at"],
-                "page_count": len(pages) if pages else 0,
-                "rewrite_status": payload.get("rewrite_status", "pending"),
-            }
-        )
     summaries.sort(key=lambda summary: summary["created_at"], reverse=True)
     return summaries
 
@@ -110,7 +116,7 @@ def load_story(story_id: str, *, stories_dir: Path = STORIES_DIR) -> dict | None
         return None
     try:
         return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError, KeyError) as exc:
         logger.error("failed to read story %s: %s", story_id, exc)
         return None
 
@@ -140,6 +146,6 @@ def update_story_rewrite(
         payload["rewrite_status"] = rewrite_status
         path.write_text(json.dumps(payload, indent=2))
         return True
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError, KeyError) as exc:
         logger.error("failed to update rewrite for story %s: %s", story_id, exc)
         return False
