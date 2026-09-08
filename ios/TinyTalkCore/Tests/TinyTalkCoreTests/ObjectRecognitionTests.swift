@@ -44,4 +44,25 @@ final class ObjectRecognitionTests: XCTestCase {
 
         XCTAssertEqual(selectTopClassification(candidates, threshold: 0.3)?.label, "teddy bear")
     }
+
+    func testPrimaryLabelTakesTheFirstWordNetSynonym() {
+        XCTAssertEqual(primaryLabel(from: "teddy, teddy bear"), "teddy")
+        XCTAssertEqual(primaryLabel(from: "studio couch, day bed"), "studio couch")
+    }
+
+    func testPrimaryLabelLeavesASingleTermUnchanged() {
+        XCTAssertEqual(primaryLabel(from: "golden retriever"), "golden retriever")
+    }
+
+    func testPrimaryLabelTrimsTheLeadingSpaceOnLaterSynonyms() {
+        // The raw identifier's later comma-separated terms carry a
+        // leading space ("teddy, teddy bear") -- exercised here via a
+        // 3-synonym label so the *first* split component is what's
+        // checked, not an already-trimmed one.
+        XCTAssertEqual(primaryLabel(from: "cellular telephone, cellular phone, cellphone"), "cellular telephone")
+    }
+
+    func testPrimaryLabelReturnsEmptyStringUnchanged() {
+        XCTAssertEqual(primaryLabel(from: ""), "")
+    }
 }
