@@ -360,6 +360,25 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             print(message)
             onDebugEvent?("[\(DebugTimestamp.now())] \(message)")
         }
+        // Root-cause fix, confirmed on real hardware (backgrounding-
+        // triggered resume, 2026-09-08): engine.stop() alone does NOT leave
+        // playerNode able to render again once installCaptureTapAndStart()
+        // restarts the engine below -- it stays wedged, silently failing to
+        // fire scheduleBuffer's completion handler on every subsequent
+        // play() call, not just the one in flight right now. Observed:
+        // five consecutive "did not fire within 3s" timeouts (play()'s own
+        // doc comment), ~19 seconds of total silence from the waiting
+        // ditty, self-healing only once stopWaitingDitty()'s
+        // stopPlaybackImmediately() call -- which is this exact same
+        // playerNode.stop() -- finally ran because the real reply arrived.
+        // Calling it here, in lockstep with engine.stop(), resets the
+        // node's render state immediately instead of leaving every
+        // waiting-ditty iteration in between silently die. Unconditional,
+        // not gated on the isPlaying check above -- that flag is already
+        // known unreliable here (engine.stop() does not reset it, per this
+        // method's other doc comment above), and stop() on an
+        // already-stopped node is a documented no-op.
+        playerNode.stop()
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         do {
