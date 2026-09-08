@@ -183,6 +183,7 @@ async def handle_connection(
     # a turn that finished (or made partial progress) while nobody was
     # connected to hear it. A no-op if there's nothing buffered.
     await session.replay_last_turn()
+    await session.resend_current_status()
 
     # A deque rather than an asyncio.Queue purely because a barge-in needs
     # to remove already-queued audio from the middle (see the reader loop);

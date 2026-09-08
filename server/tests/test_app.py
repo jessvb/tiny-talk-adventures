@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 from unittest.mock import patch
+from pathlib import Path
 
 from conftest import FakeLlm, FakeStt, FakeTts
 from tinytalk import config
@@ -12,6 +13,7 @@ from tinytalk.engines import EngineError
 from tinytalk.llm_groq import GroqLlm
 from tinytalk.llm_ollama import OllamaLlm
 from tinytalk.session import SessionRunner
+from tinytalk.state import State
 from websockets.exceptions import ConnectionClosedError
 
 
@@ -184,6 +186,36 @@ async def test_reconnecting_after_a_disconnect_mid_turn_replays_the_buffered_rep
     assert audio_frames, "the reply's audio must be replayed too, not just its text"
 
 
+async def test_reconnecting_while_rewriting_repushes_rewriting_started(monkeypatch):
+    first_socket = FakeWebSocket(
+        ['{"type": "speech_start", "turn_id": 1}', b"\x01\x02", '{"type": "speech_end"}']
+    )
+    session = SessionRunner(
+        transport=WebSocketTransport(first_socket),
+        stt=FakeStt(),
+        llm=FakeLlm(chunks=["The end."]),
+        tts=FakeTts(),
+        system_prompt="be kind",
+    )
+    # Prevent story_store.save_story() from writing to disk
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.save_story",
+        lambda conversation, **kwargs: Path("20260101T000000-fakestory0.json"),
+    )
+    await handle_connection(first_socket, session=session)
+    await session.wait_for_turn()
+    assert session.state is State.REWRITING
+
+    second_socket = FakeWebSocket([])  # the child reopens the app mid-rewrite
+    await handle_connection(second_socket, session=session)
+
+    text_frames = [item for item in second_socket.sent if isinstance(item, str)]
+    assert any('"type": "rewriting_started"' in frame for frame in text_frames), (
+        "reconnecting mid-rewrite must tell the client it can't start a new "
+        "story yet"
+    )
+
+
 async def test_a_third_connection_still_gets_the_reply_replayed_if_the_second_died_fast():
     # Real bug, found on real hardware: an EARLIER version consumed the
     # replay buffer on first use, so a reconnect that itself died quickly
@@ -313,6 +345,9 @@ class SlowSession:
         self.transport_generation += 1
 
     async def replay_last_turn(self) -> None:
+        return None
+
+    async def resend_current_status(self) -> None:
         return None
 
     async def _work(self, item: str | bytes) -> None:
