@@ -1141,6 +1141,28 @@ async def test_interrupt_is_a_no_op_while_rewriting(transport):
     assert session.state is State.REWRITING
 
 
+async def test_conclude_story_is_a_no_op_while_rewriting(transport):
+    # Not part of the brief's own Step 1 list, but the same gate applies
+    # for the same reason: handle_conclude_story() unconditionally spawns
+    # a forced-conclude _run_turn task (a real LLM call) once _transition()
+    # runs, and (State.REWRITING, Event.CONCLUDE) isn't a defined
+    # transition -- so without this early guard, _transition()'s existing
+    # swallow-and-log behavior would leave the state stuck at REWRITING
+    # while STILL letting a competing LLM turn start, defeating the whole
+    # point of this task (see storybook.py's module docstring: "this call
+    # never competes with a live story's own LLM turns for the same local
+    # Ollama process").
+    llm = FakeLlm(chunks=["The end."], delay=_REWRITE_LLM_DELAY)
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+    assert session.state is State.REWRITING
+
+    await session.handle_text('{"type": "conclude_story", "turn_id": 999}')
+
+    assert session.state is State.REWRITING
+    assert session._turn_task is None or session._turn_task.done()
+
+
 async def test_speech_start_works_again_once_rewriting_finishes(transport):
     llm = FakeLlm(chunks=["The end."])
     session = make_session(transport, llm=llm)

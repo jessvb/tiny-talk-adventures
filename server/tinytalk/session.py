@@ -180,6 +180,13 @@ class SessionRunner:
         -- an explicit request to finish must not be able to silently
         fail to end just because the reply's wording doesn't happen to
         match the natural-conclusion phrase list."""
+        if self._machine.state is State.REWRITING:
+            logger.info(
+                "conclude_story ignored -- a storybook rewrite is still in "
+                "progress (turn_id=%d)",
+                turn_id,
+            )
+            return
         await self._cancel_turn(record_spoken=True)
         if self._machine.state is State.LISTENING:
             self._stt.reset()
