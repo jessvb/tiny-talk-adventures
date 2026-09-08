@@ -130,3 +130,35 @@ def test_turn_count_past_grace_ceiling_forces_guidance_then_marks_done():
     )
     arc.record_reply("anything at all, even without a conclusion phrase")
     assert arc.is_done is True
+
+
+def test_force_conclude_guidance_is_the_same_as_grace_ceiling_guidance():
+    target_turns = 3
+    grace_ceiling = target_turns + 3  # matches StoryArc's own __init__ formula
+    arc = StoryArc(target_turns=target_turns)
+    for _ in range(grace_ceiling):
+        arc.record_turn("keep going")
+    forced_by_ceiling = arc.record_turn("keep going")
+
+    fresh = StoryArc(target_turns=target_turns)
+    assert fresh.force_conclude_guidance() == forced_by_ceiling
+
+
+def test_force_conclude_guidance_does_not_advance_turn_count():
+    arc = StoryArc(target_turns=5)
+    arc.record_turn("turn one")
+    before = arc.stage
+
+    arc.force_conclude_guidance()
+
+    assert arc.stage == before
+
+
+def test_mark_done_sets_is_done_unconditionally():
+    arc = StoryArc(target_turns=5)
+    assert arc.is_done is False
+
+    arc.mark_done()
+
+    assert arc.is_done is True
+    assert arc.stage is Stage.DONE
