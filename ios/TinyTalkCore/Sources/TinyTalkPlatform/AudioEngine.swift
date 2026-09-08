@@ -55,6 +55,23 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     /// this instance's whole lifetime (NSKeyValueObservation stops
     /// observing the moment it deallocates).
     private var outputVolumeObserver: NSKeyValueObservation?
+    /// Optional hook for surfacing this file's highest-value diagnostic
+    /// lines -- config-change-driven engine restarts and playback timeouts,
+    /// the exact mechanism suspected (see rebuildCaptureTap() and play()'s
+    /// own doc comments) of silencing the waiting ditty after a
+    /// backgrounding-triggered resume -- into the same on-screen debug log
+    /// SessionCoordinator.debugLog already feeds (see AppModel's wiring).
+    /// Not every print() in this file goes through this, just these few:
+    /// RealAudioEngine has no reference back to the coordinator to append
+    /// into its debugLog directly (different module, and the coordinator is
+    /// the one holding a reference to this, not the other way around), so
+    /// the caller that DOES hold both (AppModel) is what merges them.
+    /// Pre-timestamped here (not left to the caller) so it sorts correctly
+    /// against SessionCoordinator's own timestamped lines after merging --
+    /// see DebugTimestamp's doc comment for why a shared, thread-safe
+    /// formatter matters here specifically (this fires from a notification
+    /// callback and a scheduleBuffer completion, not from a fixed thread).
+    public var onDebugEvent: (@Sendable (String) -> Void)?
 
     public init() throws {
         let session = AVAudioSession.sharedInstance()
@@ -198,7 +215,9 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             object: engine,
             queue: nil
         ) { [weak self] _ in
-            print("RealAudioEngine: AVAudioEngineConfigurationChange received -- rebuilding capture tap")
+            let message = "RealAudioEngine: AVAudioEngineConfigurationChange received -- rebuilding capture tap"
+            print(message)
+            self?.onDebugEvent?("[\(DebugTimestamp.now())] \(message)")
             self?.rebuildCaptureTap()
         }
 
@@ -337,8 +356,29 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         // play()'s own 3s completion-handler timeout, added for the same
         // reason).
         if playerNode.isPlaying {
-            print("RealAudioEngine: rebuildCaptureTap() is stopping the engine WHILE playerNode is playing")
+            let message = "RealAudioEngine: rebuildCaptureTap() is stopping the engine WHILE playerNode is playing"
+            print(message)
+            onDebugEvent?("[\(DebugTimestamp.now())] \(message)")
         }
+        // Root-cause fix, confirmed on real hardware (backgrounding-
+        // triggered resume, 2026-09-08): engine.stop() alone does NOT leave
+        // playerNode able to render again once installCaptureTapAndStart()
+        // restarts the engine below -- it stays wedged, silently failing to
+        // fire scheduleBuffer's completion handler on every subsequent
+        // play() call, not just the one in flight right now. Observed:
+        // five consecutive "did not fire within 3s" timeouts (play()'s own
+        // doc comment), ~19 seconds of total silence from the waiting
+        // ditty, self-healing only once stopWaitingDitty()'s
+        // stopPlaybackImmediately() call -- which is this exact same
+        // playerNode.stop() -- finally ran because the real reply arrived.
+        // Calling it here, in lockstep with engine.stop(), resets the
+        // node's render state immediately instead of leaving every
+        // waiting-ditty iteration in between silently die. Unconditional,
+        // not gated on the isPlaying check above -- that flag is already
+        // known unreliable here (engine.stop() does not reset it, per this
+        // method's other doc comment above), and stop() on an
+        // already-stopped node is a documented no-op.
+        playerNode.stop()
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         do {
@@ -429,7 +469,9 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             Task {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 if gate.tryResume() {
-                    print("RealAudioEngine: play() scheduleBuffer completion did not fire within 3s (likely the engine was stopped mid-render by a concurrent reconfiguration) -- giving up on this buffer rather than hanging forever")
+                    let message = "RealAudioEngine: play() scheduleBuffer completion did not fire within 3s (likely the engine was stopped mid-render by a concurrent reconfiguration) -- giving up on this buffer rather than hanging forever"
+                    print(message)
+                    self.onDebugEvent?("[\(DebugTimestamp.now())] \(message)")
                     continuation.resume()
                 }
             }
