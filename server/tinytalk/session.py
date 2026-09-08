@@ -707,6 +707,16 @@ class SessionRunner:
             self._transition(Event.RESPONSE_READY)
         if self._machine.state is State.SPEAKING:
             self._transition(Event.TTS_DONE)
+        if self._machine.state is State.REWRITING:
+            # A concluding turn transitions into REWRITING before its
+            # remaining sends (encode_turn_end, then -- once saved --
+            # encode_rewriting_started) and its _rewrite_task creation.
+            # If either of those sends raises (e.g. a dead transport),
+            # this lands here with state already REWRITING but no
+            # rewrite task ever scheduled to release it -- and since
+            # every action handler now gates on REWRITING, that would be
+            # a permanent lockout recoverable only by a server restart.
+            self._transition(Event.REWRITE_DONE)
         await self._transport.send_text(encode_error(message, turn_id))
 
     def _transition(self, event: Event) -> None:
