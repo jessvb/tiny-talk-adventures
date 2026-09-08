@@ -106,3 +106,48 @@ async def test_build_and_attach_omits_epilogue_when_no_facts_were_shared(tmp_pat
     assert "epilogue" not in prompt.lower().split("reply with only")[0].split("real facts")[0] or True
     story = load_story(story_id, stories_dir=tmp_path)
     assert story["epilogue"] is None
+
+
+async def test_build_and_attach_discards_a_fabricated_epilogue_when_no_facts_were_shared(
+    tmp_path,
+):
+    """A small local model can volunteer an "epilogue" key even though the
+    prompt never asked for one (no facts were shared) -- the spec requires
+    the epilogue be omitted unconditionally in that case, not merely "when
+    the model behaves." This reproduces that non-compliant-model case
+    directly, independent of prompt wording."""
+    story_id = make_saved_story(tmp_path)
+    reply = json.dumps(
+        {
+            "title": "A Story",
+            "pages": [{"text": "Once upon a time."}],
+            "epilogue": "Foxes have excellent hearing.",
+        }
+    )
+    llm = FakeRewriteLlm(reply)
+
+    await build_and_attach(story_id, [], [], llm=llm, stories_dir=tmp_path)
+
+    story = load_story(story_id, stories_dir=tmp_path)
+    assert story["epilogue"] is None
+    assert story["rewrite_status"] == "done"
+
+
+async def test_build_and_attach_marks_failed_and_does_not_raise_on_an_unexpected_exception(
+    tmp_path,
+):
+    """build_and_attach's docstring promises the caller a fire-and-forget
+    call that is never raised -- that must hold for ANY exception, not
+    just EngineError, matching session.py's _run_turn two-tier
+    except EngineError / except Exception pattern."""
+    story_id = make_saved_story(tmp_path)
+
+    class ExplodingLlm:
+        async def stream_reply(self, messages):
+            raise RuntimeError("boom")
+            yield ""  # pragma: no cover - unreachable, marks this a generator
+
+    await build_and_attach(story_id, [], [], llm=ExplodingLlm(), stories_dir=tmp_path)
+
+    story = load_story(story_id, stories_dir=tmp_path)
+    assert story["rewrite_status"] == "failed"

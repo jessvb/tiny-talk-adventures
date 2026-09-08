@@ -9,6 +9,7 @@ LLM turns for the same local Ollama process.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -98,6 +99,17 @@ def _parse_rewrite(raw: str) -> tuple[str, list[dict], str | None] | None:
     return title.strip(), normalized_pages, epilogue
 
 
+def _mark_failed(story_id: str, stories_dir: Path) -> None:
+    story_store.update_story_rewrite(
+        story_id,
+        title=None,
+        pages=None,
+        epilogue=None,
+        rewrite_status="failed",
+        stories_dir=stories_dir,
+    )
+
+
 async def build_and_attach(
     story_id: str,
     turns: list[Turn],
@@ -111,48 +123,54 @@ async def build_and_attach(
     story -- or marks it "failed", logged, never raised. Called as a
     fire-and-forget background task; see session.py's REWRITE_STARTED/
     REWRITE_DONE handling for how its completion (success or failure) is
-    guaranteed to release the REWRITING gate."""
-    prompt = _build_prompt(turns, shared_facts, page_count)
-    messages = [{"role": "user", "content": prompt}]
+    guaranteed to release the REWRITING gate.
+
+    Every step below (the LLM call, parsing, persisting) is wrapped in one
+    try/except -- like session.py's _run_turn, which this mirrors, a
+    background rewrite must survive any single bad turn rather than
+    propagate an exception past a fire-and-forget task, where nothing
+    would be there to catch it."""
     try:
+        prompt = _build_prompt(turns, shared_facts, page_count)
+        messages = [{"role": "user", "content": prompt}]
         parts: list[str] = []
         async for chunk in llm.stream_reply(messages):
             parts.append(chunk)
         raw = "".join(parts).strip()
+
+        parsed = _parse_rewrite(raw)
+        if parsed is None:
+            logger.error(
+                "storybook rewrite for story %s produced unparseable output: %r",
+                story_id,
+                raw,
+            )
+            _mark_failed(story_id, stories_dir)
+            return
+
+        title, pages, epilogue = parsed
+        # A small local model can volunteer an "epilogue" key even when the
+        # prompt never asked for one (no facts were shared) -- the spec
+        # requires the epilogue be omitted unconditionally in that case,
+        # not merely "when the model complies with the prompt."
+        if not shared_facts:
+            epilogue = None
+        story_store.update_story_rewrite(
+            story_id,
+            title=title,
+            pages=pages,
+            epilogue=epilogue,
+            rewrite_status="done",
+            stories_dir=stories_dir,
+        )
+        logger.info(
+            "storybook rewrite done for story %s: %d pages", story_id, len(pages)
+        )
+    except asyncio.CancelledError:
+        raise
     except EngineError as exc:
         logger.error("storybook rewrite failed for story %s: %s", story_id, exc)
-        story_store.update_story_rewrite(
-            story_id,
-            title=None,
-            pages=None,
-            epilogue=None,
-            rewrite_status="failed",
-            stories_dir=stories_dir,
-        )
-        return
-    parsed = _parse_rewrite(raw)
-    if parsed is None:
-        logger.error(
-            "storybook rewrite for story %s produced unparseable output: %r",
-            story_id,
-            raw,
-        )
-        story_store.update_story_rewrite(
-            story_id,
-            title=None,
-            pages=None,
-            epilogue=None,
-            rewrite_status="failed",
-            stories_dir=stories_dir,
-        )
-        return
-    title, pages, epilogue = parsed
-    story_store.update_story_rewrite(
-        story_id,
-        title=title,
-        pages=pages,
-        epilogue=epilogue,
-        rewrite_status="done",
-        stories_dir=stories_dir,
-    )
-    logger.info("storybook rewrite done for story %s: %d pages", story_id, len(pages))
+        _mark_failed(story_id, stories_dir)
+    except Exception:  # noqa: BLE001 - a background rewrite must survive one bad turn
+        logger.exception("unexpected failure during storybook rewrite for story %s", story_id)
+        _mark_failed(story_id, stories_dir)
