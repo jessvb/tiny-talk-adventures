@@ -268,3 +268,22 @@ facts' slow-API/timeout concerns even apply here).
   backgrounding/audio-engine resilience already this session, this is
   worth explicitly checking on a real device during implementation, not
   assuming it's a non-issue.
+- **Setting-plausibility can override object identity in the weave-in.**
+  Confirmed on real device (2026-09-07, FastViT-T8 era): a recognized
+  "robin" produced a story reply that introduced a "fox" instead, while a
+  recognized "ice bear" (ImageNet's actual class label for polar bear)
+  produced a polar bear character with no issue — same session, same
+  weave-in guidance (`_WEAVE_IN_TEMPLATE`, `object_recognition.py`).
+  Working theory: the story's established setting (Antarctica) made a
+  robin geographically implausible, and the LLM appears to prioritize
+  setting plausibility over the guidance's requirement that some
+  recognizable trait of the object carry through — a fox shares none of a
+  robin's species, size, or shape, whereas "ice bear" already fit the
+  setting so no such conflict arose. Pinned as acceptable for now (a rare
+  mismatch is lower priority than the model/pipeline working at all). If
+  revisited: consider telling the guidance explicitly that a
+  setting-mismatched object is fine to include anyway (e.g. "a robin,
+  blown far from home, appears" rather than silently substituting
+  something native to the setting), so the LLM has an explicit permission
+  structure for the conflict instead of resolving it unpredictably on its
+  own.

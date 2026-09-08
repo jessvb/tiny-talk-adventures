@@ -44,6 +44,30 @@ def test_unsafe_label_is_discarded_and_produces_no_guidance():
     assert tracker.consume_guidance() == ""
 
 
+def test_weave_in_guidance_requires_a_recognizable_trait_to_carry_through():
+    # Regression guard for real on-device behavior: a recognized "golden
+    # retriever" once produced a story reply that introduced an unrelated
+    # "elephant" -- technically satisfying the child's own "another animal
+    # comes" request, but keeping nothing (species, size, color,
+    # personality) of the actual recognized object. The guidance now says
+    # so explicitly rather than leaving it fully to the model's judgment.
+    tracker = ObjectTracker()
+    tracker.record_seen("golden retriever")
+
+    guidance = tracker.consume_guidance()
+
+    assert "recognizable" in guidance.lower()
+
+
+def test_weave_in_guidance_discourages_an_unrelated_substitute():
+    tracker = ObjectTracker()
+    tracker.record_seen("golden retriever")
+
+    guidance = tracker.consume_guidance()
+
+    assert "unrelated" in guidance.lower()
+
+
 def test_unsafe_label_does_not_clear_an_already_pending_safe_label():
     # record_seen's job on an unsafe candidate is to discard THAT
     # candidate, not to wipe out whatever safe label was already pending
