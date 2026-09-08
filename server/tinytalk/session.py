@@ -40,9 +40,12 @@ from .protocol import (
     decode_client_message,
     encode_arc_stage,
     encode_error,
+    encode_page_audio_done,
     encode_response_text,
     encode_rewriting_done,
     encode_rewriting_started,
+    encode_story_detail,
+    encode_story_list,
     encode_transcript_final,
     encode_transcript_partial,
     encode_turn_end,
@@ -171,6 +174,12 @@ class SessionRunner:
                 await self.handle_new_story()
             case ConcludeStory(turn_id=turn_id):
                 await self.handle_conclude_story(turn_id)
+            case ListStories():
+                await self.handle_list_stories()
+            case GetStory(story_id=story_id):
+                await self.handle_get_story(story_id)
+            case SynthesizePage(story_id=story_id, page_index=page_index):
+                await self.handle_synthesize_page(story_id, page_index)
 
     async def handle_conclude_story(self, turn_id: int) -> None:
         """The "Finish this story" action: cancels whatever's in flight
@@ -234,6 +243,45 @@ class SessionRunner:
             "(turn_id stays at %d -- it numbers messages, not story turns)",
             self._current_turn_id,
         )
+
+    async def handle_list_stories(self) -> None:
+        stories = story_store.list_stories()
+        await self._send_text_unbuffered(encode_story_list(stories))
+
+    async def handle_get_story(self, story_id: str) -> None:
+        story = story_store.load_story(story_id)
+        if story is None:
+            await self._send_text_unbuffered(
+                encode_error(f"no saved story with id {story_id!r}", self._current_turn_id)
+            )
+            return
+        await self._send_text_unbuffered(
+            encode_story_detail(
+                {
+                    "id": story["id"],
+                    "title": story.get("title"),
+                    "pages": story.get("pages"),
+                    "epilogue": story.get("epilogue"),
+                    "rewrite_status": story.get("rewrite_status", "pending"),
+                }
+            )
+        )
+
+    async def handle_synthesize_page(self, story_id: str, page_index: int) -> None:
+        story = story_store.load_story(story_id)
+        pages = story.get("pages") if story else None
+        if not pages or page_index < 0 or page_index >= len(pages):
+            await self._send_text_unbuffered(
+                encode_error(
+                    f"no page {page_index} for story {story_id!r}", self._current_turn_id
+                )
+            )
+            return
+        text = pages[page_index]["text"]
+        async with self._transport_lock:
+            async for pcm in self._tts.synthesize(text):
+                await self._transport.send_bytes(pcm)
+            await self._transport.send_text(encode_page_audio_done(story_id, page_index))
 
     async def handle_audio(self, pcm: bytes) -> None:
         # Audio arriving outside LISTENING is stale — a frame in flight when

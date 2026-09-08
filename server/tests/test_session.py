@@ -45,6 +45,31 @@ def _fake_save_story(conversation, **kwargs):
     return _FAKE_SAVED_PATH
 
 
+def _stories_dir_list_stories(stories_dir):
+    """A stand-in for story_store.list_stories that closes over
+    stories_dir, for the same reason _fake_save_story exists above:
+    list_stories()'s own `stories_dir` default is bound to the real
+    STORIES_DIR at story_store's *function-definition* time, so
+    monkeypatch.setattr(story_store, "STORIES_DIR", tmp_path) does
+    nothing for it -- the function itself must be replaced. Captures the
+    real function up front (rather than looking up story_store.list_stories
+    again inside the lambda) because the caller immediately monkeypatches
+    that very attribute to be this lambda -- a late lookup would resolve
+    to itself and recurse with the wrong signature."""
+    from tinytalk import story_store
+
+    original = story_store.list_stories
+    return lambda: original(stories_dir=stories_dir)
+
+
+def _stories_dir_load_story(stories_dir):
+    """Same fix as _stories_dir_list_stories above, for load_story."""
+    from tinytalk import story_store
+
+    original = story_store.load_story
+    return lambda story_id: original(story_id, stories_dir=stories_dir)
+
+
 def _fake_build_and_attach(delay: float = _REWRITE_LLM_DELAY):
     """A stand-in for storybook.build_and_attach, for tests that need the
     REWRITING gate's real lifecycle (a background task genuinely in
@@ -1330,3 +1355,144 @@ async def test_rewriting_gate_releases_if_rewriting_started_send_fails(transport
     await run_full_turn(session)
 
     assert session.state is State.IDLE
+
+
+# Read-only story browsing (Library/Reading screens) -- list_stories/
+# get_story/synthesize_page have nothing to do with the live turn-taking
+# state machine and must work regardless of session state. Every test here
+# redirects story_store.list_stories/load_story via
+# _stories_dir_list_stories/_stories_dir_load_story rather than
+# monkeypatch.setattr(story_store, "STORIES_DIR", tmp_path) -- see those
+# helpers' docstrings above for why the latter silently does nothing.
+
+
+async def test_list_stories_returns_saved_summaries(transport, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.list_stories", _stories_dir_list_stories(tmp_path)
+    )
+    from tinytalk.story_store import save_story
+    from tinytalk.conversation import Conversation
+
+    save_story(Conversation(), stories_dir=tmp_path)
+    session = make_session(transport)
+
+    await session.handle_text('{"type": "list_stories"}')
+
+    stories = transport.messages_of_type("story_list")[0]["stories"]
+    assert len(stories) == 1
+
+
+async def test_get_story_returns_story_detail(transport, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.load_story", _stories_dir_load_story(tmp_path)
+    )
+    from tinytalk.story_store import save_story, story_id_from_path, update_story_rewrite
+    from tinytalk.conversation import Conversation
+
+    path = save_story(Conversation(), stories_dir=tmp_path)
+    story_id = story_id_from_path(path)
+    update_story_rewrite(
+        story_id, title="Pip", pages=[{"text": "Once upon a time."}],
+        epilogue=None, rewrite_status="done", stories_dir=tmp_path,
+    )
+    session = make_session(transport)
+
+    await session.handle_text(f'{{"type": "get_story", "story_id": "{story_id}"}}')
+
+    detail = transport.messages_of_type("story_detail")[0]
+    assert detail["title"] == "Pip"
+    assert detail["pages"] == [{"text": "Once upon a time."}]
+
+
+async def test_get_story_sends_error_for_unknown_id(transport, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.load_story", _stories_dir_load_story(tmp_path)
+    )
+    session = make_session(transport)
+
+    await session.handle_text('{"type": "get_story", "story_id": "nope"}')
+
+    assert transport.types() == ["error"]
+
+
+async def test_synthesize_page_streams_audio_and_a_done_marker(transport, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.load_story", _stories_dir_load_story(tmp_path)
+    )
+    from tinytalk.story_store import save_story, story_id_from_path, update_story_rewrite
+    from tinytalk.conversation import Conversation
+
+    path = save_story(Conversation(), stories_dir=tmp_path)
+    story_id = story_id_from_path(path)
+    update_story_rewrite(
+        story_id, title="Pip", pages=[{"text": "Once upon a time."}],
+        epilogue=None, rewrite_status="done", stories_dir=tmp_path,
+    )
+    tts = FakeTts()
+    session = make_session(transport, tts=tts)
+
+    await session.handle_text(
+        f'{{"type": "synthesize_page", "story_id": "{story_id}", "page_index": 0}}'
+    )
+
+    assert tts.spoken == ["Once upon a time."]
+    assert len(transport.audio) == 1
+    done = transport.messages_of_type("page_audio_done")[0]
+    assert done == {"type": "page_audio_done", "story_id": story_id, "page_index": 0}
+
+
+async def test_synthesize_page_sends_error_for_an_out_of_range_page(transport, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.load_story", _stories_dir_load_story(tmp_path)
+    )
+    from tinytalk.story_store import save_story, story_id_from_path, update_story_rewrite
+    from tinytalk.conversation import Conversation
+
+    path = save_story(Conversation(), stories_dir=tmp_path)
+    story_id = story_id_from_path(path)
+    update_story_rewrite(
+        story_id, title="Pip", pages=[{"text": "Once upon a time."}],
+        epilogue=None, rewrite_status="done", stories_dir=tmp_path,
+    )
+    session = make_session(transport)
+
+    await session.handle_text(
+        f'{{"type": "synthesize_page", "story_id": "{story_id}", "page_index": 5}}'
+    )
+
+    assert transport.types() == ["error"]
+
+
+async def test_story_browsing_works_while_rewriting(transport, tmp_path, monkeypatch):
+    # Browsing already-saved stories has nothing to do with the live
+    # session -- it must keep working even while a DIFFERENT story is
+    # mid-rewrite. save_story/build_and_attach are faked (the established
+    # pattern above, e.g. test_a_concluding_turn_enters_rewriting_and_
+    # pushes_rewriting_started) so reaching REWRITING here neither writes
+    # a real file into server/data/stories/ nor races the fake rewrite to
+    # completion before the assertion below runs.
+    # NOTE: the real save (below) must run before save_story gets
+    # monkeypatched to _fake_save_story -- `from tinytalk.story_store
+    # import save_story` re-reads the module attribute at import-execution
+    # time, so importing it after the patch would silently bind the fake
+    # instead of the real function, and no file would ever reach tmp_path.
+    from tinytalk.story_store import save_story
+    from tinytalk.conversation import Conversation
+
+    save_story(Conversation(), stories_dir=tmp_path)
+
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.list_stories", _stories_dir_list_stories(tmp_path)
+    )
+    monkeypatch.setattr("tinytalk.session.story_store.save_story", _fake_save_story)
+    monkeypatch.setattr(
+        "tinytalk.session.storybook.build_and_attach", _fake_build_and_attach()
+    )
+    llm = FakeLlm(chunks=["The end."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+    assert session.state is State.REWRITING
+
+    await session.handle_text('{"type": "list_stories"}')
+
+    assert len(transport.messages_of_type("story_list")[0]["stories"]) >= 1
