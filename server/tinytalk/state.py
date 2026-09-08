@@ -15,6 +15,12 @@ class State(Enum):
     LISTENING = auto()
     THINKING = auto()
     SPEAKING = auto()
+    # Entered right after a story concludes (naturally, forced, or via
+    # Event.CONCLUDE), for as long as storybook.py's background rewrite
+    # of that story is running. See the _TRANSITIONS comment below for
+    # why this state is a deliberate exception to "interrupt is legal
+    # everywhere".
+    REWRITING = auto()
 
 
 class Event(Enum):
@@ -24,14 +30,28 @@ class Event(Enum):
     TTS_DONE = auto()
     INTERRUPT = auto()
     ABANDON = auto()
+    # The "Finish this story" action -- legal from any state except
+    # REWRITING, always forces a fresh THINKING turn with
+    # forced-conclusion guidance. See session.py's handle_conclude_story().
+    CONCLUDE = auto()
+    # Fired by session.py INSTEAD OF TTS_DONE when the turn that just
+    # finished speaking concluded the story -- see session.py's _run_turn.
+    REWRITE_STARTED = auto()
+    REWRITE_DONE = auto()
 
 
 class InvalidTransition(RuntimeError):
     """Raised when an event arrives that the current state cannot handle."""
 
 
-# An interrupt is legal from every state and always lands in LISTENING: the
-# child has started talking, so whatever we were doing no longer matters.
+# An interrupt is legal from every state EXCEPT REWRITING and always lands
+# in LISTENING: the child has started talking, so whatever we were doing
+# no longer matters. REWRITING is the one deliberate exception -- the
+# whole point of that state is that the child talking again must not be
+# able to pre-empt a background rewrite already in flight (see
+# session.py's REWRITING gate and the design spec's resource-contention
+# discussion). SPEECH_START is similarly absent from REWRITING for the
+# same reason.
 _TRANSITIONS: dict[tuple[State, Event], State] = {
     (State.IDLE, Event.SPEECH_START): State.LISTENING,
     (State.LISTENING, Event.SPEECH_END): State.THINKING,
@@ -50,6 +70,12 @@ _TRANSITIONS: dict[tuple[State, Event], State] = {
     # running/held for later replay, not abandoned. See
     # SessionRunner.handle_disconnect().
     (State.LISTENING, Event.ABANDON): State.IDLE,
+    (State.IDLE, Event.CONCLUDE): State.THINKING,
+    (State.LISTENING, Event.CONCLUDE): State.THINKING,
+    (State.THINKING, Event.CONCLUDE): State.THINKING,
+    (State.SPEAKING, Event.CONCLUDE): State.THINKING,
+    (State.SPEAKING, Event.REWRITE_STARTED): State.REWRITING,
+    (State.REWRITING, Event.REWRITE_DONE): State.IDLE,
 }
 
 
