@@ -14,6 +14,9 @@ enum AppScreen: Equatable {
     case landing
     case creating
     case settings
+    case library
+    case reading
+    case theEnd
 }
 
 /// One line of the on-screen story-so-far, built entirely client-side from
@@ -45,6 +48,14 @@ final class AppModel: ObservableObject {
     @Published var isMicMuted = false
     @Published var objectRecognitionHint: String?
     @Published var turns: [StoryTurn] = []
+    /// Saved-story fixtures for the Library screen -- populated by
+    /// Settings' preview buttons or TheEndView's "Read it now" until the
+    /// real list_stories() wire call is wired up (see MockStories.swift).
+    @Published var libraryStories: [SavedStorySummary] = []
+    /// The story currently shown by TheEndView/ReadingView -- populated by
+    /// whichever screen navigates to them (a Library card tap, or a
+    /// Settings preview button).
+    @Published var selectedStory: SavedStoryDetail?
     /// The turn_id most recently sent on speechStart/interrupt/resume --
     /// debug UI, added while diagnosing the disconnect/reconnect turn-id
     /// mismatch bug, to let you SEE at a glance whether a reconnect

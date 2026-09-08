@@ -26,6 +26,7 @@ struct SettingsView: View {
                     VStack(spacing: 18) {
                         serverCard
                         underTheHoodCard
+                        storybookPreviewCard
                         replayButton
                     }
                     .padding(20)
@@ -135,6 +136,51 @@ struct SettingsView: View {
         .padding(16)
         .background(TTA.Palette.cream)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    /// Developer preview of the Library/Reading/The End screens against
+    /// mock data -- see MockStories.swift and TheEndView.swift's doc
+    /// comments for why these aren't wired into the real Landing/Story
+    /// "Read Stories" buttons yet.
+    private var storybookPreviewCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("COMING SOON: STORYBOOKS")
+                .font(TTA.Typography.display(12))
+                .tracking(1.5)
+                .foregroundColor(TTA.Palette.inkSoft)
+
+            Text("Preview only — these screens use example stories, not real ones yet.")
+                .font(TTA.Typography.body(12.5))
+                .foregroundColor(TTA.Palette.inkSoft)
+
+            previewButton("Preview: The End") {
+                model.selectedStory = MockStories.pip
+                model.screen = .theEnd
+            }
+            previewButton("Preview: Library") {
+                model.libraryStories = MockStories.librarySummaries
+                model.screen = .library
+            }
+            previewButton("Preview: Reading") {
+                model.selectedStory = MockStories.pip
+                model.screen = .reading
+            }
+        }
+        .padding(16)
+        .background(TTA.Palette.cream)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private func previewButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(TTA.Typography.display(14))
+                .foregroundColor(TTA.Palette.wood)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(11)
+                .background(TTA.Palette.paper)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
     }
 
     private func infoRow(_ label: String, _ value: String) -> some View {

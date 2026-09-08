@@ -8,10 +8,13 @@
 
 /* Begin PBXBuildFile section */
 		135F501B8A5BF69045A9708F /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F2BE519ABB041465A9163E5 /* AppModel.swift */; };
+		14014928B6BEB5E25D5700E8 /* TheEndView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B249A20D92B2092EC0CC2A6 /* TheEndView.swift */; };
+		271425D4194F37E84B789F91 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E823294B182D2C80C5F55D8 /* LibraryView.swift */; };
 		514E005860FA62B8C3BFC234 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D71B40E61CB032EC32A3D01 /* OnboardingView.swift */; };
 		5654438BA14771F89C79E73B /* ElsieImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0176F2B5D9438722D2E95D9D /* ElsieImage.swift */; };
 		6072C0A3D69565D242639B1E /* StoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EFE958EC164055A9077B445 /* StoryView.swift */; };
 		62BFEC33DBA17AEDEE1904B0 /* TinyTalkPlatform in Frameworks */ = {isa = PBXBuildFile; productRef = FFD470684EC547980EFB5F9F /* TinyTalkPlatform */; };
+		63087DB2C6B399F08DD27E1D /* ReadingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89FAFC90FCA524D3C1D770D8 /* ReadingView.swift */; };
 		691E33386BF7000648C8579F /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF2B8C0936557EFBE207044B /* SettingsView.swift */; };
 		74D386D297BEA59506D3AC3C /* TinyTalkCore in Frameworks */ = {isa = PBXBuildFile; productRef = 3AA3AE4B746E2BC75681276E /* TinyTalkCore */; };
 		760FF3A9E4E9EA3133D04DA4 /* ElsieAvatar.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB2D910E78603486730F9D26 /* ElsieAvatar.swift */; };
@@ -32,7 +35,10 @@
 		37382A8458DB818AE90B7993 /* TinyTalkAppApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TinyTalkAppApp.swift; sourceTree = "<group>"; };
 		5B3EC89E9EEAEF7DFA4CFC5C /* silero_vad.onnx */ = {isa = PBXFileReference; path = silero_vad.onnx; sourceTree = "<group>"; };
 		6112E49A1527F93C79DE7912 /* LandingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LandingView.swift; sourceTree = "<group>"; };
+		7B249A20D92B2092EC0CC2A6 /* TheEndView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TheEndView.swift; sourceTree = "<group>"; };
 		7C554C1EE23344030C4B4EEB /* Local.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Local.xcconfig; sourceTree = "<group>"; };
+		7E823294B182D2C80C5F55D8 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
+		89FAFC90FCA524D3C1D770D8 /* ReadingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingView.swift; sourceTree = "<group>"; };
 		8C08E7257C99B1CA50C2F1EC /* TinyTalkCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = TinyTalkCore; path = ../TinyTalkCore; sourceTree = SOURCE_ROOT; };
 		8D0D3978AC2A2D53115B8379 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		997CEE22CFBE485E57B27FEF /* TinyTalkApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = TinyTalkApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -85,11 +91,14 @@
 				0176F2B5D9438722D2E95D9D /* ElsieImage.swift */,
 				8D0D3978AC2A2D53115B8379 /* Info.plist */,
 				6112E49A1527F93C79DE7912 /* LandingView.swift */,
+				7E823294B182D2C80C5F55D8 /* LibraryView.swift */,
 				E12737CC1CF3380CD45B0039 /* MockStories.swift */,
 				0D71B40E61CB032EC32A3D01 /* OnboardingView.swift */,
+				89FAFC90FCA524D3C1D770D8 /* ReadingView.swift */,
 				CF2B8C0936557EFBE207044B /* SettingsView.swift */,
 				5B3EC89E9EEAEF7DFA4CFC5C /* silero_vad.onnx */,
 				2EFE958EC164055A9077B445 /* StoryView.swift */,
+				7B249A20D92B2092EC0CC2A6 /* TheEndView.swift */,
 				37382A8458DB818AE90B7993 /* TinyTalkAppApp.swift */,
 			);
 			path = TinyTalkApp;
@@ -196,10 +205,13 @@
 				760FF3A9E4E9EA3133D04DA4 /* ElsieAvatar.swift in Sources */,
 				5654438BA14771F89C79E73B /* ElsieImage.swift in Sources */,
 				E03DC46EFEAD8677BA00D919 /* LandingView.swift in Sources */,
+				271425D4194F37E84B789F91 /* LibraryView.swift in Sources */,
 				AF7B7C4285E9F8A5D5D97264 /* MockStories.swift in Sources */,
 				514E005860FA62B8C3BFC234 /* OnboardingView.swift in Sources */,
+				63087DB2C6B399F08DD27E1D /* ReadingView.swift in Sources */,
 				691E33386BF7000648C8579F /* SettingsView.swift in Sources */,
 				6072C0A3D69565D242639B1E /* StoryView.swift in Sources */,
+				14014928B6BEB5E25D5700E8 /* TheEndView.swift in Sources */,
 				A6C2ACF3CD2F2C8FC2B9A88D /* TinyTalkAppApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
