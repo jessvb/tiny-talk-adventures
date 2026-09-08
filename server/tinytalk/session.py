@@ -27,13 +27,18 @@ from .conversation import Conversation
 from .engines import EngineError, LlmEngine, SttEngine, TtsEngine
 from .object_recognition import ObjectTracker
 from .protocol import (
+    ConcludeStory,
+    GetStory,
     Interrupt,
+    ListStories,
     NewStory,
     ObjectSeen,
     ProtocolError,
     SpeechEnd,
     SpeechStart,
+    SynthesizePage,
     decode_client_message,
+    encode_arc_stage,
     encode_error,
     encode_response_text,
     encode_transcript_final,
@@ -161,6 +166,27 @@ class SessionRunner:
                 self._object_recognition.record_seen(label)
             case NewStory():
                 await self.handle_new_story()
+            case ConcludeStory(turn_id=turn_id):
+                await self.handle_conclude_story(turn_id)
+
+    async def handle_conclude_story(self, turn_id: int) -> None:
+        """The "Finish this story" action: cancels whatever's in flight
+        (same as a barge-in) and forces one final reply using
+        StoryArc.force_conclude_guidance() instead of the normal
+        stage-based guidance, then marks the story done unconditionally
+        -- an explicit request to finish must not be able to silently
+        fail to end just because the reply's wording doesn't happen to
+        match the natural-conclusion phrase list."""
+        await self._cancel_turn(record_spoken=True)
+        if self._machine.state is State.LISTENING:
+            self._stt.reset()
+        self._current_turn_id = turn_id
+        self._transition(Event.CONCLUDE)
+        self._turn_replay_buffer = []
+        logger.info("conclude_story: forcing a final reply for turn_id=%d", turn_id)
+        self._turn_task = asyncio.create_task(
+            self._run_turn("", turn_id, forced_conclude=True)
+        )
 
     async def handle_new_story(self) -> None:
         """Abandon the current story (if any) and start fresh, without
@@ -482,7 +508,9 @@ class SessionRunner:
                 self._conversation.add_agent(" ".join(actually_heard), interrupted=True)
         self._spoken = []
 
-    async def _run_turn(self, transcript: str, turn_id: int) -> None:
+    async def _run_turn(
+        self, transcript: str, turn_id: int, *, forced_conclude: bool = False
+    ) -> None:
         # Per-stage timing: this pipeline is a personal pet project running
         # on modest hardware (see CLAUDE.md), and latency was found to be
         # noticeably higher than the design's 1-2s target -- logging where
@@ -492,7 +520,13 @@ class SessionRunner:
         turn_start = time.monotonic()
         try:
             self._conversation.add_child(transcript)  # no-op if transcript is empty
-            guidance = self._story_arc.record_turn(transcript)
+            if forced_conclude:
+                guidance = self._story_arc.force_conclude_guidance()
+            else:
+                guidance = self._story_arc.record_turn(transcript)
+            await self._send_and_buffer(
+                text=encode_arc_stage(self._story_arc.stage.value, turn_id)
+            )
             fact_guidance = await self._animal_facts.record_turn(
                 transcript, self._story_arc.stage
             )
@@ -501,7 +535,7 @@ class SessionRunner:
             object_guidance = self._object_recognition.consume_guidance()
             if object_guidance:
                 guidance = f"{guidance}\n\n{object_guidance}"
-            if not transcript.strip():
+            if not transcript.strip() and not forced_conclude:
                 guidance = f"{guidance}\n\n{_STT_FAILURE_GUIDANCE}"
             messages = self._conversation.to_messages(
                 self._system_prompt + "\n\n" + guidance
@@ -516,7 +550,10 @@ class SessionRunner:
                 parts.append(chunk)
             llm_done = time.monotonic()
             reply = safety.filter_reply("".join(parts).strip())
-            self._story_arc.record_reply(reply)
+            if forced_conclude:
+                self._story_arc.mark_done()
+            else:
+                self._story_arc.record_reply(reply)
             logger.info(
                 "llm stream_reply: %.1f ms to first chunk, %.1f ms total (%d chars)",
                 ((first_chunk_at or llm_done) - llm_start) * 1000,

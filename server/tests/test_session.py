@@ -39,6 +39,7 @@ async def test_full_turn_emits_transcript_response_audio_and_turn_end(transport)
 
     assert transport.types() == [
         "transcript_final",
+        "arc_stage",
         "response_text",
         "turn_end",
     ]
@@ -60,8 +61,8 @@ async def test_every_event_in_a_turn_carries_the_speech_starts_turn_id(transport
     await session.handle_text(SPEECH_END)
     await session.wait_for_turn()
 
-    assert transport.types() == ["transcript_final", "response_text", "turn_end"]
-    for kind in ("transcript_final", "response_text", "turn_end"):
+    assert transport.types() == ["transcript_final", "arc_stage", "response_text", "turn_end"]
+    for kind in ("transcript_final", "arc_stage", "response_text", "turn_end"):
         assert transport.messages_of_type(kind)[0]["turn_id"] == 42
     assert session.current_turn_id == 42
 
@@ -351,7 +352,7 @@ async def test_empty_transcript_still_gets_a_graceful_llm_reply_instead_of_silen
     # No fake child utterance was added to history for the empty transcript.
     assert not any(turn.speaker == "child" for turn in session.conversation.turns)
     assert session.state is State.IDLE
-    assert transport.types() == ["transcript_final", "response_text", "turn_end"]
+    assert transport.types() == ["transcript_final", "arc_stage", "response_text", "turn_end"]
     assert transport.messages_of_type("transcript_final")[0]["text"] == "   "
 
 
@@ -380,7 +381,7 @@ async def test_llm_returning_an_empty_reply_still_gets_a_spoken_fallback(transpo
 
     assert transport.messages_of_type("response_text")[0]["text"] == SAFE_FALLBACK
     assert tts.spoken, "a fallback reply must still be synthesized and spoken, not silently skipped"
-    assert transport.types() == ["transcript_final", "response_text", "turn_end"]
+    assert transport.types() == ["transcript_final", "arc_stage", "response_text", "turn_end"]
     assert session.state is State.IDLE
 
 
@@ -450,7 +451,7 @@ async def test_handle_disconnect_while_waiting_for_reply_lets_the_turn_keep_runn
 
     assert tts.cancelled is False
     await session.wait_for_turn()
-    assert transport.types() == ["transcript_final", "response_text", "turn_end"]
+    assert transport.types() == ["transcript_final", "arc_stage", "response_text", "turn_end"]
     assert session.state is State.IDLE
 
 
@@ -462,7 +463,7 @@ async def test_replay_last_turn_resends_the_buffered_reply_on_a_fresh_transport(
     session.rebind_transport(other_transport)
     await session.replay_last_turn()
 
-    assert other_transport.types() == ["response_text", "turn_end"]
+    assert other_transport.types() == ["arc_stage", "response_text", "turn_end"]
     assert other_transport.audio == transport.audio
 
 
@@ -493,13 +494,13 @@ async def test_replay_last_turn_can_replay_to_multiple_reconnects_in_a_row(trans
     await run_full_turn(session)
     session.rebind_transport(other_transport)
     await session.replay_last_turn()
-    assert other_transport.types() == ["response_text", "turn_end"]
+    assert other_transport.types() == ["arc_stage", "response_text", "turn_end"]
 
     yet_another_transport = FakeTransport()
     session.rebind_transport(yet_another_transport)
     await session.replay_last_turn()
 
-    assert yet_another_transport.types() == ["response_text", "turn_end"], (
+    assert yet_another_transport.types() == ["arc_stage", "response_text", "turn_end"], (
         "a second reconnect (e.g. the first one died before the child could "
         "actually hear it) must still get the reply replayed"
     )
@@ -977,3 +978,61 @@ async def test_new_story_says_so_in_the_log(caplog, transport):
     assert any("new story" in message.lower() for message in messages), (
         f"starting a new story must be visible in the log; got {messages}"
     )
+
+
+CONCLUDE = '{"type": "conclude_story", "turn_id": 9}'
+
+
+async def test_conclude_story_forces_a_final_reply_without_a_real_utterance(transport):
+    llm = FakeLlm(chunks=["The fox went home. The end."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)  # a normal turn first, so there's a story in progress
+
+    await session.handle_text(CONCLUDE)
+    await session.wait_for_turn()
+
+    # The forced turn's system prompt carries the same forced-conclusion
+    # guidance already used for a grace-ceiling-forced ending.
+    forced_messages = llm.calls[-1]
+    assert "This must be the last reply" in forced_messages[0]["content"]
+    assert transport.messages_of_type("turn_end")[-1]["turn_id"] == 9
+
+
+async def test_conclude_story_marks_the_story_done_even_if_the_reply_omits_the_end(transport):
+    # Deliberately a reply that would NOT be caught by natural
+    # phrase-detection -- proves mark_done() is unconditional.
+    llm = FakeLlm(chunks=["The fox curled up and slept soundly."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+
+    await session.handle_text(CONCLUDE)
+    await session.wait_for_turn()
+
+    # A concluded story resets the conversation -- the next turn starts fresh.
+    assert session.conversation.turns == ()
+
+
+async def test_conclude_story_cancels_an_in_flight_turn_first(transport):
+    llm = FakeLlm(chunks=["slow reply"], delay=10)
+    session = make_session(transport, llm=llm)
+    await session.handle_text(SPEECH_START)
+    await session.handle_audio(b"\x01\x02")
+    await session.handle_text(SPEECH_END)
+    await asyncio.sleep(0.01)  # let the slow turn actually start
+
+    await session.handle_text(CONCLUDE)
+    await session.wait_for_turn()
+
+    assert llm.cancelled is True
+
+
+async def test_conclude_story_does_not_trigger_the_stt_failure_guidance(transport):
+    llm = FakeLlm(chunks=["The end."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+
+    await session.handle_text(CONCLUDE)
+    await session.wait_for_turn()
+
+    forced_messages = llm.calls[-1]
+    assert "didn't hear anything new" not in forced_messages[0]["content"]
