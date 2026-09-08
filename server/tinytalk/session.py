@@ -20,7 +20,7 @@ import logging
 import time
 from typing import Protocol
 
-from . import config, safety, story_store
+from . import config, safety, storybook, story_store
 from .animal_facts import AnimalFactTracker
 from .audio import TTS_SAMPLE_RATE, split_sentences
 from .conversation import Conversation
@@ -41,6 +41,8 @@ from .protocol import (
     encode_arc_stage,
     encode_error,
     encode_response_text,
+    encode_rewriting_done,
+    encode_rewriting_started,
     encode_transcript_final,
     encode_transcript_partial,
     encode_turn_end,
@@ -107,6 +109,7 @@ class SessionRunner:
         self._object_recognition = ObjectTracker()
         self._machine = TurnStateMachine()
         self._turn_task: asyncio.Task | None = None
+        self._rewrite_task: asyncio.Task | None = None
         # (sentence text, estimated real-world time.monotonic() at which
         # the child would actually have finished HEARING it) -- see
         # _run_turn()'s TTS loop and _cancel_turn() for why "sent" and
@@ -201,6 +204,9 @@ class SessionRunner:
         ordinary turns -- resetting it would risk exactly the kind of
         turn_id collision this whole area of the codebase already has
         enough trouble with."""
+        if self._machine.state is State.REWRITING:
+            logger.info("new_story ignored -- a storybook rewrite is still in progress")
+            return
         await self._cancel_turn(record_spoken=False)
         if self._machine.state is State.LISTENING:
             self._stt.reset()
@@ -246,6 +252,20 @@ class SessionRunner:
         (possibly different) client."""
         if self._turn_task is not None:
             await asyncio.gather(self._turn_task, return_exceptions=True)
+
+    async def wait_for_rewrite(self) -> None:
+        """Await the in-flight background rewrite to finish. Test-only,
+        mirroring wait_for_turn()."""
+        if self._rewrite_task is not None:
+            await asyncio.gather(self._rewrite_task, return_exceptions=True)
+
+    async def resend_current_status(self) -> None:
+        """Called by app.py right after a (re)connect, in addition to
+        replay_last_turn() -- a phone that reconnects while a storybook
+        rewrite is still in flight must be told so immediately, not left
+        to assume it's free to start a new story."""
+        if self._machine.state is State.REWRITING:
+            await self._send_text_unbuffered(encode_rewriting_started())
 
     @property
     def transport_generation(self) -> int:
@@ -331,6 +351,14 @@ class SessionRunner:
                 self._turn_replay_buffer.append(("bytes", audio))
                 await self._transport.send_bytes(audio)
 
+    async def _send_text_unbuffered(self, text: str) -> None:
+        """Sends a control message outside any turn's replay buffer -- for
+        pushes that aren't part of the live turn currently in flight, if
+        any (rewriting_started/rewriting_done, story browsing
+        responses)."""
+        async with self._transport_lock:
+            await self._transport.send_text(text)
+
     async def handle_disconnect(self) -> None:
         """Called by app.py on every WebSocket disconnect (clean or
         abrupt). Unlike aclose(), this deliberately does NOT cancel an
@@ -362,6 +390,13 @@ class SessionRunner:
         self._stt.reset()
 
     async def _start_listening(self, turn_id: int) -> None:
+        if self._machine.state is State.REWRITING:
+            logger.info(
+                "speech_start ignored -- a storybook rewrite is still in "
+                "progress (turn_id=%d)",
+                turn_id,
+            )
+            return
         if self._machine.state in (State.THINKING, State.SPEAKING):
             # A speech_start arriving mid-turn means the child started
             # talking again before the agent finished — that is an
@@ -456,6 +491,13 @@ class SessionRunner:
         self._turn_task = asyncio.create_task(self._run_turn(transcript, turn_id))
 
     async def _interrupt(self, turn_id: int) -> None:
+        if self._machine.state is State.REWRITING:
+            logger.info(
+                "interrupt ignored -- a storybook rewrite is still in "
+                "progress (turn_id=%d)",
+                turn_id,
+            )
+            return
         interrupt_received = time.monotonic()
         await self._cancel_turn(record_spoken=True)
         self._stt.reset()
@@ -596,20 +638,36 @@ class SessionRunner:
 
             self._conversation.add_agent(reply)
             self._spoken = []
-            self._transition(Event.TTS_DONE)
+            concluding = self._story_arc.is_done
+            if concluding:
+                self._transition(Event.REWRITE_STARTED)
+            else:
+                self._transition(Event.TTS_DONE)
             await self._send_and_buffer(text=encode_turn_end(turn_id))
             logger.info(
                 "turn total (transcript -> turn_end): %.1f ms",
                 (time.monotonic() - turn_start) * 1000,
             )
-            if self._story_arc.is_done:
+            if concluding:
                 saved_path = story_store.save_story(self._conversation)
-                if saved_path is not None:
-                    logger.info("story saved to %s", saved_path)
+                turns = list(self._conversation.full_history)
+                shared_facts = list(self._animal_facts.shared_facts)
                 self._conversation = Conversation()
                 self._story_arc = StoryArc()
                 self._animal_facts = AnimalFactTracker()
                 self._object_recognition = ObjectTracker()
+                if saved_path is not None:
+                    logger.info("story saved to %s", saved_path)
+                    story_id = story_store.story_id_from_path(saved_path)
+                    await self._send_text_unbuffered(encode_rewriting_started())
+                    self._rewrite_task = asyncio.create_task(
+                        self._run_rewrite(story_id, turns, shared_facts)
+                    )
+                else:
+                    # save_story() itself failed -- there is nothing to
+                    # rewrite, and nothing should stay gated on a rewrite
+                    # that will never run.
+                    self._transition(Event.REWRITE_DONE)
         except asyncio.CancelledError:
             raise
         except EngineError as exc:
@@ -618,6 +676,20 @@ class SessionRunner:
         except Exception as exc:  # noqa: BLE001 - a session must survive one bad turn
             logger.exception("unexpected failure during turn")
             await self._fail_turn(f"internal error: {exc}", turn_id)
+
+    async def _run_rewrite(
+        self, story_id: str, turns: list, shared_facts: list[tuple[str, str]]
+    ) -> None:
+        try:
+            await storybook.build_and_attach(
+                story_id, turns, shared_facts, llm=self._llm,
+                page_count=config.STORYBOOK_PAGE_COUNT,
+            )
+        except Exception:  # noqa: BLE001 - the REWRITING gate must always release
+            logger.exception("unexpected failure running storybook rewrite for %s", story_id)
+        finally:
+            self._transition(Event.REWRITE_DONE)
+            await self._send_text_unbuffered(encode_rewriting_done())
 
     async def _fail_turn(self, message: str, turn_id: int) -> None:
         # Restore state before sending: if the transport is dead (closed

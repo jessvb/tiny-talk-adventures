@@ -13,6 +13,21 @@ SPEECH_START = '{"type": "speech_start", "turn_id": 1}'
 SPEECH_END = '{"type": "speech_end"}'
 INTERRUPT = '{"type": "interrupt", "turn_id": 2}'
 
+# _run_rewrite() (session.py) reuses the session's own LLM engine for the
+# background storybook rewrite, so a zero-delay FakeLlm lets that rewrite's
+# single stream_reply() call -- and everything downstream of it -- run to
+# full completion inside the very next event-loop iteration after the
+# concluding turn's own task finishes, before a test's own
+# `await wait_for_turn()`/`handle_text(...)` call ever gets scheduled back
+# in. That races out of existence exactly what several tests below need to
+# observe (REWRITING still in progress, or which LLM call was the live
+# turn's own vs. the background rewrite's) -- not because the REWRITING
+# gate is broken, but because nothing gave the rewrite task a genuine
+# suspension point to still be parked at. A real LLM call always takes
+# real wall-clock time, so this can't happen outside tests; this delay
+# just restores that realism wherever a test needs it.
+_REWRITE_LLM_DELAY = 0.05
+
 
 def make_session(transport, *, stt=None, llm=None, tts=None) -> SessionRunner:
     return SessionRunner(
@@ -984,16 +999,31 @@ CONCLUDE = '{"type": "conclude_story", "turn_id": 9}'
 
 
 async def test_conclude_story_forces_a_final_reply_without_a_real_utterance(transport):
-    llm = FakeLlm(chunks=["The fox went home. The end."])
+    # The first ("normal") turn's reply must NOT itself contain a natural
+    # conclusion phrase (see story_arc._CONCLUSION_PHRASES) -- otherwise
+    # run_full_turn() would already conclude/reset/enter REWRITING before
+    # CONCLUDE is even sent, defeating "a normal turn first, so there's a
+    # story in progress" below. The forced-conclude reply is swapped in
+    # afterward.
+    llm = FakeLlm(chunks=["The fox found a shiny red apple."])
     session = make_session(transport, llm=llm)
     await run_full_turn(session)  # a normal turn first, so there's a story in progress
 
+    llm.chunks = ["The fox went home. The end."]
+    calls_before = len(llm.calls)
     await session.handle_text(CONCLUDE)
     await session.wait_for_turn()
 
     # The forced turn's system prompt carries the same forced-conclusion
-    # guidance already used for a grace-ceiling-forced ending.
-    forced_messages = llm.calls[-1]
+    # guidance already used for a grace-ceiling-forced ending. Indexed by
+    # calls_before, not [-1]: the forced-conclude reply itself ALSO
+    # concludes the story (mark_done() is unconditional), so it kicks off
+    # its own background storybook rewrite -- which reuses this same llm
+    # (see session.py's _run_rewrite) and appends its own prompt to
+    # llm.calls right behind the forced turn's own call. [-1] would pick
+    # up whichever of the two happened to be invoked last, which isn't
+    # what this assertion means to check.
+    forced_messages = llm.calls[calls_before]
     assert "This must be the last reply" in forced_messages[0]["content"]
     assert transport.messages_of_type("turn_end")[-1]["turn_id"] == 9
 
@@ -1036,3 +1066,109 @@ async def test_conclude_story_does_not_trigger_the_stt_failure_guidance(transpor
 
     forced_messages = llm.calls[-1]
     assert "didn't hear anything new" not in forced_messages[0]["content"]
+
+
+async def test_a_concluding_turn_enters_rewriting_and_pushes_rewriting_started(transport):
+    llm = FakeLlm(chunks=["The end."], delay=_REWRITE_LLM_DELAY)
+    session = make_session(transport, llm=llm)
+
+    await run_full_turn(session)
+
+    assert session.state is State.REWRITING
+    assert "rewriting_started" in transport.types()
+
+
+async def test_rewriting_releases_back_to_idle_once_the_rewrite_finishes(transport):
+    llm = FakeLlm(chunks=["The end."], delay=_REWRITE_LLM_DELAY)
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+    assert session.state is State.REWRITING
+
+    await session.wait_for_rewrite()
+
+    assert session.state is State.IDLE
+    assert "rewriting_done" in transport.types()
+
+
+async def test_rewriting_releases_even_when_the_rewrite_itself_raises(transport, monkeypatch):
+    async def raising_build_and_attach(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        "tinytalk.session.storybook.build_and_attach", raising_build_and_attach
+    )
+    llm = FakeLlm(chunks=["The end."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+
+    await session.wait_for_rewrite()
+
+    assert session.state is State.IDLE
+
+
+async def test_speech_start_is_a_no_op_while_rewriting(transport):
+    llm = FakeLlm(chunks=["The end."], delay=_REWRITE_LLM_DELAY)
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+    assert session.state is State.REWRITING
+    before_turn_id = session.current_turn_id
+
+    await session.handle_text('{"type": "speech_start", "turn_id": 999}')
+
+    assert session.state is State.REWRITING
+    assert session.current_turn_id == before_turn_id
+
+
+async def test_new_story_is_a_no_op_while_rewriting(transport):
+    llm = FakeLlm(chunks=["The end."], delay=_REWRITE_LLM_DELAY)
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+    assert session.state is State.REWRITING
+
+    await session.handle_new_story()
+
+    assert session.state is State.REWRITING
+
+
+async def test_interrupt_is_a_no_op_while_rewriting(transport):
+    llm = FakeLlm(chunks=["The end."], delay=_REWRITE_LLM_DELAY)
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+    assert session.state is State.REWRITING
+
+    await session.handle_text('{"type": "interrupt", "turn_id": 999}')
+
+    assert session.state is State.REWRITING
+
+
+async def test_speech_start_works_again_once_rewriting_finishes(transport):
+    llm = FakeLlm(chunks=["The end."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+    await session.wait_for_rewrite()
+    assert session.state is State.IDLE
+
+    await session.handle_text('{"type": "speech_start", "turn_id": 5}')
+
+    assert session.state is State.LISTENING
+
+
+async def test_a_non_concluding_turn_does_not_enter_rewriting(transport):
+    llm = FakeLlm(chunks=["Let's keep going."])
+    session = make_session(transport, llm=llm)
+
+    await run_full_turn(session)
+
+    assert session.state is State.IDLE
+    assert "rewriting_started" not in transport.types()
+
+
+async def test_resend_current_status_repushes_rewriting_started(transport):
+    llm = FakeLlm(chunks=["The end."], delay=_REWRITE_LLM_DELAY)
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+    transport.text.clear()
+
+    await session.resend_current_status()
+
+    assert "rewriting_started" in transport.types()
