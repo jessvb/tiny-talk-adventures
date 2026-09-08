@@ -50,9 +50,16 @@ final class AppModel: ObservableObject {
     /// mismatch bug, to let you SEE at a glance whether a reconnect
     /// resumed the right turn instead of silently discarding everything.
     @Published var currentTurnId: Int = 0
-    /// Mirror of SessionCoordinator.debugLog -- see that property's doc
-    /// comment for what it does and doesn't include.
+    /// SessionCoordinator.debugLog merged with RealAudioEngine's own
+    /// onDebugEvent hook -- see both those doc comments. Kept as two
+    /// separate arrays (below) and re-merged on every update, since the two
+    /// sources update independently (coordinatorDebugLog on each 100ms poll
+    /// tick, audioDebugLog the instant RealAudioEngine's hook fires) and
+    /// RealAudioEngine has no reference back to the coordinator to append
+    /// into its debugLog directly.
     @Published var debugLog: [String] = []
+    private var coordinatorDebugLog: [String] = []
+    private var audioDebugLog: [String] = []
 
     private var coordinator: SessionCoordinator?
     private var audioEngine: RealAudioEngine?
@@ -165,6 +172,17 @@ final class AppModel: ObservableObject {
             return
         }
         audioEngine = audio
+        // Merge RealAudioEngine's own diagnostic lines into the same
+        // on-screen debug log as the coordinator's -- see debugLog's doc
+        // comment. Hops onto the main actor since appendAudioDebugEvent
+        // mutates @Published state; the hook itself can fire from a
+        // notification callback or an AVAudioEngine completion handler, not
+        // necessarily the main thread.
+        audio.onDebugEvent = { [weak self] line in
+            Task { @MainActor in
+                self?.appendAudioDebugEvent(line)
+            }
+        }
 
         guard let vadModelPath = Bundle.main.path(forResource: "silero_vad", ofType: "onnx"),
               let vad = try? SileroVoiceActivityDetector(modelPath: vadModelPath) else {
@@ -265,6 +283,8 @@ final class AppModel: ObservableObject {
         // an empty debug log, so mirror that here rather than showing
         // stale values from the coordinator that just went away.
         currentTurnId = 0
+        coordinatorDebugLog = []
+        audioDebugLog = []
         debugLog = []
         turns = []
         lastAppendedTranscriptTurnId = nil
@@ -450,6 +470,28 @@ final class AppModel: ObservableObject {
         await connectResumingIfPending()
     }
 
+    /// Appends one of RealAudioEngine's own diagnostic lines (already
+    /// timestamped, see onDebugEvent's doc comment) and refreshes the
+    /// merged debugLog. Capped independently at the same size as
+    /// SessionCoordinator.debugLog for the same reason (bounded memory for
+    /// a log that's read live, not archived).
+    private func appendAudioDebugEvent(_ line: String) {
+        audioDebugLog.append(line)
+        if audioDebugLog.count > 50 {
+            audioDebugLog.removeFirst(audioDebugLog.count - 50)
+        }
+        debugLog = mergedDebugLog()
+    }
+
+    /// Interleaves coordinatorDebugLog and audioDebugLog by their shared
+    /// "[HH:mm:ss.SSS] ..." timestamp prefix (see DebugTimestamp) -- plain
+    /// string sort works here because both prefixes are the same fixed
+    /// width and zero-padded, so lexicographic order matches chronological
+    /// order.
+    private func mergedDebugLog() -> [String] {
+        (coordinatorDebugLog + audioDebugLog).sorted()
+    }
+
     private func startPollingState() {
         // Simple observation bridge from the actor's state to SwiftUI.
         // Fine for a bare-bones harness; not a pattern to scale up later.
@@ -487,7 +529,8 @@ final class AppModel: ObservableObject {
                     self.lastReply = reply
                     self.isMicMuted = muted
                     self.currentTurnId = turnId
-                    self.debugLog = log
+                    self.coordinatorDebugLog = log
+                    self.debugLog = self.mergedDebugLog()
                     // Turn history for the story screen's chat view -- see
                     // StoryTurn's doc comment. Appends at most once per
                     // turn_id per speaker, keyed off the turn_id the

@@ -139,8 +139,9 @@ public actor SessionCoordinator {
     private static let debugLogCap = 50
 
     private func logDebug(_ message: String) {
-        print(message)
-        debugLog.append(message)
+        let line = "[\(DebugTimestamp.now())] \(message)"
+        print(line)
+        debugLog.append(line)
         if debugLog.count > Self.debugLogCap {
             debugLog.removeFirst(debugLog.count - Self.debugLogCap)
         }
