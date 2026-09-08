@@ -542,6 +542,14 @@ class AnimalFactTracker:
         self._facted: set[str] = set()
         self._attempted: set[str] = set()
         self._any_animal_mentioned = False
+        self._shared_facts: list[tuple[str, str]] = []
+
+    @property
+    def shared_facts(self) -> tuple[tuple[str, str], ...]:
+        """Real (animal, fact) pairs actually woven into this story so
+        far -- used to ground storybook.py's epilogue in something real
+        rather than letting the rewrite model invent one."""
+        return tuple(self._shared_facts)
 
     async def record_turn(self, transcript: str, stage: Stage) -> str:
         """Call once per turn, alongside StoryArc.record_turn(), with
@@ -554,6 +562,7 @@ class AnimalFactTracker:
             fact = await get_fact(canonical)
             if fact is not None:
                 self._facted.add(canonical)
+                self._shared_facts.append((canonical, fact))
                 return _WEAVE_IN_TEMPLATE.format(animal=canonical, fact=fact)
             return ""
         if stage in (Stage.INTRO, Stage.SETUP) and not self._any_animal_mentioned:
