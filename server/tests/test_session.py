@@ -1150,6 +1150,33 @@ async def test_conclude_story_does_not_trigger_the_stt_failure_guidance(transpor
     assert "didn't hear anything new" not in forced_messages[0]["content"]
 
 
+async def test_conclude_story_pushes_the_done_arc_stage_regardless_of_actual_progress(
+    transport, monkeypatch
+):
+    """force_conclude_guidance() deliberately does NOT advance the story
+    arc's turn count/stage (see StoryArc.force_conclude_guidance's own
+    docstring) -- but this exact reply IS the story's ending. The Story
+    screen's progress-dots UI (arc_stage's whole reason for existing) must
+    show "done" for this turn, not whatever mid-story stage the arc
+    happened to be sitting at when the conclude was requested."""
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.save_story", lambda conversation, **kwargs: None
+    )
+    llm = FakeLlm(chunks=["The fox found a shiny red apple."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)  # a normal turn first -- arc is mid-story, not done
+    # Confirms the setup: the arc is genuinely NOT done yet -- if it were,
+    # this test wouldn't distinguish "always pushes the arc's real stage"
+    # from "always pushes done" and would be a false positive either way.
+    assert transport.messages_of_type("arc_stage")[-1]["stage"] != "done"
+
+    llm.chunks = ["The fox went home."]
+    await session.handle_text(CONCLUDE)
+    await session.wait_for_turn()
+
+    assert transport.messages_of_type("arc_stage")[-1]["stage"] == "done"
+
+
 async def test_a_concluding_turn_enters_rewriting_and_pushes_rewriting_started(transport, monkeypatch):
     monkeypatch.setattr("tinytalk.session.story_store.save_story", _fake_save_story)
     monkeypatch.setattr(
@@ -1400,8 +1427,18 @@ async def test_get_story_returns_story_detail(transport, tmp_path, monkeypatch):
     await session.handle_text(f'{{"type": "get_story", "story_id": "{story_id}"}}')
 
     detail = transport.messages_of_type("story_detail")[0]
-    assert detail["title"] == "Pip"
-    assert detail["pages"] == [{"text": "Once upon a time."}]
+    # Full expected shape, not just title/pages -- locks in the "exactly
+    # these 5 payload keys (id, title, pages, epilogue, rewrite_status),
+    # plus the wire message's own type" guarantee, so a stray extra key
+    # (e.g. accidentally leaking the raw `turns`) would fail this test.
+    assert detail == {
+        "type": "story_detail",
+        "id": story_id,
+        "title": "Pip",
+        "pages": [{"text": "Once upon a time."}],
+        "epilogue": None,
+        "rewrite_status": "done",
+    }
 
 
 async def test_get_story_sends_error_for_unknown_id(transport, tmp_path, monkeypatch):

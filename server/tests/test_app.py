@@ -406,6 +406,24 @@ async def test_a_barge_in_discards_audio_still_queued_for_the_abandoned_utteranc
     assert session.handled == ['{"type":"interrupt","turn_id":2}', *fresh]
 
 
+async def test_a_conclude_story_discards_audio_still_queued_for_the_abandoned_utterance():
+    """conclude_story ("Finish this story") resets STT and abandons an
+    in-progress utterance exactly like an interrupt does (see
+    SessionRunner.handle_conclude_story) -- so audio queued ahead of it
+    is just as much waste to decode as audio queued ahead of an interrupt.
+    Without "conclude_story" in _UTTERANCE_ABANDONING_TYPES, this stale
+    audio would be fed to STT anyway, wasting real decode time on audio
+    about to be thrown away regardless."""
+    stale: list[str | bytes] = [f"stale-{i}".encode() for i in range(8)]
+    fresh: list[str | bytes] = [f"fresh-{i}".encode() for i in range(3)]
+    socket = FakeWebSocket([*stale, '{"type":"conclude_story","turn_id":9}', *fresh])
+    session = SlowSession(per_message_delay=0)
+
+    await handle_connection(socket, session=session)
+
+    assert session.handled == ['{"type":"conclude_story","turn_id":9}', *fresh]
+
+
 async def test_a_flooded_queue_drops_audio_but_never_control_frames():
     """A bounded queue keeps a runaway client from growing memory without
     limit, but dropping a speech_end/interrupt would strand the session --

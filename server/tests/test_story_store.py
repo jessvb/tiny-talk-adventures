@@ -132,6 +132,12 @@ def test_load_story_returns_none_for_unknown_id(tmp_path):
 def test_update_story_rewrite_patches_in_the_result(tmp_path):
     path = save_story(make_conversation(), stories_dir=tmp_path)
     story_id = story_id_from_path(path)
+    # Captured BEFORE update_story_rewrite() runs, so the assertion below is
+    # a genuine before/after comparison -- not `payload["turns"] ==
+    # json.loads(path.read_text())["turns"]` re-reading the same
+    # already-updated file on both sides of the `==`, which can never fail
+    # regardless of what update_story_rewrite() actually does to `turns`.
+    turns_before = json.loads(path.read_text())["turns"]
 
     ok = update_story_rewrite(
         story_id,
@@ -149,7 +155,7 @@ def test_update_story_rewrite_patches_in_the_result(tmp_path):
     assert payload["epilogue"] == "Foxes have excellent hearing."
     assert payload["rewrite_status"] == "done"
     # the raw transcript must survive untouched
-    assert payload["turns"] == json.loads(path.read_text())["turns"]
+    assert payload["turns"] == turns_before
 
 
 def test_update_story_rewrite_records_a_failed_status(tmp_path):

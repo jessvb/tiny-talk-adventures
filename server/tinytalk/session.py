@@ -51,7 +51,7 @@ from .protocol import (
     encode_turn_end,
 )
 from .state import Event, InvalidTransition, State, TurnStateMachine
-from .story_arc import StoryArc
+from .story_arc import Stage, StoryArc
 
 logger = logging.getLogger(__name__)
 
@@ -621,9 +621,16 @@ class SessionRunner:
                 guidance = self._story_arc.force_conclude_guidance()
             else:
                 guidance = self._story_arc.record_turn(transcript)
-            await self._send_and_buffer(
-                text=encode_arc_stage(self._story_arc.stage.value, turn_id)
+            # force_conclude_guidance() deliberately does NOT advance
+            # _turn_count/stage (it's an out-of-band final turn, not the
+            # next turn of the normal budget) -- but this reply IS the
+            # story's ending regardless, so the Story screen's progress
+            # dots must be told "done" here rather than whatever mid-story
+            # stage the arc still reports.
+            pushed_stage = (
+                Stage.DONE.value if forced_conclude else self._story_arc.stage.value
             )
+            await self._send_and_buffer(text=encode_arc_stage(pushed_stage, turn_id))
             fact_guidance = await self._animal_facts.record_turn(
                 transcript, self._story_arc.stage
             )
