@@ -76,7 +76,14 @@ struct TheEndView: View {
                     .padding(.top, 10)
                 }
                 .padding(.horizontal, 32)
-                .frame(width: geo.size.width, alignment: .top)
+                // Centered, not top-anchored -- matches the design canvas's
+                // own `justify-content:center` for this screen. Confirmed
+                // on-device: without an explicit height here, the VStack
+                // sizes to its own content and sits at the top of the
+                // GeometryReader's frame, leaving a large dead gap below
+                // "Back home" instead of balancing the empty space above
+                // and below the card the way the design intends.
+                .frame(width: geo.size.width, height: geo.size.height)
             }
         }
         .onAppear { sparkle = true }
