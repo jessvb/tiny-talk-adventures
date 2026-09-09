@@ -454,7 +454,7 @@ git commit -m "feat(ios): encode update_settings client message"
 
 - [ ] **Step 1: Write the failing test**
 
-In `ios/TinyTalkCore/Tests/TinyTalkCoreTests/SessionCoordinatorTests.swift`, add after `testListStoriesAndGetStoryUpdatePolledState`:
+In `ios/TinyTalkCore/Tests/TinyTalkCoreTests/SessionCoordinatorTests.swift`, add after `testStartResumedWaitingDittyIsANoOpIfTheTurnAlreadyFinished` (the last test currently in the file — an earlier version of this plan named a different anchor test that turned out not to exist yet in this worktree; this is the corrected, verified anchor):
 
 ```swift
     func testUpdateSettingsSendsTheControlFrame() async {
