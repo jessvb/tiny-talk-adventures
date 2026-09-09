@@ -39,9 +39,10 @@ final class AnimalFactsTests: XCTestCase {
             lifespan: "3 to 4 years"
         )
         let facts = AnimalFacts.extractFacts(from: characteristics)
-        XCTAssertEqual(facts.count, 5)
+        XCTAssertEqual(facts.count, 6)
         XCTAssertTrue(facts.contains("its most distinctive feature is its bushy tail"))
         XCTAssertTrue(facts.contains("it can move as fast as 30 mph"))
+        XCTAssertTrue(facts.contains("its lifespan is 3 to 4 years"))
     }
 
     func testExtractFactsDropsAnUnsafeField() {

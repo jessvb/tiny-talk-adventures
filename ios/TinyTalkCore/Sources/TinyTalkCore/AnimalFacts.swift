@@ -311,6 +311,7 @@ public enum AnimalFacts {
         addFact(characteristics.slogan) { $0 }
         addFact(characteristics.color) { "its coloring is \($0)" }
         addFact(characteristics.groupBehavior) { "its group behavior is \($0)" }
+        addFact(characteristics.lifespan) { "its lifespan is \($0)" }
         return facts
     }
 }
