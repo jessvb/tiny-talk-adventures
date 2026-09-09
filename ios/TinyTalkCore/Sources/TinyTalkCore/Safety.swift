@@ -7,7 +7,7 @@ public enum Safety {
     public static let safeFallback = "Hmm, let's take the story somewhere else! What should happen next?"
 
     private static let violence = [
-        "blood", "gun", "guns", "knife", "knives", "kill", "kills", "killed",
+        "blood", "gun", "guns", "knife", "knives", "kill", "kills", "killed", "killing",
         "dead", "die", "dies", "died", "fight", "fights", "fighting",
         "hurt", "hurts", "hurting", "stab", "stabbed", "stabbing",
         "shoot", "shoots", "shooting",
