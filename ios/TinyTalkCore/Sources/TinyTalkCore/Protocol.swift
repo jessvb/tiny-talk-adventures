@@ -29,6 +29,19 @@ public enum ClientMessage: Sendable, Equatable {
     /// handle_new_story(). No turn_id: mirrors protocol.py's NewStory,
     /// which isn't itself the start of a turn.
     case newStory
+    /// Request the saved-story list for the Library screen -- see
+    /// server/tinytalk/protocol.py's ListStories. No turn_id: browsing
+    /// saved stories is unrelated to live turn-taking.
+    case listStories
+    /// Request one saved story's full detail (title/pages/epilogue/
+    /// rewrite_status) for the Reading/The End screens -- see
+    /// protocol.py's GetStory.
+    case getStory(storyId: String)
+    /// The "Finish this story" menu action -- see protocol.py's
+    /// ConcludeStory. Carries a turn_id like speechStart/interrupt: it
+    /// results in one more real response_text/turn_end pair the client
+    /// must be able to attribute to a turn.
+    case concludeStory(turnId: Int)
 
     public func encode() -> String {
         // Field order and separators are fixed here (no JSONEncoder) so the
@@ -44,6 +57,12 @@ public enum ClientMessage: Sendable, Equatable {
             return #"{"type":"object_seen","label":"\#(Self.jsonEscaped(label))"}"#
         case .newStory:
             return #"{"type":"new_story"}"#
+        case .listStories:
+            return #"{"type":"list_stories"}"#
+        case .getStory(let storyId):
+            return #"{"type":"get_story","story_id":"\#(Self.jsonEscaped(storyId))"}"#
+        case .concludeStory(let turnId):
+            return #"{"type":"conclude_story","turn_id":\#(turnId)}"#
         }
     }
 
@@ -71,6 +90,20 @@ public enum ServerEvent: Sendable, Equatable {
     case responseText(String, turnId: Int)
     case turnEnd(turnId: Int)
     case error(String, turnId: Int)
+    /// A story just concluded and its background storybook rewrite has
+    /// started -- see server/tinytalk/protocol.py's encode_rewriting_started().
+    /// Carries no turn_id or story_id: see SessionCoordinator's
+    /// readyToShowTheEnd doc comment for why arrival of this event alone
+    /// is NOT sufficient to know the concluding turn's audio has finished
+    /// playing.
+    case rewritingStarted
+    /// The background rewrite finished (successfully or not) -- see
+    /// encode_rewriting_done(). Carries no story_id; the client already
+    /// knows which story it's waiting on (the most recent one) from
+    /// rewritingStarted.
+    case rewritingDone
+    case storyList([SavedStorySummary])
+    case storyDetail(SavedStoryDetail)
 }
 
 public enum ProtocolError: Error, Equatable {
@@ -97,7 +130,66 @@ public func decodeServerEvent(_ raw: String) throws -> ServerEvent {
         return .turnEnd(turnId: turnId)
     case "error":
         return .error(json["message"] as? String ?? "", turnId: turnId)
+    case "rewriting_started":
+        return .rewritingStarted
+    case "rewriting_done":
+        return .rewritingDone
+    case "story_list":
+        let rawStories = json["stories"] as? [[String: Any]] ?? []
+        return .storyList(rawStories.map(decodeStorySummary))
+    case "story_detail":
+        guard let id = json["id"] as? String else {
+            throw ProtocolError.malformed("story_detail missing id: \(raw)")
+        }
+        return .storyDetail(decodeStoryDetail(json, id: id))
     default:
         throw ProtocolError.malformed("unknown server message type: \(type)")
     }
+}
+
+/// One entry of a story_list message -- see story_store.py's
+/// list_stories(). Lenient about individual fields (matching this
+/// file's existing style, e.g. turnId's default-to-0 above): a
+/// malformed summary should degrade gracefully, not take down the
+/// whole list.
+private func decodeStorySummary(_ json: [String: Any]) -> SavedStorySummary {
+    SavedStorySummary(
+        id: json["id"] as? String ?? "",
+        title: json["title"] as? String,
+        createdAt: parseISODate(json["created_at"] as? String) ?? Date(),
+        pageCount: json["page_count"] as? Int ?? 0,
+        rewriteStatus: RewriteStatus(rawValue: json["rewrite_status"] as? String ?? "") ?? .pending
+    )
+}
+
+/// story_detail's payload -- see session.py's handle_get_story(). `id`
+/// is already validated present by the caller (decodeServerEvent);
+/// everything else defaults leniently, same reasoning as
+/// decodeStorySummary above.
+private func decodeStoryDetail(_ json: [String: Any], id: String) -> SavedStoryDetail {
+    let rawPages = json["pages"] as? [[String: Any]] ?? []
+    let pages = rawPages.map { StoryPage(text: $0["text"] as? String ?? "") }
+    return SavedStoryDetail(
+        id: id,
+        title: json["title"] as? String,
+        pages: pages,
+        epilogue: json["epilogue"] as? String,
+        rewriteStatus: RewriteStatus(rawValue: json["rewrite_status"] as? String ?? "") ?? .pending
+    )
+}
+
+/// Parses story_store.py's `datetime.now(timezone.utc).isoformat()`
+/// output (e.g. "2026-09-09T12:00:00.123456+00:00") -- includes
+/// microsecond fractional seconds, which ISO8601DateFormatter only
+/// parses with .withFractionalSeconds explicitly set. Falls back to a
+/// formatter without that option for a timestamp with no fractional part
+/// at all (e.g. the exact strings used in this file's own tests).
+private func parseISODate(_ raw: String?) -> Date? {
+    guard let raw else { return nil }
+    let withFractional = ISO8601DateFormatter()
+    withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = withFractional.date(from: raw) { return date }
+    let withoutFractional = ISO8601DateFormatter()
+    withoutFractional.formatOptions = [.withInternetDateTime]
+    return withoutFractional.date(from: raw)
 }

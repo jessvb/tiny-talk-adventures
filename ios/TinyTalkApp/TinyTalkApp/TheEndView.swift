@@ -63,7 +63,18 @@ struct TheEndView: View {
                         Text("Read it now")
                     }
                     .buttonStyle(.ttaPrimary)
+                    .disabled(detail.rewriteStatus != .done)
+                    // ChunkyButtonStyle (.ttaPrimary) never reads
+                    // isEnabled -- it only reacts to isPressed -- so
+                    // .disabled() alone would make this untappable
+                    // without looking any different. Dim it explicitly.
+                    .opacity(detail.rewriteStatus == .done ? 1 : 0.45)
                     .padding(.top, 24)
+
+                    // Same copy as LibraryView's statusCaption -- one
+                    // story's status should read identically wherever it
+                    // shows up.
+                    rewriteStatusCaption(for: detail)
 
                     Button {
                         model.goHome()
@@ -125,6 +136,28 @@ struct TheEndView: View {
                 .frame(width: 9)
         }
         .shadow(color: .black.opacity(0.45), radius: 18, y: 10)
+    }
+
+    /// Same copy LibraryView's statusCaption already uses for
+    /// .pending/.failed -- deliberately identical wording wherever a
+    /// story's rewrite status shows up. .done renders nothing here (the
+    /// epilogue above already covers that case).
+    @ViewBuilder
+    private func rewriteStatusCaption(for detail: SavedStoryDetail) -> some View {
+        switch detail.rewriteStatus {
+        case .done:
+            EmptyView()
+        case .pending:
+            Text("Elsie is still writing this one…")
+                .font(TTA.Typography.story(13, italic: true))
+                .foregroundColor(Color(hex: 0xe6dcf5))
+                .padding(.top, 6)
+        case .failed:
+            Text("Couldn't finish this storybook")
+                .font(TTA.Typography.story(13, italic: true))
+                .foregroundColor(TTA.Palette.alert)
+                .padding(.top, 6)
+        }
     }
 
     private func sparkleDot(delay: Double = 0) -> some View {
