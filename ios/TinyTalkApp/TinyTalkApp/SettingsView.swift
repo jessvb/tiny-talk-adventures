@@ -168,6 +168,7 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.ttaIcon)
                 .disabled(value <= range.lowerBound)
+                .opacity(value <= range.lowerBound ? 0.4 : 1)
 
                 Text("\(value)")
                     .font(TTA.Typography.display(17))
@@ -181,6 +182,7 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.ttaIcon)
                 .disabled(value >= range.upperBound)
+                .opacity(value >= range.upperBound ? 0.4 : 1)
             }
         }
     }
