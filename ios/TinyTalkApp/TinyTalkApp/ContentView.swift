@@ -20,6 +20,12 @@ struct ContentView: View {
                 StoryView(model: model)
             case .settings:
                 SettingsView(model: model)
+            case .library:
+                LibraryView(model: model)
+            case .reading:
+                ReadingView(model: model)
+            case .theEnd:
+                TheEndView(model: model)
             }
         }
         // Single-value closure (not the two-value oldValue/newValue form,
