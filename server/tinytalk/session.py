@@ -37,6 +37,7 @@ from .protocol import (
     SpeechEnd,
     SpeechStart,
     SynthesizePage,
+    UpdateSettings,
     decode_client_message,
     encode_arc_stage,
     encode_error,
@@ -107,7 +108,9 @@ class SessionRunner:
         self._tts = tts
         self._system_prompt = system_prompt
         self._conversation = conversation or Conversation()
-        self._story_arc = StoryArc()
+        self._target_turns = config.STORY_TARGET_TURNS
+        self._page_count = config.STORYBOOK_PAGE_COUNT
+        self._story_arc = StoryArc(target_turns=self._target_turns)
         self._animal_facts = AnimalFactTracker()
         self._object_recognition = ObjectTracker()
         self._machine = TurnStateMachine()
@@ -180,6 +183,8 @@ class SessionRunner:
                 await self.handle_get_story(story_id)
             case SynthesizePage(story_id=story_id, page_index=page_index):
                 await self.handle_synthesize_page(story_id, page_index)
+            case UpdateSettings(target_turns=target_turns, page_count=page_count):
+                await self.handle_update_settings(target_turns, page_count)
 
     async def handle_conclude_story(self, turn_id: int) -> None:
         """The "Finish this story" action: cancels whatever's in flight
@@ -228,7 +233,7 @@ class SessionRunner:
             self._stt.reset()
         self._turn_replay_buffer = []
         self._conversation = Conversation()
-        self._story_arc = StoryArc()
+        self._story_arc = StoryArc(target_turns=self._target_turns)
         self._animal_facts = AnimalFactTracker()
         self._object_recognition = ObjectTracker()
         self._machine = TurnStateMachine()
@@ -247,6 +252,25 @@ class SessionRunner:
     async def handle_list_stories(self) -> None:
         stories = story_store.list_stories()
         await self._send_text_unbuffered(encode_story_list(stories))
+
+    async def handle_update_settings(self, target_turns: int, page_count: int) -> None:
+        """Parent-adjustable story-length settings from the Settings
+        screen -- see protocol.py's UpdateSettings and this project's
+        story-length-settings design spec. Clamped here (not at decode
+        time in protocol.py) since this is a semantic/business-rule
+        bound, not a protocol-validity concern -- an out-of-range value
+        is well-formed, just outside what this app supports. Takes
+        effect for the next story only: StoryArc()/_page_count are only
+        ever read at the start of a story (see __init__, handle_new_story,
+        and _run_turn's post-conclusion reset), so there is nothing
+        in-flight to migrate."""
+        self._target_turns = max(4, min(12, target_turns))
+        self._page_count = max(3, min(10, page_count))
+        logger.info(
+            "update_settings: target_turns=%d, page_count=%d (will apply to the next story)",
+            self._target_turns,
+            self._page_count,
+        )
 
     async def handle_get_story(self, story_id: str) -> None:
         story = story_store.load_story(story_id)
@@ -715,7 +739,7 @@ class SessionRunner:
                 turns = list(self._conversation.full_history)
                 shared_facts = list(self._animal_facts.shared_facts)
                 self._conversation = Conversation()
-                self._story_arc = StoryArc()
+                self._story_arc = StoryArc(target_turns=self._target_turns)
                 self._animal_facts = AnimalFactTracker()
                 self._object_recognition = ObjectTracker()
                 if saved_path is not None:
@@ -745,7 +769,7 @@ class SessionRunner:
         try:
             await storybook.build_and_attach(
                 story_id, turns, shared_facts, llm=self._llm,
-                page_count=config.STORYBOOK_PAGE_COUNT,
+                page_count=self._page_count,
             )
         except Exception:  # noqa: BLE001 - the REWRITING gate must always release
             logger.exception("unexpected failure running storybook rewrite for %s", story_id)
