@@ -13,7 +13,7 @@ import asyncio
 import json
 import logging
 
-from . import story_store
+from . import config, safety, story_store
 from .conversation import Turn
 from .engines import EngineError, LlmEngine
 from .story_store import STORIES_DIR
@@ -132,7 +132,17 @@ async def build_and_attach(
     would be there to catch it."""
     try:
         prompt = _build_prompt(turns, shared_facts, page_count)
-        messages = [{"role": "user", "content": prompt}]
+        # Same kid-safety framing every live-turn LLM call gets (session.py
+        # prepends config.SYSTEM_PROMPT to every _run_turn call) -- the
+        # rewrite model is still a general-purpose local LLM writing content
+        # a young child will read and hear, so it needs the same "gentle
+        # and wholesome... no violence, no weapons, no death, no
+        # frightening peril" framing, not just this module's own
+        # storybook-formatting instructions.
+        messages = [
+            {"role": "system", "content": config.SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
         parts: list[str] = []
         async for chunk in llm.stream_reply(messages):
             parts.append(chunk)
@@ -149,12 +159,42 @@ async def build_and_attach(
             return
 
         title, pages, epilogue = parsed
-        # A small local model can volunteer an "epilogue" key even when the
-        # prompt never asked for one (no facts were shared) -- the spec
-        # requires the epilogue be omitted unconditionally in that case,
-        # not merely "when the model complies with the prompt."
-        if not shared_facts:
+        # The spec requires the epilogue to "always be a real fact this
+        # story actually shared, never something the small model invents
+        # fresh". A small local model can't be trusted to hold to that on
+        # its own -- even when it's handed the real facts and asked to
+        # reuse one verbatim, there is no guarantee it does. So the
+        # model's own "epilogue" text (whatever it is) is never used:
+        # when real facts exist, the epilogue is always formatted
+        # server-side straight from shared_facts, in the same phrasing
+        # style the design mock uses; when none exist, it's omitted
+        # unconditionally, regardless of what the model volunteered.
+        if shared_facts:
+            _, fact = shared_facts[0]
+            epilogue = f"And one true thing we learned: {fact}"
+        else:
             epilogue = None
+
+        # Kid-safety check -- the same safety.is_safe() gate session.py's
+        # live turns already pass through (via safety.filter_reply())
+        # before a reply is ever sent or spoken. Unlike a live turn, there
+        # is no safe fallback text to substitute here: a rewrite that
+        # fails this check is treated exactly like a parse failure -- log
+        # it, mark the story "failed", and persist nothing from the
+        # rewrite. The raw transcript (already saved, untouched) survives
+        # either way.
+        texts_to_check = [title, *(page["text"] for page in pages)]
+        if epilogue is not None:
+            texts_to_check.append(epilogue)
+        if not all(safety.is_safe(text) for text in texts_to_check):
+            logger.error(
+                "storybook rewrite for story %s failed the kid-safety check -- "
+                "discarding rather than persisting unsafe content",
+                story_id,
+            )
+            _mark_failed(story_id, stories_dir)
+            return
+
         story_store.update_story_rewrite(
             story_id,
             title=title,
