@@ -38,6 +38,13 @@ struct StoryTurn: Identifiable, Equatable {
 @MainActor
 final class AppModel: ObservableObject {
     @Published var serverAddress: String
+    /// Parent-adjustable story length -- see docs/superpowers/specs/
+    /// 2026-09-09-story-length-settings-design.md. Persisted the same
+    /// way serverAddress is; sent to the server on every connect() and
+    /// immediately on every change while connected (updateStorySettings()
+    /// below). Applies to the NEXT story only -- never retroactively.
+    @Published var storyTurnCount: Int
+    @Published var storybookPageCount: Int
     @Published var screen: AppScreen
     @Published var state: SessionState = .idle
     @Published var lastTranscript: String = ""
@@ -131,6 +138,10 @@ final class AppModel: ObservableObject {
 
     init() {
         serverAddress = UserDefaults.standard.string(forKey: "serverAddress") ?? "ws://192.168.1.1:8765"
+        let storedTurnCount = UserDefaults.standard.integer(forKey: "storyTurnCount")
+        storyTurnCount = storedTurnCount == 0 ? 7 : storedTurnCount
+        let storedPageCount = UserDefaults.standard.integer(forKey: "storybookPageCount")
+        storybookPageCount = storedPageCount == 0 ? 5 : storedPageCount
         let hasOnboarded = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
         screen = hasOnboarded ? .landing : .onboarding
     }
@@ -259,6 +270,11 @@ final class AppModel: ObservableObject {
         }
 
         isConnected = true
+        // The server's per-session settings default to its own config
+        // constants until told otherwise -- send the parent's current
+        // preference now so even the very first story of this connection
+        // uses it, not just the second one onward.
+        Task { await coordinator.updateSettings(targetTurns: storyTurnCount, pageCount: storybookPageCount) }
         startPollingState()
     }
 
@@ -349,6 +365,20 @@ final class AppModel: ObservableObject {
         let coordinatorToUpdate = coordinator
         let newValue = !isMicMuted
         Task { await coordinatorToUpdate?.setMuted(newValue) }
+    }
+
+    /// What Settings' story-length steppers call on every change -- see
+    /// storyTurnCount's doc comment. Persists immediately regardless of
+    /// connection state; sends to the server immediately only if already
+    /// connected (otherwise the persisted values go out via connect()'s
+    /// own send below, on the next connection).
+    func updateStorySettings(turnCount: Int, pageCount: Int) {
+        storyTurnCount = turnCount
+        storybookPageCount = pageCount
+        UserDefaults.standard.set(turnCount, forKey: "storyTurnCount")
+        UserDefaults.standard.set(pageCount, forKey: "storybookPageCount")
+        guard isConnected, let coordinator else { return }
+        Task { await coordinator.updateSettings(targetTurns: turnCount, pageCount: pageCount) }
     }
 
     /// Checks camera permission/availability before presenting the

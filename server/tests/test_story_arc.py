@@ -9,6 +9,15 @@ def test_new_arc_starts_at_intro_stage_and_is_not_done():
     assert arc.is_done is False
 
 
+def test_has_started_is_false_on_a_fresh_arc_and_true_after_one_turn():
+    arc = StoryArc()
+    assert arc.has_started is False
+
+    arc.record_turn("we walked into the forest")
+
+    assert arc.has_started is True
+
+
 def test_stage_progresses_through_all_boundaries_for_default_target():
     # target_turns=7: intro 1, setup 2, rising_action 3-5, climax 6-7,
     # resolution 8-10.

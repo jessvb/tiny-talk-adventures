@@ -29,6 +29,10 @@ public enum ClientMessage: Sendable, Equatable {
     /// handle_new_story(). No turn_id: mirrors protocol.py's NewStory,
     /// which isn't itself the start of a turn.
     case newStory
+    /// Parent-adjustable story-length settings from the Settings screen --
+    /// see protocol.py's UpdateSettings. Sent once after connecting and
+    /// again whenever changed while connected.
+    case updateSettings(targetTurns: Int, pageCount: Int)
 
     public func encode() -> String {
         // Field order and separators are fixed here (no JSONEncoder) so the
@@ -44,6 +48,8 @@ public enum ClientMessage: Sendable, Equatable {
             return #"{"type":"object_seen","label":"\#(Self.jsonEscaped(label))"}"#
         case .newStory:
             return #"{"type":"new_story"}"#
+        case .updateSettings(let targetTurns, let pageCount):
+            return #"{"type":"update_settings","target_turns":\#(targetTurns),"page_count":\#(pageCount)}"#
         }
     }
 
