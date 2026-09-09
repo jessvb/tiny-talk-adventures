@@ -1,10 +1,16 @@
-"""Persists a completed story's transcript to disk.
+"""Persists a completed story's transcript to disk, and reads it back.
 
-Deliberately minimal: one JSON file per story, no read/list/browse API.
-The future storybook persistence sub-project reads these files directly
--- this module exists so nothing is lost between now and then, in a
-shape that sub-project can build on without reworking this one. See
-docs/superpowers/specs/2026-08-24-story-generation-engine-design.md.
+One JSON file per story. Alongside the raw `turns` (written immediately,
+never modified after the fact), a story also carries `title`/`pages`/
+`epilogue`/`rewrite_status` -- populated later, in place, by
+storybook.py's background rewrite via update_story_rewrite(). This module
+stays pure persistence (no LLM calls, no prompt construction, no session
+orchestration -- see storybook.py and session.py for those) and now
+supports the storybook persistence sub-project's read/list needs
+directly: list_stories() for the Library screen and load_story() for the
+Reading screen, alongside save_story() and update_story_rewrite(). See
+docs/superpowers/specs/2026-08-24-story-generation-engine-design.md and
+docs/superpowers/specs/2026-09-08-storybook-persistence-design.md.
 """
 
 from __future__ import annotations
