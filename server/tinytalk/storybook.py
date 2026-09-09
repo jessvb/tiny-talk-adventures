@@ -37,6 +37,13 @@ _REWRITE_PROMPT_TEMPLATE = (
 
 _EPILOGUE_KEY = ', "epilogue": "one true, real fact from the story, in one sentence"'
 
+_SAFETY_RETRY_TEMPLATE = (
+    "That version isn't appropriate for a young child's storybook -- it "
+    "mentioned: {terms}. Rewrite the whole story again from scratch, same "
+    "characters and events, but leave out any mention of that. Reply with "
+    "ONLY the JSON object again, in the same shape as before."
+)
+
 
 def _format_transcript(turns: list[Turn]) -> str:
     lines = []
@@ -143,54 +150,86 @@ async def build_and_attach(
             {"role": "system", "content": config.SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ]
-        parts: list[str] = []
-        async for chunk in llm.stream_reply(messages):
-            parts.append(chunk)
-        raw = "".join(parts).strip()
-
-        parsed = _parse_rewrite(raw)
-        if parsed is None:
-            logger.error(
-                "storybook rewrite for story %s produced unparseable output: %r",
-                story_id,
-                raw,
-            )
-            _mark_failed(story_id, stories_dir)
-            return
-
-        title, pages, epilogue = parsed
-        # The spec requires the epilogue to "always be a real fact this
-        # story actually shared, never something the small model invents
-        # fresh". A small local model can't be trusted to hold to that on
-        # its own -- even when it's handed the real facts and asked to
-        # reuse one verbatim, there is no guarantee it does. So the
-        # model's own "epilogue" text (whatever it is) is never used:
-        # when real facts exist, the epilogue is always formatted
-        # server-side straight from shared_facts, in the same phrasing
-        # style the design mock uses; when none exist, it's omitted
-        # unconditionally, regardless of what the model volunteered.
-        if shared_facts:
-            _, fact = shared_facts[0]
-            epilogue = f"And one true thing we learned: {fact}"
-        else:
-            epilogue = None
 
         # Kid-safety check -- the same safety.is_safe() gate session.py's
         # live turns already pass through (via safety.filter_reply())
         # before a reply is ever sent or spoken. Unlike a live turn, there
-        # is no safe fallback text to substitute here: a rewrite that
-        # fails this check is treated exactly like a parse failure -- log
-        # it, mark the story "failed", and persist nothing from the
-        # rewrite. The raw transcript (already saved, untouched) survives
-        # either way.
-        texts_to_check = [title, *(page["text"] for page in pages)]
-        if epilogue is not None:
-            texts_to_check.append(epilogue)
-        if not all(safety.is_safe(text) for text in texts_to_check):
-            logger.error(
-                "storybook rewrite for story %s failed the kid-safety check -- "
-                "discarding rather than persisting unsafe content",
+        # is no safe fallback text to substitute here, so a flagged rewrite
+        # instead gets fed back to the model as a targeted correction (name
+        # the exact word(s), ask it to rewrite the whole thing again) for up
+        # to config.STORYBOOK_SAFETY_RETRY_ATTEMPTS total attempts. Only a
+        # rewrite that's still unsafe after every attempt is discarded --
+        # a parse failure is a different failure mode (already logged
+        # distinctly above) and is never retried this way. The raw
+        # transcript (already saved, untouched) survives either outcome.
+        blocked_terms: list[str] = []
+        for attempt in range(1, config.STORYBOOK_SAFETY_RETRY_ATTEMPTS + 1):
+            parts: list[str] = []
+            async for chunk in llm.stream_reply(messages):
+                parts.append(chunk)
+            raw = "".join(parts).strip()
+
+            parsed = _parse_rewrite(raw)
+            if parsed is None:
+                logger.error(
+                    "storybook rewrite for story %s produced unparseable output: %r",
+                    story_id,
+                    raw,
+                )
+                _mark_failed(story_id, stories_dir)
+                return
+
+            title, pages, epilogue = parsed
+            # The spec requires the epilogue to "always be a real fact this
+            # story actually shared, never something the small model invents
+            # fresh". A small local model can't be trusted to hold to that
+            # on its own -- even when it's handed the real facts and asked
+            # to reuse one verbatim, there is no guarantee it does. So the
+            # model's own "epilogue" text (whatever it is) is never used:
+            # when real facts exist, the epilogue is always formatted
+            # server-side straight from shared_facts, in the same phrasing
+            # style the design mock uses; when none exist, it's omitted
+            # unconditionally, regardless of what the model volunteered.
+            if shared_facts:
+                _, fact = shared_facts[0]
+                epilogue = f"And one true thing we learned: {fact}"
+            else:
+                epilogue = None
+
+            texts_to_check = [title, *(page["text"] for page in pages)]
+            if epilogue is not None:
+                texts_to_check.append(epilogue)
+            blocked_terms = sorted(
+                {term for text in texts_to_check for term in safety.find_blocked(text)}
+            )
+            if not blocked_terms:
+                break
+
+            logger.warning(
+                "storybook rewrite for story %s attempt %d/%d flagged by the "
+                "kid-safety check (%s) -- asking the model to rewrite without it",
                 story_id,
+                attempt,
+                config.STORYBOOK_SAFETY_RETRY_ATTEMPTS,
+                ", ".join(blocked_terms),
+            )
+            if attempt < config.STORYBOOK_SAFETY_RETRY_ATTEMPTS:
+                messages.append({"role": "assistant", "content": raw})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": _SAFETY_RETRY_TEMPLATE.format(
+                            terms=", ".join(blocked_terms)
+                        ),
+                    }
+                )
+
+        if blocked_terms:
+            logger.error(
+                "storybook rewrite for story %s failed the kid-safety check after "
+                "%d attempt(s) -- discarding rather than persisting unsafe content",
+                story_id,
+                config.STORYBOOK_SAFETY_RETRY_ATTEMPTS,
             )
             _mark_failed(story_id, stories_dir)
             return
