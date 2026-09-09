@@ -13,6 +13,7 @@ from tinytalk.protocol import (
     SpeechEnd,
     SpeechStart,
     SynthesizePage,
+    UpdateSettings,
     decode_client_message,
     encode_arc_stage,
     encode_error,
@@ -41,6 +42,8 @@ from tinytalk.protocol import (
         ('{"type": "synthesize_page", "story_id": "abcd1234", "page_index": 2}',
          SynthesizePage(story_id="abcd1234", page_index=2)),
         ('{"type": "conclude_story", "turn_id": 5}', ConcludeStory(turn_id=5)),
+        ('{"type": "update_settings", "target_turns": 8, "page_count": 6}',
+         UpdateSettings(target_turns=8, page_count=6)),
     ],
 )
 def test_decodes_each_client_message_type(raw, expected):
@@ -109,6 +112,23 @@ def test_decode_rejects_synthesize_page_missing_page_index():
 def test_decode_rejects_conclude_story_missing_turn_id():
     with pytest.raises(ProtocolError, match="turn_id"):
         decode_client_message('{"type": "conclude_story"}')
+
+
+def test_decode_rejects_update_settings_missing_target_turns():
+    with pytest.raises(ProtocolError, match="target_turns"):
+        decode_client_message('{"type": "update_settings", "page_count": 5}')
+
+
+def test_decode_rejects_update_settings_missing_page_count():
+    with pytest.raises(ProtocolError, match="page_count"):
+        decode_client_message('{"type": "update_settings", "target_turns": 7}')
+
+
+def test_decode_rejects_update_settings_non_integer_target_turns():
+    with pytest.raises(ProtocolError, match="target_turns"):
+        decode_client_message(
+            '{"type": "update_settings", "target_turns": "seven", "page_count": 5}'
+        )
 
 
 def test_encoders_produce_expected_payloads():
