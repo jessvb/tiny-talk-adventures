@@ -125,22 +125,29 @@ The iOS phone client's core loop (Onboarding/Landing/Story/Settings, design
 1a) is also implemented and merged — see
 `docs/superpowers/specs/2026-09-05-kid-facing-ui-design.md`.
 
-Three threads are open right now, each blocked on something other than
-more unsupervised implementation work:
+Object recognition (PR #8) and the ditty-resume-backgrounding bug (PR #11
+— root cause was `playerNode` not being reset in `rebuildCaptureTap()`)
+are both merged and closed.
 
-- **Object recognition** (PR #8, branch `worktree-object-recognition`):
-  code-complete, swaps in a bundled FastViT Core ML model and fixes a
-  story-weave-in bug found on-device. Blocked on the user confirming the
-  last on-device test (does the recognized object's identity survive into
-  the next story turn) and merging.
-- **A backgrounding bug** (worktree `ditty-resume-backgrounding`, no PR
-  yet): the waiting "ditty" doesn't always resume after the app is
-  backgrounded and foregrounded. Mid systematic-debugging — evidence
-  logging has been added (a debug-log panel in Settings) but the bug
-  hasn't been reproduced with it yet. Blocked on an on-device repro
-  session.
-- **Library / Reading / The End screens:** deferred when the core loop UI
-  shipped (PR #9) because the server has no arc-stage wire message, no
-  story-conclude action, and no read/list API in `story_store.py`. This is
+Storybook persistence is also now implemented on both sides:
+`server/tinytalk/storybook.py`'s background rewrite pipeline (title/pages/
+epilogue from a saved story's transcript, gated by a `REWRITING` session
+state so it never runs concurrently with a live story's LLM turns) plus
+the arc-stage wire message, story-conclude action, and read/list API in
+`story_store.py` are merged (PR #13) — see
+`docs/superpowers/specs/2026-09-08-storybook-persistence-design.md`. The
+iOS Library/Reading/The End screens (PR #12) are merged too, but still
+wired to **mock data only**, not this real server API.
+
+Two threads are open right now, each blocked on something other than more
+unsupervised implementation work:
+
+- **On-device verification of the storybook rewrite pipeline.** It has
+  never been exercised against the real local `qwen3.5:9b` model — only
+  against fakes in the test suite. Blocked on an on-device session: play
+  one full story to conclusion and confirm the rewrite actually completes
+  (`rewrite_status: "done"`).
+- **Wiring the iOS screens to the real server API** (`list_stories`,
+  `get_story`, `synthesize_page`) instead of `MockStories.swift`. This is
   a new sub-project and needs a `superpowers:brainstorming` session and an
   approved spec before implementation, per "Working process" above.
