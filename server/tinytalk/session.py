@@ -110,7 +110,8 @@ class SessionRunner:
         self._conversation = conversation or Conversation()
         self._target_turns = config.STORY_TARGET_TURNS
         self._page_count = config.STORYBOOK_PAGE_COUNT
-        self._story_arc = StoryArc(target_turns=self._target_turns)
+        self._story_page_count = config.STORYBOOK_PAGE_COUNT
+        self._begin_story()
         self._animal_facts = AnimalFactTracker()
         self._object_recognition = ObjectTracker()
         self._machine = TurnStateMachine()
@@ -233,7 +234,7 @@ class SessionRunner:
             self._stt.reset()
         self._turn_replay_buffer = []
         self._conversation = Conversation()
-        self._story_arc = StoryArc(target_turns=self._target_turns)
+        self._begin_story()
         self._animal_facts = AnimalFactTracker()
         self._object_recognition = ObjectTracker()
         self._machine = TurnStateMachine()
@@ -253,6 +254,19 @@ class SessionRunner:
         stories = story_store.list_stories()
         await self._send_text_unbuffered(encode_story_list(stories))
 
+    def _begin_story(self) -> None:
+        """One place where a story's settings are captured -- the arc's
+        target_turns and the page count its eventual rewrite will use.
+        See handle_update_settings for why this is also called from
+        there (a change made while no story is in progress must still
+        reach the next one, and __init__'s own StoryArc construction
+        only ever runs once per SERVER PROCESS -- session.py's
+        SessionRunner is a long-lived singleton rebind_transport() reuses
+        across every connection, not something built fresh per
+        connection, see app.py's serve())."""
+        self._story_arc = StoryArc(target_turns=self._target_turns)
+        self._story_page_count = self._page_count
+
     async def handle_update_settings(self, target_turns: int, page_count: int) -> None:
         """Parent-adjustable story-length settings from the Settings
         screen -- see protocol.py's UpdateSettings and this project's
@@ -266,6 +280,16 @@ class SessionRunner:
         in-flight to migrate."""
         self._target_turns = max(4, min(12, target_turns))
         self._page_count = max(3, min(10, page_count))
+        # __init__'s arc/page-count capture happens once per SERVER
+        # PROCESS (see _begin_story's own doc comment), and the
+        # post-conclusion reset captures the next story's settings
+        # before the parent has had any chance to change anything -- so
+        # "applies to the next story" needs the not-yet-started arc (and
+        # its page count) rebuilt here too. An arc mid-story
+        # (has_started) is deliberately left alone -- that's the "never
+        # retroactively" half of the requirement.
+        if not self._story_arc.has_started:
+            self._begin_story()
         logger.info(
             "update_settings: target_turns=%d, page_count=%d (will apply to the next story)",
             self._target_turns,
@@ -739,7 +763,7 @@ class SessionRunner:
                 turns = list(self._conversation.full_history)
                 shared_facts = list(self._animal_facts.shared_facts)
                 self._conversation = Conversation()
-                self._story_arc = StoryArc(target_turns=self._target_turns)
+                self._begin_story()
                 self._animal_facts = AnimalFactTracker()
                 self._object_recognition = ObjectTracker()
                 if saved_path is not None:
@@ -769,7 +793,7 @@ class SessionRunner:
         try:
             await storybook.build_and_attach(
                 story_id, turns, shared_facts, llm=self._llm,
-                page_count=self._page_count,
+                page_count=self._story_page_count,
             )
         except Exception:  # noqa: BLE001 - the REWRITING gate must always release
             logger.exception("unexpected failure running storybook rewrite for %s", story_id)

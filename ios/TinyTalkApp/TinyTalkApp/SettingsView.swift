@@ -1,12 +1,12 @@
 import SwiftUI
 
-/// Grown-up settings screen (design 1a). The design's "Story length" /
-/// "Elsie's voice speed" / "Real animal facts" / "Camera inspiration" rows
-/// are omitted here -- none are backed by any client-controllable setting
-/// today (those are server env vars, not wire-protocol-exposed), and this
-/// project's own conventions call for no fabricated toggles that don't do
-/// anything. "Under the hood" instead surfaces real debug data that already
-/// existed in the bare-bones harness (state/turn id/latency/debug log).
+/// Grown-up settings screen (design 1a). The design's "Elsie's voice speed" /
+/// "Real animal facts" / "Camera inspiration" rows are omitted here -- none
+/// are backed by any client-controllable setting today (those are server env
+/// vars, not wire-protocol-exposed), and this project's own conventions call
+/// for no fabricated toggles that don't do anything. "Under the hood" instead
+/// surfaces real debug data that already existed in the bare-bones harness
+/// (state/turn id/latency/debug log).
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     /// Reached only via a long-press on "UNDER THE HOOD" below, not a

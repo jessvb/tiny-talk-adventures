@@ -1093,8 +1093,45 @@ async def test_handle_update_settings_clamps_values_below_the_range(transport):
 async def test_update_settings_does_not_change_the_currently_in_progress_story(transport):
     """Confirms the spec's "applies to the next story, never retroactively"
     requirement: an already-constructed StoryArc keeps its original
-    target_turns even after update_settings arrives mid-story."""
+    target_turns even after update_settings arrives mid-story.
+
+    A fresh, never-started session's arc does NOT count as "in progress"
+    -- see StoryArc.has_started and handle_update_settings's rebuild-if-
+    not-started fix -- so this test must actually advance the arc past
+    its first turn first, the same way
+    test_handle_update_settings_mid_story_does_not_rebuild_the_in_progress_arc
+    below does, or it would (incorrectly) exercise the "before any story
+    starts" path instead of the "mid-story" one this test is named for."""
     session = make_session(transport)
+    await run_full_turn(session)  # advances _story_arc._turn_count past 0
+    original_target = session._story_arc._target_turns
+    await session.handle_text(
+        '{"type": "update_settings", "target_turns": 4, "page_count": 3}'
+    )
+    assert session._story_arc._target_turns == original_target
+
+
+async def test_handle_update_settings_before_any_story_starts_rebuilds_the_arc(transport):
+    """The bug this guards against: SessionRunner is a process-wide
+    singleton (see app.py's serve()/build_session()) -- __init__'s
+    StoryArc() construction runs once per SERVER PROCESS, not once per
+    connection. Before this fix, a setting changed while no story was in
+    progress (the natural parent flow: Settings -> change value -> back
+    -> start a story) never reached the next story at all."""
+    session = make_session(transport)
+    await session.handle_text(
+        '{"type": "update_settings", "target_turns": 4, "page_count": 3}'
+    )
+    assert session._story_arc._target_turns == 4
+    assert session._story_page_count == 3
+
+
+async def test_handle_update_settings_mid_story_does_not_rebuild_the_in_progress_arc(transport):
+    """The other half: a change arriving once a story has genuinely
+    started must NOT retroactively alter that story's own pacing --
+    only the has_started check in handle_update_settings prevents this."""
+    session = make_session(transport)
+    await run_full_turn(session)  # advances _story_arc._turn_count past 0
     original_target = session._story_arc._target_turns
     await session.handle_text(
         '{"type": "update_settings", "target_turns": 4, "page_count": 3}'
