@@ -63,8 +63,12 @@ POST_DISCONNECT_DRAIN_SECONDS = 20.0
 # -- and at roughly 4x realtime (measured on this hardware), waste that
 # actively builds the backlog this whole design exists to avoid.
 # speech_end is deliberately NOT in this set: the audio queued ahead of it
-# is exactly that utterance's content.
-_UTTERANCE_ABANDONING_TYPES = frozenset({"speech_start", "interrupt", "new_story"})
+# is exactly that utterance's content. conclude_story belongs here too --
+# SessionRunner.handle_conclude_story() resets STT and abandons an
+# in-progress utterance exactly like an interrupt does (see session.py).
+_UTTERANCE_ABANDONING_TYPES = frozenset(
+    {"speech_start", "interrupt", "new_story", "conclude_story"}
+)
 
 
 def _abandons_queued_utterance(raw: str) -> bool:
@@ -183,6 +187,7 @@ async def handle_connection(
     # a turn that finished (or made partial progress) while nobody was
     # connected to hear it. A no-op if there's nothing buffered.
     await session.replay_last_turn()
+    await session.resend_current_status()
 
     # A deque rather than an asyncio.Queue purely because a barge-in needs
     # to remove already-queued audio from the middle (see the reader loop);

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 from unittest.mock import patch
+from pathlib import Path
 
 from conftest import FakeLlm, FakeStt, FakeTts
 from tinytalk import config
@@ -12,6 +13,7 @@ from tinytalk.engines import EngineError
 from tinytalk.llm_groq import GroqLlm
 from tinytalk.llm_ollama import OllamaLlm
 from tinytalk.session import SessionRunner
+from tinytalk.state import State
 from websockets.exceptions import ConnectionClosedError
 
 
@@ -184,6 +186,36 @@ async def test_reconnecting_after_a_disconnect_mid_turn_replays_the_buffered_rep
     assert audio_frames, "the reply's audio must be replayed too, not just its text"
 
 
+async def test_reconnecting_while_rewriting_repushes_rewriting_started(monkeypatch):
+    first_socket = FakeWebSocket(
+        ['{"type": "speech_start", "turn_id": 1}', b"\x01\x02", '{"type": "speech_end"}']
+    )
+    session = SessionRunner(
+        transport=WebSocketTransport(first_socket),
+        stt=FakeStt(),
+        llm=FakeLlm(chunks=["The end."]),
+        tts=FakeTts(),
+        system_prompt="be kind",
+    )
+    # Prevent story_store.save_story() from writing to disk
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.save_story",
+        lambda conversation, **kwargs: Path("20260101T000000-fakestory0.json"),
+    )
+    await handle_connection(first_socket, session=session)
+    await session.wait_for_turn()
+    assert session.state is State.REWRITING
+
+    second_socket = FakeWebSocket([])  # the child reopens the app mid-rewrite
+    await handle_connection(second_socket, session=session)
+
+    text_frames = [item for item in second_socket.sent if isinstance(item, str)]
+    assert any('"type": "rewriting_started"' in frame for frame in text_frames), (
+        "reconnecting mid-rewrite must tell the client it can't start a new "
+        "story yet"
+    )
+
+
 async def test_a_third_connection_still_gets_the_reply_replayed_if_the_second_died_fast():
     # Real bug, found on real hardware: an EARLIER version consumed the
     # replay buffer on first use, so a reconnect that itself died quickly
@@ -315,6 +347,9 @@ class SlowSession:
     async def replay_last_turn(self) -> None:
         return None
 
+    async def resend_current_status(self) -> None:
+        return None
+
     async def _work(self, item: str | bytes) -> None:
         await asyncio.sleep(self.per_message_delay)
         self.handled.append(item)
@@ -369,6 +404,24 @@ async def test_a_barge_in_discards_audio_still_queued_for_the_abandoned_utteranc
     await handle_connection(socket, session=session)
 
     assert session.handled == ['{"type":"interrupt","turn_id":2}', *fresh]
+
+
+async def test_a_conclude_story_discards_audio_still_queued_for_the_abandoned_utterance():
+    """conclude_story ("Finish this story") resets STT and abandons an
+    in-progress utterance exactly like an interrupt does (see
+    SessionRunner.handle_conclude_story) -- so audio queued ahead of it
+    is just as much waste to decode as audio queued ahead of an interrupt.
+    Without "conclude_story" in _UTTERANCE_ABANDONING_TYPES, this stale
+    audio would be fed to STT anyway, wasting real decode time on audio
+    about to be thrown away regardless."""
+    stale: list[str | bytes] = [f"stale-{i}".encode() for i in range(8)]
+    fresh: list[str | bytes] = [f"fresh-{i}".encode() for i in range(3)]
+    socket = FakeWebSocket([*stale, '{"type":"conclude_story","turn_id":9}', *fresh])
+    session = SlowSession(per_message_delay=0)
+
+    await handle_connection(socket, session=session)
+
+    assert session.handled == ['{"type":"conclude_story","turn_id":9}', *fresh]
 
 
 async def test_a_flooded_queue_drops_audio_but_never_control_frames():

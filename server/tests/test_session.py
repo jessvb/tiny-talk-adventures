@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import json
+from pathlib import Path
 
 from conftest import FailingLlm, FakeLlm, FakeStt, FakeTransport, FakeTts
 from tinytalk.conversation import INTERRUPTED_MARKER
@@ -12,6 +13,79 @@ from tinytalk.state import Event, State
 SPEECH_START = '{"type": "speech_start", "turn_id": 1}'
 SPEECH_END = '{"type": "speech_end"}'
 INTERRUPT = '{"type": "interrupt", "turn_id": 2}'
+
+# _run_rewrite() (session.py) hands storybook.build_and_attach() the
+# session's own LLM engine, so anything that lets a fake rewrite complete
+# with zero genuine suspension can run to full completion inside the very
+# next event-loop iteration after the concluding turn's own task finishes
+# -- before a test's own `await wait_for_turn()`/`handle_text(...)` call
+# ever gets scheduled back in. That races out of existence exactly what
+# several tests below need to observe (REWRITING still in progress) -- not
+# because the REWRITING gate is broken, but because nothing gave the
+# rewrite task a genuine suspension point to still be parked at. A real
+# LLM call always takes real wall-clock time, so this can't happen outside
+# tests; _fake_build_and_attach() below uses this as its default delay to
+# restore that realism wherever a test needs it.
+_REWRITE_LLM_DELAY = 0.05
+
+# server/data/stories/ is the REAL directory the Library screen (Task
+# 10/11) will read from in production. story_store.save_story()'s
+# `stories_dir` default -- and storybook.build_and_attach()'s, and
+# story_store.update_story_rewrite()'s -- are all bound to STORIES_DIR at
+# their *function-definition* time (module import), so
+# monkeypatch.setattr(story_store, "STORIES_DIR", tmp_path) does nothing
+# for already-defined functions: every test below that reaches a
+# conclusion must instead replace save_story/build_and_attach themselves
+# (the same pattern test_reaching_story_done_saves_and_resets_conversation_and_arc
+# already uses above), or it writes real files into that real directory.
+_FAKE_SAVED_PATH = Path("20260101T000000-fakestory0.json")
+
+
+def _fake_save_story(conversation, **kwargs):
+    return _FAKE_SAVED_PATH
+
+
+def _stories_dir_list_stories(stories_dir):
+    """A stand-in for story_store.list_stories that closes over
+    stories_dir, for the same reason _fake_save_story exists above:
+    list_stories()'s own `stories_dir` default is bound to the real
+    STORIES_DIR at story_store's *function-definition* time, so
+    monkeypatch.setattr(story_store, "STORIES_DIR", tmp_path) does
+    nothing for it -- the function itself must be replaced. Captures the
+    real function up front (rather than looking up story_store.list_stories
+    again inside the lambda) because the caller immediately monkeypatches
+    that very attribute to be this lambda -- a late lookup would resolve
+    to itself and recurse with the wrong signature."""
+    from tinytalk import story_store
+
+    original = story_store.list_stories
+    return lambda: original(stories_dir=stories_dir)
+
+
+def _stories_dir_load_story(stories_dir):
+    """Same fix as _stories_dir_list_stories above, for load_story."""
+    from tinytalk import story_store
+
+    original = story_store.load_story
+    return lambda story_id: original(story_id, stories_dir=stories_dir)
+
+
+def _fake_build_and_attach(delay: float = _REWRITE_LLM_DELAY):
+    """A stand-in for storybook.build_and_attach, for tests that need the
+    REWRITING gate's real lifecycle (a background task genuinely in
+    flight, then releasing on completion) without it ever calling
+    story_store.update_story_rewrite for real. `delay` keeps the task
+    genuinely suspended (a real asyncio.sleep, not a call_soon-only no-op)
+    for as long as a test needs to observe REWRITING before it completes
+    -- see _REWRITE_LLM_DELAY's own comment above for why that matters;
+    pass delay=0 for a test that only cares about the eventual release,
+    already awaited via wait_for_rewrite()."""
+
+    async def _fake(*args, **kwargs):
+        if delay:
+            await asyncio.sleep(delay)
+
+    return _fake
 
 
 def make_session(transport, *, stt=None, llm=None, tts=None) -> SessionRunner:
@@ -39,6 +113,7 @@ async def test_full_turn_emits_transcript_response_audio_and_turn_end(transport)
 
     assert transport.types() == [
         "transcript_final",
+        "arc_stage",
         "response_text",
         "turn_end",
     ]
@@ -60,8 +135,8 @@ async def test_every_event_in_a_turn_carries_the_speech_starts_turn_id(transport
     await session.handle_text(SPEECH_END)
     await session.wait_for_turn()
 
-    assert transport.types() == ["transcript_final", "response_text", "turn_end"]
-    for kind in ("transcript_final", "response_text", "turn_end"):
+    assert transport.types() == ["transcript_final", "arc_stage", "response_text", "turn_end"]
+    for kind in ("transcript_final", "arc_stage", "response_text", "turn_end"):
         assert transport.messages_of_type(kind)[0]["turn_id"] == 42
     assert session.current_turn_id == 42
 
@@ -351,7 +426,7 @@ async def test_empty_transcript_still_gets_a_graceful_llm_reply_instead_of_silen
     # No fake child utterance was added to history for the empty transcript.
     assert not any(turn.speaker == "child" for turn in session.conversation.turns)
     assert session.state is State.IDLE
-    assert transport.types() == ["transcript_final", "response_text", "turn_end"]
+    assert transport.types() == ["transcript_final", "arc_stage", "response_text", "turn_end"]
     assert transport.messages_of_type("transcript_final")[0]["text"] == "   "
 
 
@@ -380,7 +455,7 @@ async def test_llm_returning_an_empty_reply_still_gets_a_spoken_fallback(transpo
 
     assert transport.messages_of_type("response_text")[0]["text"] == SAFE_FALLBACK
     assert tts.spoken, "a fallback reply must still be synthesized and spoken, not silently skipped"
-    assert transport.types() == ["transcript_final", "response_text", "turn_end"]
+    assert transport.types() == ["transcript_final", "arc_stage", "response_text", "turn_end"]
     assert session.state is State.IDLE
 
 
@@ -450,7 +525,7 @@ async def test_handle_disconnect_while_waiting_for_reply_lets_the_turn_keep_runn
 
     assert tts.cancelled is False
     await session.wait_for_turn()
-    assert transport.types() == ["transcript_final", "response_text", "turn_end"]
+    assert transport.types() == ["transcript_final", "arc_stage", "response_text", "turn_end"]
     assert session.state is State.IDLE
 
 
@@ -462,7 +537,7 @@ async def test_replay_last_turn_resends_the_buffered_reply_on_a_fresh_transport(
     session.rebind_transport(other_transport)
     await session.replay_last_turn()
 
-    assert other_transport.types() == ["response_text", "turn_end"]
+    assert other_transport.types() == ["arc_stage", "response_text", "turn_end"]
     assert other_transport.audio == transport.audio
 
 
@@ -493,13 +568,13 @@ async def test_replay_last_turn_can_replay_to_multiple_reconnects_in_a_row(trans
     await run_full_turn(session)
     session.rebind_transport(other_transport)
     await session.replay_last_turn()
-    assert other_transport.types() == ["response_text", "turn_end"]
+    assert other_transport.types() == ["arc_stage", "response_text", "turn_end"]
 
     yet_another_transport = FakeTransport()
     session.rebind_transport(yet_another_transport)
     await session.replay_last_turn()
 
-    assert yet_another_transport.types() == ["response_text", "turn_end"], (
+    assert yet_another_transport.types() == ["arc_stage", "response_text", "turn_end"], (
         "a second reconnect (e.g. the first one died before the child could "
         "actually hear it) must still get the reply replayed"
     )
@@ -977,3 +1052,484 @@ async def test_new_story_says_so_in_the_log(caplog, transport):
     assert any("new story" in message.lower() for message in messages), (
         f"starting a new story must be visible in the log; got {messages}"
     )
+
+
+CONCLUDE = '{"type": "conclude_story", "turn_id": 9}'
+
+
+async def test_conclude_story_forces_a_final_reply_without_a_real_utterance(transport, monkeypatch):
+    # The first ("normal") turn's reply must NOT itself contain a natural
+    # conclusion phrase (see story_arc._CONCLUSION_PHRASES) -- otherwise
+    # run_full_turn() would already conclude/reset/enter REWRITING before
+    # CONCLUDE is even sent, defeating "a normal turn first, so there's a
+    # story in progress" below. The forced-conclude reply is swapped in
+    # afterward. save_story is faked -> None: this test only cares about
+    # the forced turn's own LLM call and its turn_end, not the REWRITING
+    # gate's own lifecycle, so a real save (and the real background
+    # rewrite it would kick off) has nothing to do with what's being
+    # tested here -- see _fake_save_story's comment above.
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.save_story", lambda conversation, **kwargs: None
+    )
+    llm = FakeLlm(chunks=["The fox found a shiny red apple."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)  # a normal turn first, so there's a story in progress
+
+    llm.chunks = ["The fox went home. The end."]
+    calls_before = len(llm.calls)
+    await session.handle_text(CONCLUDE)
+    await session.wait_for_turn()
+
+    # The forced turn's system prompt carries the same forced-conclusion
+    # guidance already used for a grace-ceiling-forced ending. Indexed by
+    # calls_before, not [-1], as defense in depth: with save_story faked
+    # to return None here, no background rewrite is ever scheduled for
+    # the forced-conclude turn either (see _run_turn's `saved_path is
+    # None` branch), so llm.calls never grows past what this turn itself
+    # adds -- but indexing by count avoids relying on that as an implicit
+    # assumption of what this assertion is checking.
+    forced_messages = llm.calls[calls_before]
+    assert "This must be the last reply" in forced_messages[0]["content"]
+    assert transport.messages_of_type("turn_end")[-1]["turn_id"] == 9
+
+
+async def test_conclude_story_marks_the_story_done_even_if_the_reply_omits_the_end(transport, monkeypatch):
+    # Deliberately a reply that would NOT be caught by natural
+    # phrase-detection -- proves mark_done() is unconditional.
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.save_story", lambda conversation, **kwargs: None
+    )
+    llm = FakeLlm(chunks=["The fox curled up and slept soundly."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+
+    await session.handle_text(CONCLUDE)
+    await session.wait_for_turn()
+
+    # A concluded story resets the conversation -- the next turn starts fresh.
+    assert session.conversation.turns == ()
+
+
+async def test_conclude_story_cancels_an_in_flight_turn_first(transport, monkeypatch):
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.save_story", lambda conversation, **kwargs: None
+    )
+    llm = FakeLlm(chunks=["slow reply"], delay=10)
+    session = make_session(transport, llm=llm)
+    await session.handle_text(SPEECH_START)
+    await session.handle_audio(b"\x01\x02")
+    await session.handle_text(SPEECH_END)
+    await asyncio.sleep(0.01)  # let the slow turn actually start
+
+    await session.handle_text(CONCLUDE)
+    await session.wait_for_turn()
+
+    assert llm.cancelled is True
+
+
+async def test_conclude_story_does_not_trigger_the_stt_failure_guidance(transport, monkeypatch):
+    # Same latent issue as test_conclude_story_forces_a_final_reply_without_a_real_utterance
+    # above, fixed the same way: the first ("normal") turn's reply must not
+    # itself already conclude the story, and llm.calls is indexed by a
+    # captured count rather than [-1] (see that test's comment for the
+    # full reasoning). save_story is faked -> None for the same
+    # not-what's-being-tested-here reason.
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.save_story", lambda conversation, **kwargs: None
+    )
+    llm = FakeLlm(chunks=["The fox found a shiny red apple."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+
+    llm.chunks = ["The end."]
+    calls_before = len(llm.calls)
+    await session.handle_text(CONCLUDE)
+    await session.wait_for_turn()
+
+    forced_messages = llm.calls[calls_before]
+    assert "didn't hear anything new" not in forced_messages[0]["content"]
+
+
+async def test_conclude_story_pushes_the_done_arc_stage_regardless_of_actual_progress(
+    transport, monkeypatch
+):
+    """force_conclude_guidance() deliberately does NOT advance the story
+    arc's turn count/stage (see StoryArc.force_conclude_guidance's own
+    docstring) -- but this exact reply IS the story's ending. The Story
+    screen's progress-dots UI (arc_stage's whole reason for existing) must
+    show "done" for this turn, not whatever mid-story stage the arc
+    happened to be sitting at when the conclude was requested."""
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.save_story", lambda conversation, **kwargs: None
+    )
+    llm = FakeLlm(chunks=["The fox found a shiny red apple."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)  # a normal turn first -- arc is mid-story, not done
+    # Confirms the setup: the arc is genuinely NOT done yet -- if it were,
+    # this test wouldn't distinguish "always pushes the arc's real stage"
+    # from "always pushes done" and would be a false positive either way.
+    assert transport.messages_of_type("arc_stage")[-1]["stage"] != "done"
+
+    llm.chunks = ["The fox went home."]
+    await session.handle_text(CONCLUDE)
+    await session.wait_for_turn()
+
+    assert transport.messages_of_type("arc_stage")[-1]["stage"] == "done"
+
+
+async def test_a_concluding_turn_enters_rewriting_and_pushes_rewriting_started(transport, monkeypatch):
+    monkeypatch.setattr("tinytalk.session.story_store.save_story", _fake_save_story)
+    monkeypatch.setattr(
+        "tinytalk.session.storybook.build_and_attach", _fake_build_and_attach()
+    )
+    llm = FakeLlm(chunks=["The end."])
+    session = make_session(transport, llm=llm)
+
+    await run_full_turn(session)
+
+    assert session.state is State.REWRITING
+    assert "rewriting_started" in transport.types()
+
+
+async def test_rewriting_releases_back_to_idle_once_the_rewrite_finishes(transport, monkeypatch):
+    monkeypatch.setattr("tinytalk.session.story_store.save_story", _fake_save_story)
+    monkeypatch.setattr(
+        "tinytalk.session.storybook.build_and_attach", _fake_build_and_attach()
+    )
+    llm = FakeLlm(chunks=["The end."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+    assert session.state is State.REWRITING
+
+    await session.wait_for_rewrite()
+
+    assert session.state is State.IDLE
+    assert "rewriting_done" in transport.types()
+
+
+async def test_rewriting_releases_even_when_the_rewrite_itself_raises(transport, monkeypatch):
+    async def raising_build_and_attach(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("tinytalk.session.story_store.save_story", _fake_save_story)
+    monkeypatch.setattr(
+        "tinytalk.session.storybook.build_and_attach", raising_build_and_attach
+    )
+    llm = FakeLlm(chunks=["The end."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+
+    await session.wait_for_rewrite()
+
+    assert session.state is State.IDLE
+
+
+async def test_speech_start_is_a_no_op_while_rewriting(transport, monkeypatch):
+    monkeypatch.setattr("tinytalk.session.story_store.save_story", _fake_save_story)
+    monkeypatch.setattr(
+        "tinytalk.session.storybook.build_and_attach", _fake_build_and_attach()
+    )
+    llm = FakeLlm(chunks=["The end."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+    assert session.state is State.REWRITING
+    before_turn_id = session.current_turn_id
+
+    await session.handle_text('{"type": "speech_start", "turn_id": 999}')
+
+    assert session.state is State.REWRITING
+    assert session.current_turn_id == before_turn_id
+
+
+async def test_new_story_is_a_no_op_while_rewriting(transport, monkeypatch):
+    monkeypatch.setattr("tinytalk.session.story_store.save_story", _fake_save_story)
+    monkeypatch.setattr(
+        "tinytalk.session.storybook.build_and_attach", _fake_build_and_attach()
+    )
+    llm = FakeLlm(chunks=["The end."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+    assert session.state is State.REWRITING
+
+    await session.handle_new_story()
+
+    assert session.state is State.REWRITING
+
+
+async def test_interrupt_is_a_no_op_while_rewriting(transport, monkeypatch):
+    monkeypatch.setattr("tinytalk.session.story_store.save_story", _fake_save_story)
+    monkeypatch.setattr(
+        "tinytalk.session.storybook.build_and_attach", _fake_build_and_attach()
+    )
+    llm = FakeLlm(chunks=["The end."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+    assert session.state is State.REWRITING
+
+    await session.handle_text('{"type": "interrupt", "turn_id": 999}')
+
+    assert session.state is State.REWRITING
+
+
+async def test_conclude_story_is_a_no_op_while_rewriting(transport, monkeypatch):
+    # Not part of the brief's own Step 1 list, but the same gate applies
+    # for the same reason: handle_conclude_story() unconditionally spawns
+    # a forced-conclude _run_turn task (a real LLM call) once _transition()
+    # runs, and (State.REWRITING, Event.CONCLUDE) isn't a defined
+    # transition -- so without this early guard, _transition()'s existing
+    # swallow-and-log behavior would leave the state stuck at REWRITING
+    # while STILL letting a competing LLM turn start, defeating the whole
+    # point of this task (see storybook.py's module docstring: "this call
+    # never competes with a live story's own LLM turns for the same local
+    # Ollama process").
+    monkeypatch.setattr("tinytalk.session.story_store.save_story", _fake_save_story)
+    monkeypatch.setattr(
+        "tinytalk.session.storybook.build_and_attach", _fake_build_and_attach()
+    )
+    llm = FakeLlm(chunks=["The end."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+    assert session.state is State.REWRITING
+
+    await session.handle_text('{"type": "conclude_story", "turn_id": 999}')
+
+    assert session.state is State.REWRITING
+    assert session._turn_task is None or session._turn_task.done()
+
+
+async def test_speech_start_works_again_once_rewriting_finishes(transport, monkeypatch):
+    monkeypatch.setattr("tinytalk.session.story_store.save_story", _fake_save_story)
+    monkeypatch.setattr(
+        "tinytalk.session.storybook.build_and_attach", _fake_build_and_attach(delay=0)
+    )
+    llm = FakeLlm(chunks=["The end."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+    await session.wait_for_rewrite()
+    assert session.state is State.IDLE
+
+    await session.handle_text('{"type": "speech_start", "turn_id": 5}')
+
+    assert session.state is State.LISTENING
+
+
+async def test_a_non_concluding_turn_does_not_enter_rewriting(transport):
+    llm = FakeLlm(chunks=["Let's keep going."])
+    session = make_session(transport, llm=llm)
+
+    await run_full_turn(session)
+
+    assert session.state is State.IDLE
+    assert "rewriting_started" not in transport.types()
+
+
+async def test_resend_current_status_repushes_rewriting_started(transport, monkeypatch):
+    monkeypatch.setattr("tinytalk.session.story_store.save_story", _fake_save_story)
+    monkeypatch.setattr(
+        "tinytalk.session.storybook.build_and_attach", _fake_build_and_attach()
+    )
+    llm = FakeLlm(chunks=["The end."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+    transport.text.clear()
+
+    await session.resend_current_status()
+
+    assert "rewriting_started" in transport.types()
+
+
+async def test_rewriting_gate_releases_if_turn_end_send_fails(transport):
+    # Regression test: between _transition(Event.REWRITE_STARTED) and
+    # _rewrite_task's own creation, _run_turn still has two sends that can
+    # raise (encode_turn_end here, encode_rewriting_started in the test
+    # below) -- if either does (e.g. a dead transport), it lands in
+    # _fail_turn with state already REWRITING but no rewrite task ever
+    # scheduled to release it. Without _fail_turn's own REWRITING
+    # handling, that's a permanent lockout: every action handler now
+    # gates on REWRITING, so nothing could ever recover the session short
+    # of a server restart.
+    class TurnEndFailsTransport(FakeTransport):
+        async def send_text(self, payload: str) -> None:
+            if json.loads(payload)["type"] == "turn_end":
+                raise RuntimeError("socket closed")
+            await super().send_text(payload)
+
+    llm = FakeLlm(chunks=["The end."])
+    session = make_session(TurnEndFailsTransport(), llm=llm)
+
+    await run_full_turn(session)
+
+    assert session.state is State.IDLE
+
+
+async def test_rewriting_gate_releases_if_rewriting_started_send_fails(transport, monkeypatch):
+    # The second (later, more dangerous) of the two failure points named
+    # above: this one lands after the story is already saved and
+    # conversation/arc/animal-facts/object-tracker are already reset, but
+    # still before _rewrite_task is created -- so without _fail_turn's fix,
+    # the session would be stuck REWRITING with no story data left AND no
+    # rewrite task that could ever release it.
+    class RewritingStartedFailsTransport(FakeTransport):
+        async def send_text(self, payload: str) -> None:
+            if json.loads(payload)["type"] == "rewriting_started":
+                raise RuntimeError("socket closed")
+            await super().send_text(payload)
+
+    monkeypatch.setattr("tinytalk.session.story_store.save_story", _fake_save_story)
+    llm = FakeLlm(chunks=["The end."])
+    session = make_session(RewritingStartedFailsTransport(), llm=llm)
+
+    await run_full_turn(session)
+
+    assert session.state is State.IDLE
+
+
+# Read-only story browsing (Library/Reading screens) -- list_stories/
+# get_story/synthesize_page have nothing to do with the live turn-taking
+# state machine and must work regardless of session state. Every test here
+# redirects story_store.list_stories/load_story via
+# _stories_dir_list_stories/_stories_dir_load_story rather than
+# monkeypatch.setattr(story_store, "STORIES_DIR", tmp_path) -- see those
+# helpers' docstrings above for why the latter silently does nothing.
+
+
+async def test_list_stories_returns_saved_summaries(transport, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.list_stories", _stories_dir_list_stories(tmp_path)
+    )
+    from tinytalk.story_store import save_story
+    from tinytalk.conversation import Conversation
+
+    save_story(Conversation(), stories_dir=tmp_path)
+    session = make_session(transport)
+
+    await session.handle_text('{"type": "list_stories"}')
+
+    stories = transport.messages_of_type("story_list")[0]["stories"]
+    assert len(stories) == 1
+
+
+async def test_get_story_returns_story_detail(transport, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.load_story", _stories_dir_load_story(tmp_path)
+    )
+    from tinytalk.story_store import save_story, story_id_from_path, update_story_rewrite
+    from tinytalk.conversation import Conversation
+
+    path = save_story(Conversation(), stories_dir=tmp_path)
+    story_id = story_id_from_path(path)
+    update_story_rewrite(
+        story_id, title="Pip", pages=[{"text": "Once upon a time."}],
+        epilogue=None, rewrite_status="done", stories_dir=tmp_path,
+    )
+    session = make_session(transport)
+
+    await session.handle_text(f'{{"type": "get_story", "story_id": "{story_id}"}}')
+
+    detail = transport.messages_of_type("story_detail")[0]
+    # Full expected shape, not just title/pages -- locks in the "exactly
+    # these 5 payload keys (id, title, pages, epilogue, rewrite_status),
+    # plus the wire message's own type" guarantee, so a stray extra key
+    # (e.g. accidentally leaking the raw `turns`) would fail this test.
+    assert detail == {
+        "type": "story_detail",
+        "id": story_id,
+        "title": "Pip",
+        "pages": [{"text": "Once upon a time."}],
+        "epilogue": None,
+        "rewrite_status": "done",
+    }
+
+
+async def test_get_story_sends_error_for_unknown_id(transport, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.load_story", _stories_dir_load_story(tmp_path)
+    )
+    session = make_session(transport)
+
+    await session.handle_text('{"type": "get_story", "story_id": "nope"}')
+
+    assert transport.types() == ["error"]
+
+
+async def test_synthesize_page_streams_audio_and_a_done_marker(transport, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.load_story", _stories_dir_load_story(tmp_path)
+    )
+    from tinytalk.story_store import save_story, story_id_from_path, update_story_rewrite
+    from tinytalk.conversation import Conversation
+
+    path = save_story(Conversation(), stories_dir=tmp_path)
+    story_id = story_id_from_path(path)
+    update_story_rewrite(
+        story_id, title="Pip", pages=[{"text": "Once upon a time."}],
+        epilogue=None, rewrite_status="done", stories_dir=tmp_path,
+    )
+    tts = FakeTts()
+    session = make_session(transport, tts=tts)
+
+    await session.handle_text(
+        f'{{"type": "synthesize_page", "story_id": "{story_id}", "page_index": 0}}'
+    )
+
+    assert tts.spoken == ["Once upon a time."]
+    assert len(transport.audio) == 1
+    done = transport.messages_of_type("page_audio_done")[0]
+    assert done == {"type": "page_audio_done", "story_id": story_id, "page_index": 0}
+
+
+async def test_synthesize_page_sends_error_for_an_out_of_range_page(transport, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.load_story", _stories_dir_load_story(tmp_path)
+    )
+    from tinytalk.story_store import save_story, story_id_from_path, update_story_rewrite
+    from tinytalk.conversation import Conversation
+
+    path = save_story(Conversation(), stories_dir=tmp_path)
+    story_id = story_id_from_path(path)
+    update_story_rewrite(
+        story_id, title="Pip", pages=[{"text": "Once upon a time."}],
+        epilogue=None, rewrite_status="done", stories_dir=tmp_path,
+    )
+    session = make_session(transport)
+
+    await session.handle_text(
+        f'{{"type": "synthesize_page", "story_id": "{story_id}", "page_index": 5}}'
+    )
+
+    assert transport.types() == ["error"]
+
+
+async def test_story_browsing_works_while_rewriting(transport, tmp_path, monkeypatch):
+    # Browsing already-saved stories has nothing to do with the live
+    # session -- it must keep working even while a DIFFERENT story is
+    # mid-rewrite. save_story/build_and_attach are faked (the established
+    # pattern above, e.g. test_a_concluding_turn_enters_rewriting_and_
+    # pushes_rewriting_started) so reaching REWRITING here neither writes
+    # a real file into server/data/stories/ nor races the fake rewrite to
+    # completion before the assertion below runs.
+    # NOTE: the real save (below) must run before save_story gets
+    # monkeypatched to _fake_save_story -- `from tinytalk.story_store
+    # import save_story` re-reads the module attribute at import-execution
+    # time, so importing it after the patch would silently bind the fake
+    # instead of the real function, and no file would ever reach tmp_path.
+    from tinytalk.story_store import save_story
+    from tinytalk.conversation import Conversation
+
+    save_story(Conversation(), stories_dir=tmp_path)
+
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.list_stories", _stories_dir_list_stories(tmp_path)
+    )
+    monkeypatch.setattr("tinytalk.session.story_store.save_story", _fake_save_story)
+    monkeypatch.setattr(
+        "tinytalk.session.storybook.build_and_attach", _fake_build_and_attach()
+    )
+    llm = FakeLlm(chunks=["The end."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+    assert session.state is State.REWRITING
+
+    await session.handle_text('{"type": "list_stories"}')
+
+    assert len(transport.messages_of_type("story_list")[0]["stories"]) >= 1

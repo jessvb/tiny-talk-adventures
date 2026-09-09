@@ -20,28 +20,38 @@ import logging
 import time
 from typing import Protocol
 
-from . import config, safety, story_store
+from . import config, safety, storybook, story_store
 from .animal_facts import AnimalFactTracker
 from .audio import TTS_SAMPLE_RATE, split_sentences
 from .conversation import Conversation
 from .engines import EngineError, LlmEngine, SttEngine, TtsEngine
 from .object_recognition import ObjectTracker
 from .protocol import (
+    ConcludeStory,
+    GetStory,
     Interrupt,
+    ListStories,
     NewStory,
     ObjectSeen,
     ProtocolError,
     SpeechEnd,
     SpeechStart,
+    SynthesizePage,
     decode_client_message,
+    encode_arc_stage,
     encode_error,
+    encode_page_audio_done,
     encode_response_text,
+    encode_rewriting_done,
+    encode_rewriting_started,
+    encode_story_detail,
+    encode_story_list,
     encode_transcript_final,
     encode_transcript_partial,
     encode_turn_end,
 )
 from .state import Event, InvalidTransition, State, TurnStateMachine
-from .story_arc import StoryArc
+from .story_arc import Stage, StoryArc
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +112,7 @@ class SessionRunner:
         self._object_recognition = ObjectTracker()
         self._machine = TurnStateMachine()
         self._turn_task: asyncio.Task | None = None
+        self._rewrite_task: asyncio.Task | None = None
         # (sentence text, estimated real-world time.monotonic() at which
         # the child would actually have finished HEARING it) -- see
         # _run_turn()'s TTS loop and _cancel_turn() for why "sent" and
@@ -161,6 +172,40 @@ class SessionRunner:
                 self._object_recognition.record_seen(label)
             case NewStory():
                 await self.handle_new_story()
+            case ConcludeStory(turn_id=turn_id):
+                await self.handle_conclude_story(turn_id)
+            case ListStories():
+                await self.handle_list_stories()
+            case GetStory(story_id=story_id):
+                await self.handle_get_story(story_id)
+            case SynthesizePage(story_id=story_id, page_index=page_index):
+                await self.handle_synthesize_page(story_id, page_index)
+
+    async def handle_conclude_story(self, turn_id: int) -> None:
+        """The "Finish this story" action: cancels whatever's in flight
+        (same as a barge-in) and forces one final reply using
+        StoryArc.force_conclude_guidance() instead of the normal
+        stage-based guidance, then marks the story done unconditionally
+        -- an explicit request to finish must not be able to silently
+        fail to end just because the reply's wording doesn't happen to
+        match the natural-conclusion phrase list."""
+        if self._machine.state is State.REWRITING:
+            logger.info(
+                "conclude_story ignored -- a storybook rewrite is still in "
+                "progress (turn_id=%d)",
+                turn_id,
+            )
+            return
+        await self._cancel_turn(record_spoken=True)
+        if self._machine.state is State.LISTENING:
+            self._stt.reset()
+        self._current_turn_id = turn_id
+        self._transition(Event.CONCLUDE)
+        self._turn_replay_buffer = []
+        logger.info("conclude_story: forcing a final reply for turn_id=%d", turn_id)
+        self._turn_task = asyncio.create_task(
+            self._run_turn("", turn_id, forced_conclude=True)
+        )
 
     async def handle_new_story(self) -> None:
         """Abandon the current story (if any) and start fresh, without
@@ -175,6 +220,9 @@ class SessionRunner:
         ordinary turns -- resetting it would risk exactly the kind of
         turn_id collision this whole area of the codebase already has
         enough trouble with."""
+        if self._machine.state is State.REWRITING:
+            logger.info("new_story ignored -- a storybook rewrite is still in progress")
+            return
         await self._cancel_turn(record_spoken=False)
         if self._machine.state is State.LISTENING:
             self._stt.reset()
@@ -195,6 +243,45 @@ class SessionRunner:
             "(turn_id stays at %d -- it numbers messages, not story turns)",
             self._current_turn_id,
         )
+
+    async def handle_list_stories(self) -> None:
+        stories = story_store.list_stories()
+        await self._send_text_unbuffered(encode_story_list(stories))
+
+    async def handle_get_story(self, story_id: str) -> None:
+        story = story_store.load_story(story_id)
+        if story is None:
+            await self._send_text_unbuffered(
+                encode_error(f"no saved story with id {story_id!r}", self._current_turn_id)
+            )
+            return
+        await self._send_text_unbuffered(
+            encode_story_detail(
+                {
+                    "id": story["id"],
+                    "title": story.get("title"),
+                    "pages": story.get("pages"),
+                    "epilogue": story.get("epilogue"),
+                    "rewrite_status": story.get("rewrite_status", "pending"),
+                }
+            )
+        )
+
+    async def handle_synthesize_page(self, story_id: str, page_index: int) -> None:
+        story = story_store.load_story(story_id)
+        pages = story.get("pages") if story else None
+        if not pages or page_index < 0 or page_index >= len(pages):
+            await self._send_text_unbuffered(
+                encode_error(
+                    f"no page {page_index} for story {story_id!r}", self._current_turn_id
+                )
+            )
+            return
+        text = pages[page_index]["text"]
+        async with self._transport_lock:
+            async for pcm in self._tts.synthesize(text):
+                await self._transport.send_bytes(pcm)
+            await self._transport.send_text(encode_page_audio_done(story_id, page_index))
 
     async def handle_audio(self, pcm: bytes) -> None:
         # Audio arriving outside LISTENING is stale — a frame in flight when
@@ -220,6 +307,20 @@ class SessionRunner:
         (possibly different) client."""
         if self._turn_task is not None:
             await asyncio.gather(self._turn_task, return_exceptions=True)
+
+    async def wait_for_rewrite(self) -> None:
+        """Await the in-flight background rewrite to finish. Test-only,
+        mirroring wait_for_turn()."""
+        if self._rewrite_task is not None:
+            await asyncio.gather(self._rewrite_task, return_exceptions=True)
+
+    async def resend_current_status(self) -> None:
+        """Called by app.py right after a (re)connect, in addition to
+        replay_last_turn() -- a phone that reconnects while a storybook
+        rewrite is still in flight must be told so immediately, not left
+        to assume it's free to start a new story."""
+        if self._machine.state is State.REWRITING:
+            await self._send_text_unbuffered(encode_rewriting_started())
 
     @property
     def transport_generation(self) -> int:
@@ -305,6 +406,14 @@ class SessionRunner:
                 self._turn_replay_buffer.append(("bytes", audio))
                 await self._transport.send_bytes(audio)
 
+    async def _send_text_unbuffered(self, text: str) -> None:
+        """Sends a control message outside any turn's replay buffer -- for
+        pushes that aren't part of the live turn currently in flight, if
+        any (rewriting_started/rewriting_done, story browsing
+        responses)."""
+        async with self._transport_lock:
+            await self._transport.send_text(text)
+
     async def handle_disconnect(self) -> None:
         """Called by app.py on every WebSocket disconnect (clean or
         abrupt). Unlike aclose(), this deliberately does NOT cancel an
@@ -336,6 +445,13 @@ class SessionRunner:
         self._stt.reset()
 
     async def _start_listening(self, turn_id: int) -> None:
+        if self._machine.state is State.REWRITING:
+            logger.info(
+                "speech_start ignored -- a storybook rewrite is still in "
+                "progress (turn_id=%d)",
+                turn_id,
+            )
+            return
         if self._machine.state in (State.THINKING, State.SPEAKING):
             # A speech_start arriving mid-turn means the child started
             # talking again before the agent finished — that is an
@@ -430,6 +546,13 @@ class SessionRunner:
         self._turn_task = asyncio.create_task(self._run_turn(transcript, turn_id))
 
     async def _interrupt(self, turn_id: int) -> None:
+        if self._machine.state is State.REWRITING:
+            logger.info(
+                "interrupt ignored -- a storybook rewrite is still in "
+                "progress (turn_id=%d)",
+                turn_id,
+            )
+            return
         interrupt_received = time.monotonic()
         await self._cancel_turn(record_spoken=True)
         self._stt.reset()
@@ -482,7 +605,9 @@ class SessionRunner:
                 self._conversation.add_agent(" ".join(actually_heard), interrupted=True)
         self._spoken = []
 
-    async def _run_turn(self, transcript: str, turn_id: int) -> None:
+    async def _run_turn(
+        self, transcript: str, turn_id: int, *, forced_conclude: bool = False
+    ) -> None:
         # Per-stage timing: this pipeline is a personal pet project running
         # on modest hardware (see CLAUDE.md), and latency was found to be
         # noticeably higher than the design's 1-2s target -- logging where
@@ -492,7 +617,20 @@ class SessionRunner:
         turn_start = time.monotonic()
         try:
             self._conversation.add_child(transcript)  # no-op if transcript is empty
-            guidance = self._story_arc.record_turn(transcript)
+            if forced_conclude:
+                guidance = self._story_arc.force_conclude_guidance()
+            else:
+                guidance = self._story_arc.record_turn(transcript)
+            # force_conclude_guidance() deliberately does NOT advance
+            # _turn_count/stage (it's an out-of-band final turn, not the
+            # next turn of the normal budget) -- but this reply IS the
+            # story's ending regardless, so the Story screen's progress
+            # dots must be told "done" here rather than whatever mid-story
+            # stage the arc still reports.
+            pushed_stage = (
+                Stage.DONE.value if forced_conclude else self._story_arc.stage.value
+            )
+            await self._send_and_buffer(text=encode_arc_stage(pushed_stage, turn_id))
             fact_guidance = await self._animal_facts.record_turn(
                 transcript, self._story_arc.stage
             )
@@ -501,7 +639,7 @@ class SessionRunner:
             object_guidance = self._object_recognition.consume_guidance()
             if object_guidance:
                 guidance = f"{guidance}\n\n{object_guidance}"
-            if not transcript.strip():
+            if not transcript.strip() and not forced_conclude:
                 guidance = f"{guidance}\n\n{_STT_FAILURE_GUIDANCE}"
             messages = self._conversation.to_messages(
                 self._system_prompt + "\n\n" + guidance
@@ -516,7 +654,10 @@ class SessionRunner:
                 parts.append(chunk)
             llm_done = time.monotonic()
             reply = safety.filter_reply("".join(parts).strip())
-            self._story_arc.record_reply(reply)
+            if forced_conclude:
+                self._story_arc.mark_done()
+            else:
+                self._story_arc.record_reply(reply)
             logger.info(
                 "llm stream_reply: %.1f ms to first chunk, %.1f ms total (%d chars)",
                 ((first_chunk_at or llm_done) - llm_start) * 1000,
@@ -559,20 +700,36 @@ class SessionRunner:
 
             self._conversation.add_agent(reply)
             self._spoken = []
-            self._transition(Event.TTS_DONE)
+            concluding = self._story_arc.is_done
+            if concluding:
+                self._transition(Event.REWRITE_STARTED)
+            else:
+                self._transition(Event.TTS_DONE)
             await self._send_and_buffer(text=encode_turn_end(turn_id))
             logger.info(
                 "turn total (transcript -> turn_end): %.1f ms",
                 (time.monotonic() - turn_start) * 1000,
             )
-            if self._story_arc.is_done:
+            if concluding:
                 saved_path = story_store.save_story(self._conversation)
-                if saved_path is not None:
-                    logger.info("story saved to %s", saved_path)
+                turns = list(self._conversation.full_history)
+                shared_facts = list(self._animal_facts.shared_facts)
                 self._conversation = Conversation()
                 self._story_arc = StoryArc()
                 self._animal_facts = AnimalFactTracker()
                 self._object_recognition = ObjectTracker()
+                if saved_path is not None:
+                    logger.info("story saved to %s", saved_path)
+                    story_id = story_store.story_id_from_path(saved_path)
+                    await self._send_text_unbuffered(encode_rewriting_started())
+                    self._rewrite_task = asyncio.create_task(
+                        self._run_rewrite(story_id, turns, shared_facts)
+                    )
+                else:
+                    # save_story() itself failed -- there is nothing to
+                    # rewrite, and nothing should stay gated on a rewrite
+                    # that will never run.
+                    self._transition(Event.REWRITE_DONE)
         except asyncio.CancelledError:
             raise
         except EngineError as exc:
@@ -581,6 +738,20 @@ class SessionRunner:
         except Exception as exc:  # noqa: BLE001 - a session must survive one bad turn
             logger.exception("unexpected failure during turn")
             await self._fail_turn(f"internal error: {exc}", turn_id)
+
+    async def _run_rewrite(
+        self, story_id: str, turns: list, shared_facts: list[tuple[str, str]]
+    ) -> None:
+        try:
+            await storybook.build_and_attach(
+                story_id, turns, shared_facts, llm=self._llm,
+                page_count=config.STORYBOOK_PAGE_COUNT,
+            )
+        except Exception:  # noqa: BLE001 - the REWRITING gate must always release
+            logger.exception("unexpected failure running storybook rewrite for %s", story_id)
+        finally:
+            self._transition(Event.REWRITE_DONE)
+            await self._send_text_unbuffered(encode_rewriting_done())
 
     async def _fail_turn(self, message: str, turn_id: int) -> None:
         # Restore state before sending: if the transport is dead (closed
@@ -591,6 +762,16 @@ class SessionRunner:
             self._transition(Event.RESPONSE_READY)
         if self._machine.state is State.SPEAKING:
             self._transition(Event.TTS_DONE)
+        if self._machine.state is State.REWRITING:
+            # A concluding turn transitions into REWRITING before its
+            # remaining sends (encode_turn_end, then -- once saved --
+            # encode_rewriting_started) and its _rewrite_task creation.
+            # If either of those sends raises (e.g. a dead transport),
+            # this lands here with state already REWRITING but no
+            # rewrite task ever scheduled to release it -- and since
+            # every action handler now gates on REWRITING, that would be
+            # a permanent lockout recoverable only by a server restart.
+            self._transition(Event.REWRITE_DONE)
         await self._transport.send_text(encode_error(message, turn_id))
 
     def _transition(self, event: Event) -> None:

@@ -84,7 +84,53 @@ class NewStory:
     for it to be echoed back against."""
 
 
-ClientMessage = SpeechStart | SpeechEnd | Interrupt | ObjectSeen | NewStory
+@dataclass(frozen=True)
+class ListStories:
+    """Request the saved-story list for the Library screen. No turn_id --
+    browsing saved stories is unrelated to live turn-taking."""
+
+
+@dataclass(frozen=True)
+class GetStory:
+    """Request one saved story's rewritten pages for the Reading
+    screen."""
+
+    story_id: str
+
+
+@dataclass(frozen=True)
+class SynthesizePage:
+    """Request on-demand TTS audio for one page of a saved story (the
+    Reading screen's per-page replay button). Audio streams through the
+    same binary-frame pathway as live TTS, followed by a
+    page_audio_done marker."""
+
+    story_id: str
+    page_index: int
+
+
+@dataclass(frozen=True)
+class ConcludeStory:
+    """The child (or parent) asked to finish the current story right now
+    (the design's "Finish this story" menu item). Carries a turn_id like
+    SpeechStart/Interrupt: it results in one more real
+    response_text/turn_end pair the client must be able to attribute to a
+    turn."""
+
+    turn_id: int
+
+
+ClientMessage = (
+    SpeechStart
+    | SpeechEnd
+    | Interrupt
+    | ObjectSeen
+    | NewStory
+    | ListStories
+    | GetStory
+    | SynthesizePage
+    | ConcludeStory
+)
 
 _CLIENT_MESSAGE_TYPES: dict[str, type] = {
     "speech_start": SpeechStart,
@@ -92,8 +138,12 @@ _CLIENT_MESSAGE_TYPES: dict[str, type] = {
     "interrupt": Interrupt,
     "object_seen": ObjectSeen,
     "new_story": NewStory,
+    "list_stories": ListStories,
+    "get_story": GetStory,
+    "synthesize_page": SynthesizePage,
+    "conclude_story": ConcludeStory,
 }
-_TYPES_REQUIRING_TURN_ID = (SpeechStart, Interrupt)
+_TYPES_REQUIRING_TURN_ID = (SpeechStart, Interrupt, ConcludeStory)
 
 
 def decode_client_message(raw: str) -> ClientMessage:
@@ -121,6 +171,21 @@ def decode_client_message(raw: str) -> ClientMessage:
         if not isinstance(label, str) or not label.strip():
             raise ProtocolError(f"object_seen requires a non-empty string label: {raw!r}")
         return ObjectSeen(label=label.strip())
+    if message_type is GetStory:
+        story_id = payload.get("story_id")
+        if not isinstance(story_id, str) or not story_id.strip():
+            raise ProtocolError(f"get_story requires a non-empty string story_id: {raw!r}")
+        return GetStory(story_id=story_id.strip())
+    if message_type is SynthesizePage:
+        story_id = payload.get("story_id")
+        page_index = payload.get("page_index")
+        if not isinstance(story_id, str) or not story_id.strip():
+            raise ProtocolError(
+                f"synthesize_page requires a non-empty string story_id: {raw!r}"
+            )
+        if not isinstance(page_index, int):
+            raise ProtocolError(f"synthesize_page requires an integer page_index: {raw!r}")
+        return SynthesizePage(story_id=story_id.strip(), page_index=page_index)
     return message_type()
 
 
@@ -142,3 +207,29 @@ def encode_turn_end(turn_id: int) -> str:
 
 def encode_error(message: str, turn_id: int) -> str:
     return json.dumps({"type": "error", "message": message, "turn_id": turn_id})
+
+
+def encode_arc_stage(stage: str, turn_id: int) -> str:
+    return json.dumps({"type": "arc_stage", "stage": stage, "turn_id": turn_id})
+
+
+def encode_story_list(stories: list[dict]) -> str:
+    return json.dumps({"type": "story_list", "stories": stories})
+
+
+def encode_story_detail(story: dict) -> str:
+    return json.dumps({"type": "story_detail", **story})
+
+
+def encode_page_audio_done(story_id: str, page_index: int) -> str:
+    return json.dumps(
+        {"type": "page_audio_done", "story_id": story_id, "page_index": page_index}
+    )
+
+
+def encode_rewriting_started() -> str:
+    return json.dumps({"type": "rewriting_started"})
+
+
+def encode_rewriting_done() -> str:
+    return json.dumps({"type": "rewriting_done"})

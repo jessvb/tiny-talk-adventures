@@ -54,3 +54,55 @@ def test_rejected_transition_leaves_state_unchanged():
     with pytest.raises(InvalidTransition):
         machine.handle(Event.RESPONSE_READY)
     assert machine.state is State.IDLE
+
+
+def test_conclude_from_any_state_lands_in_thinking():
+    for state_setup in (
+        [],
+        [Event.SPEECH_START],
+        [Event.SPEECH_START, Event.SPEECH_END],
+        [Event.SPEECH_START, Event.SPEECH_END, Event.RESPONSE_READY],
+    ):
+        machine = TurnStateMachine()
+        for event in state_setup:
+            machine.handle(event)
+        assert machine.handle(Event.CONCLUDE) is State.THINKING
+
+
+def test_speaking_to_rewriting_on_rewrite_started():
+    machine = TurnStateMachine()
+    machine.handle(Event.SPEECH_START)
+    machine.handle(Event.SPEECH_END)
+    machine.handle(Event.RESPONSE_READY)
+    assert machine.handle(Event.REWRITE_STARTED) is State.REWRITING
+
+
+def test_rewrite_done_returns_to_idle():
+    machine = TurnStateMachine()
+    machine.handle(Event.SPEECH_START)
+    machine.handle(Event.SPEECH_END)
+    machine.handle(Event.RESPONSE_READY)
+    machine.handle(Event.REWRITE_STARTED)
+    assert machine.handle(Event.REWRITE_DONE) is State.IDLE
+
+
+def test_speech_start_is_not_legal_while_rewriting():
+    machine = TurnStateMachine()
+    machine.handle(Event.SPEECH_START)
+    machine.handle(Event.SPEECH_END)
+    machine.handle(Event.RESPONSE_READY)
+    machine.handle(Event.REWRITE_STARTED)
+    with pytest.raises(InvalidTransition):
+        machine.handle(Event.SPEECH_START)
+
+
+def test_interrupt_is_not_legal_while_rewriting():
+    # The one deliberate exception to "interrupt is legal from every
+    # state" -- see this module's own comment.
+    machine = TurnStateMachine()
+    machine.handle(Event.SPEECH_START)
+    machine.handle(Event.SPEECH_END)
+    machine.handle(Event.RESPONSE_READY)
+    machine.handle(Event.REWRITE_STARTED)
+    with pytest.raises(InvalidTransition):
+        machine.handle(Event.INTERRUPT)

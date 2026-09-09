@@ -171,3 +171,18 @@ class StoryArc:
             return
         if _CONCLUSION_PATTERN.search(reply_text):
             self._is_done = True
+
+    def force_conclude_guidance(self) -> str:
+        """Guidance for an explicitly-requested conclusion (the "Finish
+        this story" action) -- the same wording already used when a
+        story hits its turn-budget grace ceiling. Deliberately does NOT
+        touch _turn_count: this is an out-of-band final turn, not the
+        next turn of the normal budget."""
+        return _FORCED_GUIDANCE
+
+    def mark_done(self) -> None:
+        """Unconditionally marks the story done, independent of
+        record_reply()'s phrase-detection -- for the explicit-conclude
+        path, where the story must end regardless of the model's exact
+        wording."""
+        self._is_done = True

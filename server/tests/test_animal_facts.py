@@ -411,3 +411,24 @@ async def test_tracker_returns_empty_string_when_no_fact_is_available(tmp_path, 
     # guidance, but the animal was still detected/mentioned, so the nudge
     # must not fire either.
     assert guidance == ""
+
+
+async def test_tracker_retains_the_real_fact_text_it_shared(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "test-key")
+    monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", tmp_path / "cache.json")
+    _save_cache({"fox": ["foxes have excellent hearing"]}, tmp_path / "cache.json")
+
+    tracker = AnimalFactTracker()
+    await tracker.record_turn("tell me about a fox", Stage.SETUP)
+
+    assert tracker.shared_facts == (("fox", "foxes have excellent hearing"),)
+
+
+async def test_tracker_shared_facts_is_empty_when_no_fact_was_ever_woven_in(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANIMAL_FACTS_API_KEY", "")
+    monkeypatch.setattr("tinytalk.animal_facts.FACTS_CACHE_PATH", tmp_path / "cache.json")
+
+    tracker = AnimalFactTracker()
+    await tracker.record_turn("let's make up a story", Stage.SETUP)
+
+    assert tracker.shared_facts == ()

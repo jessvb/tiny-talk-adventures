@@ -117,6 +117,13 @@ KOKORO_DEVICE = os.environ.get("TINYTALK_TTS_DEVICE", "mps")
 # target+4), so the story just never concluded.
 STORY_TARGET_TURNS = int(os.environ.get("TINYTALK_STORY_TARGET_TURNS", "7"))
 
+# How many pages storybook.py's background rewrite targets per story --
+# a fixed count, not one page per turn (a 3-turn and a 12-turn story
+# should both read as a similarly-paced picture book). The small local
+# model isn't guaranteed to hit this exactly; storybook.py's parser
+# tolerates a page count that's a little off rather than rejecting it.
+STORYBOOK_PAGE_COUNT = int(os.environ.get("TINYTALK_STORYBOOK_PAGE_COUNT", "5"))
+
 SYSTEM_PROMPT = (
     "You are a warm, interesting storyteller telling a story out loud with a young, "
     "intelligent child, aged about three to six. You and the child are making the "
