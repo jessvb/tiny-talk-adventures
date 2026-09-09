@@ -47,7 +47,10 @@ final class DemoConversationTests: XCTestCase {
         conversation.addAgent("first reply")
         conversation.addChild("second")
         let messages = conversation.toMessages(systemPrompt: "x")
-        // system + 2 windowed turns, not 3
+        // system + 2 windowed turns, not 3 -- and specifically the two
+        // MOST RECENT turns, not an arbitrary subset of the same size.
         XCTAssertEqual(messages.count, 3)
+        XCTAssertEqual(messages[1]["content"], "first reply")
+        XCTAssertEqual(messages[2]["content"], "second")
     }
 }
