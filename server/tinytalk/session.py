@@ -317,7 +317,7 @@ class SessionRunner:
                 for pair in payload.get("shared_facts", [])
                 if isinstance(pair, list) and len(pair) == 2
             ]
-            asyncio.create_task(self._run_rewrite(story_id, turns, shared_facts))
+            asyncio.create_task(self._run_synced_rewrite(story_id, turns, shared_facts))
 
     async def handle_audio(self, pcm: bytes) -> None:
         # Audio arriving outside LISTENING is stale — a frame in flight when
@@ -788,6 +788,25 @@ class SessionRunner:
         finally:
             self._transition(Event.REWRITE_DONE)
             await self._send_text_unbuffered(encode_rewriting_done())
+
+    async def _run_synced_rewrite(
+        self, story_id: str, turns: list, shared_facts: list[tuple[str, str]]
+    ) -> None:
+        """Runs the storybook rewrite for a story synced from
+        away-from-home mode -- deliberately does NOT touch self._machine
+        or send rewriting_started/rewriting_done: unlike a live story's
+        conclusion (_run_rewrite), a synced batch has no relationship to
+        this session's live REWRITING gate or to whatever connection is
+        currently attached, and must not perturb either."""
+        try:
+            await storybook.build_and_attach(
+                story_id, turns, shared_facts, llm=self._llm,
+                page_count=config.STORYBOOK_PAGE_COUNT,
+            )
+        except Exception:  # noqa: BLE001 - a background rewrite must survive any single bad story
+            logger.exception(
+                "unexpected failure running synced-story storybook rewrite for %s", story_id
+            )
 
     async def _fail_turn(self, message: str, turn_id: int) -> None:
         # Restore state before sending: if the transport is dead (closed

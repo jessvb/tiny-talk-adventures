@@ -1598,3 +1598,36 @@ async def test_handle_sync_demo_stories_skips_a_story_that_fails_to_save(monkeyp
     await asyncio.sleep(0.01)
 
     assert build_calls == []
+
+
+async def test_handle_sync_demo_stories_does_not_touch_the_rewriting_gate(tmp_path, monkeypatch):
+    """Regression test: synced stories must NOT send rewriting_done or
+    touch self._machine, so they can't interfere with a concurrent live
+    rewrite. This used to happen before _run_synced_rewrite was introduced."""
+    from tinytalk import story_store
+
+    monkeypatch.setattr(
+        story_store, "save_synced_story", lambda payload, **kw: tmp_path / f"20260909T120000-{payload.get('created_at', '').replace(':', '')}.json"
+    )
+    (tmp_path).mkdir(exist_ok=True)
+
+    async def fake_build_and_attach(*args, **kwargs):
+        await asyncio.sleep(0.02)  # Simulate a real rewrite taking time
+
+    monkeypatch.setattr("tinytalk.session.storybook.build_and_attach", fake_build_and_attach)
+
+    transport = FakeTransport()
+    session = make_session(transport)
+
+    stories = ({
+        "id": "should_be_ignored",
+        "created_at": "2026-09-09T12:00:00+00:00",
+        "turns": [{"speaker": "child", "text": "test", "interrupted": False}],
+        "shared_facts": [],
+    },)
+
+    await session.handle_text(json.dumps({"type": "sync_demo_stories", "stories": list(stories)}))
+    await asyncio.sleep(0.05)  # Wait for the synced rewrite to complete
+
+    # Verify no rewriting_done was sent (which would only happen if _run_rewrite was called)
+    assert "rewriting_done" not in transport.types()

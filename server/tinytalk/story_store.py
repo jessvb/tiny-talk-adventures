@@ -159,16 +159,19 @@ def update_story_rewrite(
 
 def save_synced_story(payload: dict, *, stories_dir: Path = STORIES_DIR) -> Path | None:
     """Persists a story JSON payload the phone completed away from home
-    (see SessionRunner.handle_sync_demo_stories) -- the phone already
-    computed id/created_at/turns in the same shape save_story() writes,
-    so this just persists it as-is. rewrite_status is forced to
-    "pending" regardless of what the phone sent, so a synced story goes
-    through the exact same rewrite pipeline a live one does."""
-    story_id = payload.get("id")
+    (see SessionRunner.handle_sync_demo_stories). A fresh, server-generated
+    id is always used for both the stored "id" field and the filename --
+    the phone's own claimed id is discarded, never trusted for filesystem
+    path construction (an arbitrary client-supplied string reaching a
+    path.write_text() call is exactly how a path-traversal bug happens).
+    rewrite_status is forced to "pending" regardless of what the phone
+    sent, so a synced story goes through the exact same rewrite pipeline
+    a live one does."""
     created_at = payload.get("created_at")
-    if not isinstance(story_id, str) or not story_id or not isinstance(created_at, str) or not created_at:
-        logger.error("refusing to sync a story with missing id/created_at: %r", payload)
+    if not isinstance(created_at, str) or not created_at:
+        logger.error("refusing to sync a story with a missing created_at: %r", payload)
         return None
+    story_id = uuid.uuid4().hex[:8]
     safe_timestamp = "".join(ch for ch in created_at if ch.isalnum())
     filename = f"{safe_timestamp}-{story_id}.json"
     stored = {
@@ -186,5 +189,5 @@ def save_synced_story(payload: dict, *, stories_dir: Path = STORIES_DIR) -> Path
         path.write_text(json.dumps(stored, indent=2))
         return path
     except OSError as exc:
-        logger.error("failed to save synced story %s: %s", story_id, exc)
+        logger.error("failed to save synced story: %s", exc)
         return None

@@ -236,7 +236,9 @@ def test_save_synced_story_writes_the_payload_as_pending(tmp_path):
 
     assert path is not None
     stored = json.loads(path.read_text())
-    assert stored["id"] == "deadbeef"
+    # Server generates a fresh id; phone's claimed id is discarded
+    assert stored["id"]
+    assert isinstance(stored["id"], str)
     assert stored["created_at"] == "2026-09-09T12:00:00+00:00"
     assert stored["turns"] == payload["turns"]
     assert stored["title"] is None
@@ -245,12 +247,17 @@ def test_save_synced_story_writes_the_payload_as_pending(tmp_path):
     assert stored["rewrite_status"] == "pending"
 
 
-def test_save_synced_story_rejects_missing_id_or_created_at(tmp_path):
+def test_save_synced_story_rejects_missing_created_at(tmp_path):
+    # Missing created_at is always rejected
     assert save_synced_story({"turns": []}, stories_dir=tmp_path) is None
     assert save_synced_story({"id": "x"}, stories_dir=tmp_path) is None
+    # Missing id is now fine (server generates one)
+    path = save_synced_story({"created_at": "2026-09-09T12:00:00+00:00", "turns": []}, stories_dir=tmp_path)
+    assert path is not None
 
 
 def test_save_synced_story_round_trips_with_story_id_from_path(tmp_path):
     payload = {"id": "cafef00d", "created_at": "2026-09-09T12:00:00+00:00", "turns": []}
     path = save_synced_story(payload, stories_dir=tmp_path)
-    assert story_id_from_path(path) == "cafef00d"
+    # story_id_from_path should match the stored id (which was server-generated, not the phone's)
+    assert story_id_from_path(path) == json.loads(path.read_text())["id"]
