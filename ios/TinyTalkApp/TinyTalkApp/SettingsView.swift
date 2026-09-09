@@ -25,6 +25,7 @@ struct SettingsView: View {
                 ScrollView {
                     VStack(spacing: 18) {
                         serverCard
+                        storyLengthCard
                         underTheHoodCard
                         storybookPreviewCard
                         replayButton
@@ -108,6 +109,80 @@ struct SettingsView: View {
         .padding(16)
         .background(TTA.Palette.cream)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private var storyLengthCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("STORY LENGTH")
+                .font(TTA.Typography.display(12))
+                .tracking(1.5)
+                .foregroundColor(TTA.Palette.inkSoft)
+
+            storyLengthStepperRow(
+                label: "Turns per story",
+                value: model.storyTurnCount,
+                range: 4...12
+            ) { newValue in
+                model.updateStorySettings(turnCount: newValue, pageCount: model.storybookPageCount)
+            }
+
+            storyLengthStepperRow(
+                label: "Pages in the storybook",
+                value: model.storybookPageCount,
+                range: 3...10
+            ) { newValue in
+                model.updateStorySettings(turnCount: model.storyTurnCount, pageCount: newValue)
+            }
+
+            Text("Changes apply to your next story, not the one you're in now.")
+                .font(TTA.Typography.body(12.5))
+                .foregroundColor(TTA.Palette.inkSoft)
+        }
+        .padding(16)
+        .background(TTA.Palette.cream)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    /// A "− N +" row: two round tap-target buttons flanking the current
+    /// value, matching this app's chunky, large-tap-target design
+    /// language (see ChunkyButtonStyle/IconButtonStyle in DesignSystem.swift)
+    /// rather than a bare SwiftUI Stepper's small default +/− controls.
+    private func storyLengthStepperRow(
+        label: String,
+        value: Int,
+        range: ClosedRange<Int>,
+        onChange: @escaping (Int) -> Void
+    ) -> some View {
+        HStack {
+            Text(label)
+                .font(TTA.Typography.body(14, weight: .semibold))
+                .foregroundColor(TTA.Palette.ink)
+
+            Spacer()
+
+            HStack(spacing: 14) {
+                Button {
+                    onChange(max(range.lowerBound, value - 1))
+                } label: {
+                    Image(systemName: "minus")
+                }
+                .buttonStyle(.ttaIcon)
+                .disabled(value <= range.lowerBound)
+
+                Text("\(value)")
+                    .font(TTA.Typography.display(17))
+                    .foregroundColor(TTA.Palette.ink)
+                    .frame(minWidth: 24)
+
+                Button {
+                    onChange(min(range.upperBound, value + 1))
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.ttaIcon)
+                .disabled(value >= range.upperBound)
+            }
+        }
     }
 
     private var underTheHoodCard: some View {
