@@ -23,7 +23,7 @@ from typing import Protocol
 from . import config, safety, storybook, story_store
 from .animal_facts import AnimalFactTracker
 from .audio import TTS_SAMPLE_RATE, split_sentences
-from .conversation import Conversation
+from .conversation import Conversation, Turn
 from .engines import EngineError, LlmEngine, SttEngine, TtsEngine
 from .object_recognition import ObjectTracker
 from .protocol import (
@@ -36,6 +36,7 @@ from .protocol import (
     ProtocolError,
     SpeechEnd,
     SpeechStart,
+    SyncDemoStories,
     SynthesizePage,
     decode_client_message,
     encode_arc_stage,
@@ -180,6 +181,8 @@ class SessionRunner:
                 await self.handle_get_story(story_id)
             case SynthesizePage(story_id=story_id, page_index=page_index):
                 await self.handle_synthesize_page(story_id, page_index)
+            case SyncDemoStories(stories=stories):
+                await self.handle_sync_demo_stories(stories)
 
     async def handle_conclude_story(self, turn_id: int) -> None:
         """The "Finish this story" action: cancels whatever's in flight
@@ -282,6 +285,39 @@ class SessionRunner:
             async for pcm in self._tts.synthesize(text):
                 await self._transport.send_bytes(pcm)
             await self._transport.send_text(encode_page_audio_done(story_id, page_index))
+
+    async def handle_sync_demo_stories(self, stories: tuple[dict, ...]) -> None:
+        """Persists each story the phone completed away from home, then
+        kicks off the same background rewrite pipeline a live story
+        triggers -- see story_store.save_synced_story() and
+        _run_rewrite(). Runs independent of self._machine's state
+        (unlike the live-turn actions above): a synced batch has no
+        relationship to whatever live story is or isn't in flight."""
+        for payload in stories:
+            saved_path = story_store.save_synced_story(payload)
+            if saved_path is None:
+                continue
+            story_id = story_store.story_id_from_path(saved_path)
+            try:
+                turns = [
+                    Turn(
+                        speaker=turn["speaker"],
+                        text=turn["text"],
+                        interrupted=turn.get("interrupted", False),
+                    )
+                    for turn in payload.get("turns", [])
+                ]
+            except (KeyError, TypeError) as exc:
+                logger.error(
+                    "skipping rewrite for synced story %s: malformed turns (%s)", story_id, exc
+                )
+                continue
+            shared_facts = [
+                (pair[0], pair[1])
+                for pair in payload.get("shared_facts", [])
+                if isinstance(pair, list) and len(pair) == 2
+            ]
+            asyncio.create_task(self._run_rewrite(story_id, turns, shared_facts))
 
     async def handle_audio(self, pcm: bytes) -> None:
         # Audio arriving outside LISTENING is stale — a frame in flight when

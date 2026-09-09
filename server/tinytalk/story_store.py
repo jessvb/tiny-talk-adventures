@@ -155,3 +155,36 @@ def update_story_rewrite(
     except (OSError, json.JSONDecodeError, UnicodeDecodeError, KeyError) as exc:
         logger.error("failed to update rewrite for story %s: %s", story_id, exc)
         return False
+
+
+def save_synced_story(payload: dict, *, stories_dir: Path = STORIES_DIR) -> Path | None:
+    """Persists a story JSON payload the phone completed away from home
+    (see SessionRunner.handle_sync_demo_stories) -- the phone already
+    computed id/created_at/turns in the same shape save_story() writes,
+    so this just persists it as-is. rewrite_status is forced to
+    "pending" regardless of what the phone sent, so a synced story goes
+    through the exact same rewrite pipeline a live one does."""
+    story_id = payload.get("id")
+    created_at = payload.get("created_at")
+    if not isinstance(story_id, str) or not story_id or not isinstance(created_at, str) or not created_at:
+        logger.error("refusing to sync a story with missing id/created_at: %r", payload)
+        return None
+    safe_timestamp = "".join(ch for ch in created_at if ch.isalnum())
+    filename = f"{safe_timestamp}-{story_id}.json"
+    stored = {
+        "id": story_id,
+        "created_at": created_at,
+        "turns": payload.get("turns", []),
+        "title": None,
+        "pages": None,
+        "epilogue": None,
+        "rewrite_status": "pending",
+    }
+    try:
+        stories_dir.mkdir(parents=True, exist_ok=True)
+        path = stories_dir / filename
+        path.write_text(json.dumps(stored, indent=2))
+        return path
+    except OSError as exc:
+        logger.error("failed to save synced story %s: %s", story_id, exc)
+        return None

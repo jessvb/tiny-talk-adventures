@@ -120,6 +120,16 @@ class ConcludeStory:
     turn_id: int
 
 
+@dataclass(frozen=True)
+class SyncDemoStories:
+    """The phone hands over stories completed away from home (see
+    docs/superpowers/specs/2026-09-09-away-from-home-demo-mode-design.md)
+    once it reconnects to the home server. No turn_id -- this isn't part
+    of live turn-taking, same reasoning as ListStories/GetStory."""
+
+    stories: tuple[dict, ...]
+
+
 ClientMessage = (
     SpeechStart
     | SpeechEnd
@@ -130,6 +140,7 @@ ClientMessage = (
     | GetStory
     | SynthesizePage
     | ConcludeStory
+    | SyncDemoStories
 )
 
 _CLIENT_MESSAGE_TYPES: dict[str, type] = {
@@ -142,6 +153,7 @@ _CLIENT_MESSAGE_TYPES: dict[str, type] = {
     "get_story": GetStory,
     "synthesize_page": SynthesizePage,
     "conclude_story": ConcludeStory,
+    "sync_demo_stories": SyncDemoStories,
 }
 _TYPES_REQUIRING_TURN_ID = (SpeechStart, Interrupt, ConcludeStory)
 
@@ -186,6 +198,11 @@ def decode_client_message(raw: str) -> ClientMessage:
         if not isinstance(page_index, int):
             raise ProtocolError(f"synthesize_page requires an integer page_index: {raw!r}")
         return SynthesizePage(story_id=story_id.strip(), page_index=page_index)
+    if message_type is SyncDemoStories:
+        stories = payload.get("stories")
+        if not isinstance(stories, list) or not all(isinstance(s, dict) for s in stories):
+            raise ProtocolError(f"sync_demo_stories requires a list of story objects: {raw!r}")
+        return SyncDemoStories(stories=tuple(stories))
     return message_type()
 
 

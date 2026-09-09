@@ -12,6 +12,7 @@ from tinytalk.protocol import (
     ProtocolError,
     SpeechEnd,
     SpeechStart,
+    SyncDemoStories,
     SynthesizePage,
     decode_client_message,
     encode_arc_stage,
@@ -157,3 +158,28 @@ def test_new_server_encoders_produce_expected_payloads():
     }
     assert json.loads(encode_rewriting_started()) == {"type": "rewriting_started"}
     assert json.loads(encode_rewriting_done()) == {"type": "rewriting_done"}
+
+
+def test_decode_sync_demo_stories():
+    raw = json.dumps({
+        "type": "sync_demo_stories",
+        "stories": [
+            {"id": "abc12345", "created_at": "2026-09-09T12:00:00+00:00", "turns": [], "shared_facts": []},
+        ],
+    })
+    message = decode_client_message(raw)
+    assert message == SyncDemoStories(
+        stories=({"id": "abc12345", "created_at": "2026-09-09T12:00:00+00:00", "turns": [], "shared_facts": []},)
+    )
+
+
+def test_decode_sync_demo_stories_rejects_non_list_stories():
+    raw = json.dumps({"type": "sync_demo_stories", "stories": "not-a-list"})
+    with pytest.raises(ProtocolError):
+        decode_client_message(raw)
+
+
+def test_decode_sync_demo_stories_rejects_non_dict_entries():
+    raw = json.dumps({"type": "sync_demo_stories", "stories": ["not-a-dict"]})
+    with pytest.raises(ProtocolError):
+        decode_client_message(raw)
