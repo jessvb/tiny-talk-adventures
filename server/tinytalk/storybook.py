@@ -37,6 +37,20 @@ _REWRITE_PROMPT_TEMPLATE = (
 
 _EPILOGUE_KEY = ', "epilogue": "one true, real fact from the story, in one sentence"'
 
+_STORYBOOK_SYSTEM_PROMPT = (
+    "You are writing a children's picture-book story for a young child, "
+    "aged about three to six, to read or be read to again later.\n"
+    "\n"
+    "Rules you always follow:\n"
+    "- Keep everything gentle and wholesome. No violence, no weapons, no death, "
+    "no frightening peril.\n"
+    "- Keep the story grounded in the real world: no magic, no talking "
+    "plants or objects, no impossible physics. Animal characters can "
+    "talk and think like people, but everything else about the world "
+    "should be realistic.\n"
+    "- Write plain prose only: no emoji, no asterisks, no stage directions."
+)
+
 _SAFETY_RETRY_TEMPLATE = (
     "That version isn't appropriate for a young child's storybook -- it "
     "mentioned: {terms}. Rewrite the whole story again from scratch, same "
@@ -139,15 +153,19 @@ async def build_and_attach(
     would be there to catch it."""
     try:
         prompt = _build_prompt(turns, shared_facts, page_count)
-        # Same kid-safety framing every live-turn LLM call gets (session.py
-        # prepends config.SYSTEM_PROMPT to every _run_turn call) -- the
-        # rewrite model is still a general-purpose local LLM writing content
-        # a young child will read and hear, so it needs the same "gentle
-        # and wholesome... no violence, no weapons, no death, no
-        # frightening peril" framing, not just this module's own
-        # storybook-formatting instructions.
+        # Kid-safety/content framing, same spirit as config.SYSTEM_PROMPT
+        # (the rewrite model is still a general-purpose local LLM writing
+        # content a young child will read and hear) -- but deliberately
+        # NOT that prompt's live-dialogue rules ("end most replies by
+        # asking the child what should happen next", interrupt handling,
+        # "the child is listening, not reading"), none of which make sense
+        # for a one-shot rewrite into finished prose. Reusing
+        # config.SYSTEM_PROMPT verbatim was tried first and, confirmed
+        # on-device, produced pages ending with "what should we do next"
+        # instead of concluding -- that live-dialogue rule doesn't know
+        # it's being asked to write a finished storybook.
         messages = [
-            {"role": "system", "content": config.SYSTEM_PROMPT},
+            {"role": "system", "content": _STORYBOOK_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ]
 

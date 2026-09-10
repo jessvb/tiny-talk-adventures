@@ -146,15 +146,24 @@ async def test_build_and_attach_discards_a_fabricated_epilogue_when_no_facts_wer
     assert story["rewrite_status"] == "done"
 
 
-async def test_build_and_attach_sends_the_kid_safety_system_prompt(tmp_path):
+async def test_build_and_attach_sends_kid_safety_framing_but_not_live_dialogue_rules(
+    tmp_path,
+):
     """The rewrite model is still a general-purpose local LLM, and its
     output is later displayed on the Reading screen AND spoken aloud
     unfiltered (session.py's handle_get_story / handle_synthesize_page) --
-    it needs the same kid-safety framing every live-turn LLM call already
-    gets via config.SYSTEM_PROMPT (see session.py's _run_turn prepending
-    it to every messages list), not just this module's own
-    storybook-formatting instructions."""
-    from tinytalk import config
+    it needs the same kid-safety framing every live-turn LLM call gets
+    (no violence, grounded in the real world, etc.).
+
+    Regression test: build_and_attach() used to send config.SYSTEM_PROMPT
+    verbatim, which also carries live-dialogue-only rules ("end most
+    replies by asking the child what should happen next", interrupt
+    handling) that make no sense for a one-shot rewrite into finished
+    prose -- and on-device testing found exactly that: a rewritten page
+    ending with "what should we do next..." instead of concluding. The
+    rewrite's own system prompt must keep the safety framing without that
+    turn-taking rule."""
+    from tinytalk.storybook import _STORYBOOK_SYSTEM_PROMPT
 
     story_id = make_saved_story(tmp_path)
     reply = json.dumps({"title": "A Story", "pages": [{"text": "Once upon a time."}]})
@@ -162,7 +171,10 @@ async def test_build_and_attach_sends_the_kid_safety_system_prompt(tmp_path):
 
     await build_and_attach(story_id, [], [], llm=llm, stories_dir=tmp_path)
 
-    assert llm.calls[0][0] == {"role": "system", "content": config.SYSTEM_PROMPT}
+    system_message = llm.calls[0][0]
+    assert system_message == {"role": "system", "content": _STORYBOOK_SYSTEM_PROMPT}
+    assert "no violence" in system_message["content"].lower()
+    assert "what should happen next" not in system_message["content"].lower()
 
 
 async def test_build_and_attach_marks_failed_when_the_parsed_title_is_unsafe(tmp_path):
