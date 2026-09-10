@@ -58,6 +58,11 @@ _SAFETY_RETRY_TEMPLATE = (
     "ONLY the JSON object again, in the same shape as before."
 )
 
+_PARSE_RETRY_TEMPLATE = (
+    "That wasn't valid JSON. Reply again with ONLY the JSON object, in the "
+    "exact same shape as before -- no other text before or after it."
+)
+
 
 def _format_transcript(turns: list[Turn]) -> str:
     lines = []
@@ -169,19 +174,18 @@ async def build_and_attach(
             {"role": "user", "content": prompt},
         ]
 
-        # Kid-safety check -- the same safety.is_safe() gate session.py's
-        # live turns already pass through (via safety.filter_reply())
-        # before a reply is ever sent or spoken. Unlike a live turn, there
-        # is no safe fallback text to substitute here, so a flagged rewrite
-        # instead gets fed back to the model as a targeted correction (name
-        # the exact word(s), ask it to rewrite the whole thing again) for up
-        # to config.STORYBOOK_SAFETY_RETRY_ATTEMPTS total attempts. Only a
-        # rewrite that's still unsafe after every attempt is discarded --
-        # a parse failure is a different failure mode (already logged
-        # distinctly above) and is never retried this way. The raw
-        # transcript (already saved, untouched) survives either outcome.
+        # Two independent, retryable failure modes share one attempt
+        # budget (config.STORYBOOK_REWRITE_RETRY_ATTEMPTS): an unparseable
+        # reply (a small local model doesn't reliably produce clean JSON)
+        # asks the model to try again with valid JSON; a kid-safety-check
+        # failure (the same safety.is_safe() gate session.py's live turns
+        # pass through via safety.filter_reply()) names the exact word(s)
+        # to avoid. Unlike a live turn, there is no safe fallback text to
+        # substitute here, so either failure just retries in place. Only a
+        # rewrite that's still bad after every attempt is discarded -- the
+        # raw transcript (already saved, untouched) survives regardless.
         blocked_terms: list[str] = []
-        for attempt in range(1, config.STORYBOOK_SAFETY_RETRY_ATTEMPTS + 1):
+        for attempt in range(1, config.STORYBOOK_REWRITE_RETRY_ATTEMPTS + 1):
             parts: list[str] = []
             async for chunk in llm.stream_reply(messages):
                 parts.append(chunk)
@@ -189,9 +193,22 @@ async def build_and_attach(
 
             parsed = _parse_rewrite(raw)
             if parsed is None:
+                if attempt < config.STORYBOOK_REWRITE_RETRY_ATTEMPTS:
+                    logger.warning(
+                        "storybook rewrite for story %s attempt %d/%d produced "
+                        "unparseable output -- asking the model to try again",
+                        story_id,
+                        attempt,
+                        config.STORYBOOK_REWRITE_RETRY_ATTEMPTS,
+                    )
+                    messages.append({"role": "assistant", "content": raw})
+                    messages.append({"role": "user", "content": _PARSE_RETRY_TEMPLATE})
+                    continue
                 logger.error(
-                    "storybook rewrite for story %s produced unparseable output: %r",
+                    "storybook rewrite for story %s produced unparseable output "
+                    "after %d attempt(s): %r",
                     story_id,
+                    config.STORYBOOK_REWRITE_RETRY_ATTEMPTS,
                     raw,
                 )
                 _mark_failed(story_id, stories_dir)
@@ -228,10 +245,10 @@ async def build_and_attach(
                 "kid-safety check (%s) -- asking the model to rewrite without it",
                 story_id,
                 attempt,
-                config.STORYBOOK_SAFETY_RETRY_ATTEMPTS,
+                config.STORYBOOK_REWRITE_RETRY_ATTEMPTS,
                 ", ".join(blocked_terms),
             )
-            if attempt < config.STORYBOOK_SAFETY_RETRY_ATTEMPTS:
+            if attempt < config.STORYBOOK_REWRITE_RETRY_ATTEMPTS:
                 messages.append({"role": "assistant", "content": raw})
                 messages.append(
                     {
@@ -247,7 +264,7 @@ async def build_and_attach(
                 "storybook rewrite for story %s failed the kid-safety check after "
                 "%d attempt(s) -- discarding rather than persisting unsafe content",
                 story_id,
-                config.STORYBOOK_SAFETY_RETRY_ATTEMPTS,
+                config.STORYBOOK_REWRITE_RETRY_ATTEMPTS,
             )
             _mark_failed(story_id, stories_dir)
             return

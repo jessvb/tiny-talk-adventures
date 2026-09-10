@@ -323,20 +323,52 @@ async def test_build_and_attach_gives_up_after_the_configured_number_of_safety_a
     assert story["rewrite_status"] == "failed"
     assert story["title"] is None
     assert story["turns"], "raw transcript must survive exhausting every retry"
-    assert len(llm.calls) == config.STORYBOOK_SAFETY_RETRY_ATTEMPTS
+    assert len(llm.calls) == config.STORYBOOK_REWRITE_RETRY_ATTEMPTS
 
 
-async def test_build_and_attach_does_not_retry_an_unparseable_reply(tmp_path):
-    # Retrying is specifically for the kid-safety check -- an unparseable
-    # reply is a different failure mode (already logged distinctly) and
-    # keeps its existing immediate-fail behavior rather than burning
-    # further attempts on it.
+async def test_build_and_attach_retries_and_saves_once_a_later_attempt_parses(tmp_path):
+    # Regression: on-device, a real rewrite reply came back with one page
+    # object missing its opening brace -- malformed JSON, not a safety
+    # issue. That story got no storybook at all under the old
+    # immediate-fail behavior. A parse failure now gets the same kind of
+    # second chance a safety-check failure already did.
+    story_id = make_saved_story(tmp_path)
+    valid_reply = json.dumps({"title": "A Story", "pages": [{"text": "Once upon a time."}]})
+    llm = FakeRewriteLlm("this is not json at all", valid_reply)
+
+    await build_and_attach(story_id, [], [], llm=llm, stories_dir=tmp_path)
+
+    story = load_story(story_id, stories_dir=tmp_path)
+    assert story["rewrite_status"] == "done"
+    assert story["title"] == "A Story"
+    assert len(llm.calls) == 2
+
+
+async def test_build_and_attach_parse_retry_asks_for_valid_json_again(tmp_path):
+    story_id = make_saved_story(tmp_path)
+    valid_reply = json.dumps({"title": "A Story", "pages": [{"text": "Once upon a time."}]})
+    llm = FakeRewriteLlm("this is not json at all", valid_reply)
+
+    await build_and_attach(story_id, [], [], llm=llm, stories_dir=tmp_path)
+
+    retry_prompt = llm.calls[1][-1]["content"]
+    assert "valid json" in retry_prompt.lower()
+
+
+async def test_build_and_attach_gives_up_after_the_configured_number_of_parse_attempts(
+    tmp_path,
+):
+    from tinytalk import config
+
     story_id = make_saved_story(tmp_path)
     llm = FakeRewriteLlm("this is not json at all")
 
     await build_and_attach(story_id, [], [], llm=llm, stories_dir=tmp_path)
 
-    assert len(llm.calls) == 1
+    story = load_story(story_id, stories_dir=tmp_path)
+    assert story["rewrite_status"] == "failed"
+    assert story["turns"], "raw transcript must survive exhausting every retry"
+    assert len(llm.calls) == config.STORYBOOK_REWRITE_RETRY_ATTEMPTS
 
 
 async def test_build_and_attach_marks_failed_and_does_not_raise_on_an_unexpected_exception(
