@@ -311,6 +311,15 @@ final class AppModel: ObservableObject {
                 self?.pendingDemoStore.save(payload)
             }
         )
+        // Merge DemoConnection's own diagnostic lines into the same
+        // on-screen debug log as RealAudioEngine's -- see connect()'s
+        // audio.onDebugEvent wiring above for the same pattern. Hops onto
+        // the main actor since appendAudioDebugEvent mutates @Published
+        // state; the hook itself can fire from a background Task, not
+        // necessarily the main thread.
+        connection.onDebugEvent = { [weak self] line in
+            Task { @MainActor in self?.appendAudioDebugEvent(line) }
+        }
 
         guard let audio = try? RealAudioEngine() else {
             lastErrorMessage = "failed to configure audio session"

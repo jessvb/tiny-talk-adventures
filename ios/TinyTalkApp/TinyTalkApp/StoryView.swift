@@ -279,7 +279,13 @@ struct StoryView: View {
 
                 Spacer()
 
-                Text(model.isConnected ? "connected · \(model.serverAddress)" : "not connected")
+                Text(
+                    !model.isConnected
+                        ? "not connected"
+                        : model.awayFromHomeEnabled
+                            ? "connected · Groq cloud (away from home)"
+                            : "connected · \(model.serverAddress)"
+                )
                     .font(TTA.Typography.body(10, weight: .medium))
                     .foregroundColor(TTA.Palette.inkSoft.opacity(0.7))
                     .padding(.bottom, 20)

@@ -39,6 +39,17 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
     private let targetTurns: Int
     private let onStoryCompleted: ((PendingDemoStoryPayload) -> Void)?
 
+    /// Optional hook for surfacing DemoConnection's diagnostic lines into
+    /// the same on-screen debug log RealAudioEngine.onDebugEvent and
+    /// SessionCoordinator.debugLog already feed -- see AudioEngine.swift's
+    /// onDebugEvent doc comment for the shared pattern this mirrors, and
+    /// DebugTimestamp's doc comment for why a shared, thread-safe formatter
+    /// matters here specifically (runTurn runs on a background Task, not a
+    /// fixed thread). Pre-timestamped here (not left to the caller) so it
+    /// sorts correctly against those other sources' own timestamped lines
+    /// after merging.
+    public var onDebugEvent: (@Sendable (String) -> Void)?
+
     private let continuation: AsyncStream<ServerConnectionEvent>.Continuation
     private let stream: AsyncStream<ServerConnectionEvent>
 
@@ -169,9 +180,14 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
 
             continuation.yield(.message(.responseText(reply, turnId: turnId)))
 
+            var ttsChunkCount = 0
             for await pcmChunk in ttsClient.synthesize(reply) {
                 try Task.checkCancellation()
+                ttsChunkCount += 1
                 continuation.yield(.audio(pcmChunk))
+            }
+            if ttsChunkCount == 0 {
+                onDebugEvent?("[\(DebugTimestamp.now())] TTS produced 0 bytes for turn \(turnId)")
             }
             try Task.checkCancellation() // closes the window between the last audio chunk and recording the reply
 
@@ -184,6 +200,7 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
         } catch is CancellationError {
             return
         } catch {
+            onDebugEvent?("[\(DebugTimestamp.now())] turn \(turnId) failed: \(error)")
             continuation.yield(.message(.error(
                 "Elsie's cloud brain is having trouble -- let's try again in a moment.",
                 turnId: turnId

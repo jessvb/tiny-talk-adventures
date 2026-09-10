@@ -28,6 +28,7 @@ _VIOLENCE = (
     "kill",
     "kills",
     "killed",
+    "killing",
     "dead",
     "die",
     "dies",
