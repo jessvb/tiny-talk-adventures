@@ -1,4 +1,4 @@
-import AVFoundation
+@preconcurrency import AVFoundation
 import TinyTalkCore
 
 /// SpeechSynthesizing backed by on-device AVSpeechSynthesizer -- see the
@@ -23,6 +23,9 @@ public final class AVSpeechTts: NSObject, SpeechSynthesizing, @unchecked Sendabl
             guard !text.isEmpty else {
                 continuation.finish()
                 return
+            }
+            continuation.onTermination = { [synthesizer] _ in
+                synthesizer.stopSpeaking(at: .immediate)
             }
             let utterance = AVSpeechUtterance(string: text)
             if let voiceIdentifier, let voice = AVSpeechSynthesisVoice(identifier: voiceIdentifier) {
