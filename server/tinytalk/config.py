@@ -62,8 +62,10 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_HOST = os.environ.get("GROQ_HOST", "https://api.groq.com")
 # Groq's free-tier model lineup changes over time -- check
 # https://console.groq.com for what's currently available before relying on
-# this default.
-GROQ_MODEL = os.environ.get("TINYTALK_GROQ_MODEL", "llama-3.1-8b-instant")
+# this default. llama-3.1-8b-instant was shut down 2026-08-16; Groq's own
+# deprecation notice (console.groq.com/docs/deprecations) names
+# openai/gpt-oss-20b as its replacement.
+GROQ_MODEL = os.environ.get("TINYTALK_GROQ_MODEL", "openai/gpt-oss-20b")
 
 # Free sign-up at https://api-ninjas.com (100 requests/hour free tier) --
 # used only on the first-ever mention of a given animal; every later

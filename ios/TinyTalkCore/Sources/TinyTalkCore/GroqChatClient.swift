@@ -27,10 +27,14 @@ public final class GroqChatClient: ChatCompleting, @unchecked Sendable {
     /// Model default matches config.py's GROQ_MODEL. Groq's free-tier
     /// model lineup changes over time -- verify this is still current at
     /// https://console.groq.com before relying on it, same caveat as
-    /// that file's own comment.
+    /// that file's own comment. llama-3.1-8b-instant was shut down
+    /// 2026-08-16; Groq's own deprecation notice
+    /// (console.groq.com/docs/deprecations) names openai/gpt-oss-20b as
+    /// its replacement -- confirmed via an on-device test hitting
+    /// "model not found" on the old id.
     public init(
         apiKey: String,
-        model: String = "llama-3.1-8b-instant",
+        model: String = "openai/gpt-oss-20b",
         host: String = "https://api.groq.com",
         session: URLSession = .shared
     ) {
