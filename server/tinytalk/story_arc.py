@@ -165,7 +165,13 @@ class StoryArc:
         # itself, since that's the turn it's about to produce guidance for.
         if turn <= 1:
             return Stage.INTRO
-        setup_end = round(self._target_turns / 4)
+        # max(2, ...): turn 1 is always INTRO (above), so round(target/4)
+        # rounding down to <=1 (true for target_turns in {4, 5}, the low
+        # end of Settings' adjustable range) would make SETUP unreachable
+        # by any turn number -- silently skipping the one stage whose job
+        # is introducing a conflict (on-device testing found stories with
+        # no conflict at all before this floor was added).
+        setup_end = max(2, round(self._target_turns / 4))
         rising_end = round(self._target_turns * 2 / 3)
         if turn <= setup_end:
             return Stage.SETUP

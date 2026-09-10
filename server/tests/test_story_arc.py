@@ -48,6 +48,23 @@ def test_custom_target_turns_scales_boundaries():
         assert arc.stage is expected_stage
 
 
+@pytest.mark.parametrize("target_turns", [4, 5])
+def test_setup_stage_is_reachable_at_low_target_turns(target_turns):
+    # Regression test: on-device, target_turns=4 (Settings' minimum)
+    # produced a story with no conflict/tension at all. Root cause:
+    # setup_end = round(target_turns / 4) rounds to <=1 for target_turns
+    # in {4, 5}, and turn 1 is unconditionally INTRO -- so no turn number
+    # could ever land in the SETUP branch, silently skipping the one stage
+    # whose job is introducing a problem/challenge (see
+    # test_setup_guidance_instructs_introducing_a_conflict_right_away's
+    # own on-device-testing rationale for why that stage matters).
+    arc = StoryArc(target_turns=target_turns)
+    arc.record_turn("we walked into the forest")  # turn 1 -- intro
+    guidance = arc.record_turn("a fox appeared").lower()  # turn 2 -- must be setup
+    assert arc.stage is Stage.SETUP
+    assert any(word in guidance for word in ("problem", "challenge", "conflict"))
+
+
 def test_record_turn_returns_guidance_matching_current_stage():
     arc = StoryArc()
     guidance = arc.record_turn("we walked into the forest")
@@ -78,13 +95,14 @@ def test_resolution_and_forced_guidance_both_instruct_ending_with_the_end():
     # child a clear sense of closure and makes _CONCLUSION_PATTERN's
     # natural-conclusion detection far more reliable (it's already one of
     # _CONCLUSION_PHRASES).
-    arc = StoryArc(target_turns=1)  # grace ceiling = 2; turn 2+ is already resolution
-    arc.record_turn("something happens")  # turn 1
-    resolution_guidance = arc.record_turn("something happens")  # turn 2 -- natural resolution, not yet forced
+    arc = StoryArc(target_turns=2)  # grace ceiling = 3; turn 3+ is already resolution
+    arc.record_turn("something happens")  # turn 1 -- intro
+    arc.record_turn("something happens")  # turn 2 -- setup
+    resolution_guidance = arc.record_turn("something happens")  # turn 3 -- natural resolution, not yet forced
     assert arc.stage is Stage.RESOLUTION
     assert '"the end.' in resolution_guidance.lower()
 
-    forced_guidance = arc.record_turn("something happens")  # turn 3 -- past the ceiling
+    forced_guidance = arc.record_turn("something happens")  # turn 4 -- past the ceiling
     assert '"the end.' in forced_guidance.lower()
 
 
