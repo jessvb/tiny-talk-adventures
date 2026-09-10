@@ -311,6 +311,14 @@ public actor SessionCoordinator {
         try? await connection.send(.objectSeen(label: label))
     }
 
+    /// Hands completed away-from-home stories to whatever connection is
+    /// current -- a no-op (best effort, like sendObjectSeen) if the send
+    /// fails; AppModel only clears PendingDemoStore after this returns
+    /// without throwing.
+    public func syncDemoStories(_ stories: [PendingDemoStoryPayload]) async throws {
+        try await connection.send(.syncDemoStories(stories: stories))
+    }
+
     /// Appends to the pre-roll ring buffer, evicting the oldest chunks once
     /// the ~200ms byte cap is exceeded. Only called while NOT .listening, or
     /// while isFlushing is true -- once .listening AND not flushing,

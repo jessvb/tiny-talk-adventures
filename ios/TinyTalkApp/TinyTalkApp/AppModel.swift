@@ -38,6 +38,7 @@ struct StoryTurn: Identifiable, Equatable {
 @MainActor
 final class AppModel: ObservableObject {
     @Published var serverAddress: String
+    @Published var awayFromHomeEnabled: Bool
     @Published var screen: AppScreen
     @Published var state: SessionState = .idle
     @Published var lastTranscript: String = ""
@@ -75,6 +76,7 @@ final class AppModel: ObservableObject {
     private var coordinator: SessionCoordinator?
     private var audioEngine: RealAudioEngine?
     private let objectRecognizer = VisionObjectRecognizer()
+    private let pendingDemoStore = PendingDemoStore()
     private var runLoop: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
     /// Which turn_id's transcript/reply has already been appended to
@@ -131,8 +133,17 @@ final class AppModel: ObservableObject {
 
     init() {
         serverAddress = UserDefaults.standard.string(forKey: "serverAddress") ?? "ws://192.168.1.1:8765"
+        awayFromHomeEnabled = UserDefaults.standard.bool(forKey: "awayFromHomeEnabled")
         let hasOnboarded = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
         screen = hasOnboarded ? .landing : .onboarding
+    }
+
+    /// The Settings toggle calls this (not $awayFromHomeEnabled directly)
+    /// so the choice survives an app relaunch, matching serverAddress's
+    /// own persistence.
+    func setAwayFromHomeEnabled(_ enabled: Bool) {
+        awayFromHomeEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "awayFromHomeEnabled")
     }
 
     /// What Onboarding's primary button calls -- requests mic permission up
@@ -259,6 +270,84 @@ final class AppModel: ObservableObject {
         }
 
         isConnected = true
+        let pending = pendingDemoStore.loadAll()
+        if !pending.isEmpty {
+            do {
+                try await coordinator.syncDemoStories(pending)
+                pendingDemoStore.clear()
+            } catch {
+                // Best effort, same reasoning as sendObjectSeen -- left
+                // for the next successful reconnect to retry; nothing
+                // is lost, since PendingDemoStore was not cleared.
+                print("AppModel: failed to sync demo stories: \(error)")
+            }
+        }
+        startPollingState()
+    }
+
+    /// Away-from-home counterpart to connect() -- builds a DemoConnection
+    /// against Groq instead of a WebSocketServerConnection against the
+    /// Mac. See the design spec's disclosed simplification: unlike the
+    /// real server, there is no persistent session to resume if the app
+    /// is backgrounded mid-reply -- that reply is simply lost, not
+    /// replayed.
+    func connectAwayFromHome() async {
+        guard let groqKey = KeychainStore.get("groqApiKey"), !groqKey.isEmpty else {
+            lastErrorMessage = "no Groq API key saved -- add one in Settings, under Away From Home."
+            return
+        }
+        guard await RealAudioEngine.requestMicrophonePermission() else {
+            lastErrorMessage = "microphone access denied. Check Settings > Privacy > Microphone > TinyTalkApp."
+            return
+        }
+
+        let animalFactsKey = KeychainStore.get("animalFactsApiKey")
+        let connection = DemoConnection(
+            chatClient: GroqChatClient(apiKey: groqKey),
+            sttClient: GroqWhisperClient(apiKey: groqKey),
+            ttsClient: AVSpeechTts(),
+            animalFactTracker: AnimalFactTracker(fetcher: AnimalFactsAPIClient(apiKey: animalFactsKey)),
+            onStoryCompleted: { [weak self] payload in
+                self?.pendingDemoStore.save(payload)
+            }
+        )
+
+        guard let audio = try? RealAudioEngine() else {
+            lastErrorMessage = "failed to configure audio session"
+            return
+        }
+        audioEngine = audio
+        audio.onDebugEvent = { [weak self] line in
+            Task { @MainActor in self?.appendAudioDebugEvent(line) }
+        }
+
+        guard let vadModelPath = Bundle.main.path(forResource: "silero_vad", ofType: "onnx"),
+              let vad = try? SileroVoiceActivityDetector(modelPath: vadModelPath) else {
+            lastErrorMessage = "failed to load VAD model"
+            return
+        }
+
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad, waitingDittyAudio: WaitingDitty.audio)
+        self.coordinator = coordinator
+        runLoop = Task { await coordinator.start() }
+
+        let (micStream, micContinuation) = AsyncStream<Data>.makeStream()
+        micStreamContinuation = micContinuation
+        micConsumerTask = Task { [weak self] in
+            for await pcm in micStream {
+                await self?.coordinator?.captureAudio(pcm)
+            }
+        }
+
+        do {
+            try await audio.startCapturing { pcm in micContinuation.yield(pcm) }
+        } catch {
+            lastErrorMessage = "could not start audio capture: \(error.localizedDescription). Check Settings > Privacy > Microphone."
+            disconnect()
+            return
+        }
+
+        isConnected = true
         startPollingState()
     }
 
@@ -322,7 +411,11 @@ final class AppModel: ObservableObject {
     func connectResumingIfPending() async {
         let resumingTurnId = pendingResumeTurnId
         pendingResumeTurnId = nil
-        await connect(resumingTurnId: resumingTurnId)
+        if awayFromHomeEnabled {
+            await connectAwayFromHome()
+        } else {
+            await connect(resumingTurnId: resumingTurnId)
+        }
     }
 
     /// Debug/testing affordance: abandon the current story and start a
