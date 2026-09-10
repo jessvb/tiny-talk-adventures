@@ -1,11 +1,11 @@
 import SwiftUI
 import TinyTalkCore
 
-/// Shown right after a story naturally concludes (design 1a's "The End").
-/// For now, reached only via Settings' preview buttons -- wiring this into
-/// the real conclude flow needs the storybook-persistence branch's
-/// ConcludeStory/story_detail wire messages, not yet merged (see
-/// docs/superpowers/plans/2026-09-08-storybook-persistence.md).
+/// Shown right after a story naturally concludes (design 1a's "The End"),
+/// auto-navigated to by AppModel once a concluding turn's audio finishes
+/// playing and the server's rewriting_started/story_detail signals arrive
+/// (see AppModel's readyToShowTheEnd handling). Also still reachable via
+/// Settings' preview buttons against mock data.
 struct TheEndView: View {
     @ObservedObject var model: AppModel
     var childName: String = "you"
@@ -57,8 +57,14 @@ struct TheEndView: View {
                     }
 
                     Button {
-                        model.libraryStories = MockStories.librarySummaries
-                        model.screen = .library
+                        // AppModel already keeps model.selectedStory live for
+                        // this exact story for as long as The End screen is
+                        // showing (see AppModel's getStory()/story_detail
+                        // handling, which re-fetches once the rewrite
+                        // finishes) -- ReadingView reads that same property
+                        // directly, so no separate fetch or mock data is
+                        // needed here.
+                        model.screen = .reading
                     } label: {
                         Text("Read it now")
                     }
