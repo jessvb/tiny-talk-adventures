@@ -129,25 +129,45 @@ Object recognition (PR #8) and the ditty-resume-backgrounding bug (PR #11
 — root cause was `playerNode` not being reset in `rebuildCaptureTap()`)
 are both merged and closed.
 
-Storybook persistence is also now implemented on both sides:
+Storybook persistence (server side) is merged and **on-device verified**:
 `server/tinytalk/storybook.py`'s background rewrite pipeline (title/pages/
 epilogue from a saved story's transcript, gated by a `REWRITING` session
 state so it never runs concurrently with a live story's LLM turns) plus
 the arc-stage wire message, story-conclude action, and read/list API in
 `story_store.py` are merged (PR #13) — see
-`docs/superpowers/specs/2026-09-08-storybook-persistence-design.md`. The
-iOS Library/Reading/The End screens (PR #12) are merged too, but still
-wired to **mock data only**, not this real server API.
+`docs/superpowers/specs/2026-09-08-storybook-persistence-design.md`. A
+real on-device play-through (2026-09-10) had the kid-safety check flag
+content mid-rewrite, which exercised PR #18's retry logic
+(`build_and_attach()` retrying up to
+`config.STORYBOOK_SAFETY_RETRY_ATTEMPTS` times against the real local
+`qwen3.5:9b`) — the rewrite still completed as `rewrite_status: "done"`.
+Both the base rewrite pipeline and the safety-retry fix are now confirmed
+against real hardware, not just the fakes-based test suite. PR #14 (a
+small epilogue-grammar fix, tests-only verified, no on-device step
+needed) is open and ready to merge whenever convenient.
 
-Two threads are open right now, each blocked on something other than more
-unsupervised implementation work:
+Parent-adjustable story length ("turns per story", "pages in the
+storybook", via a new `update_settings` wire message) is implemented and
+merged to local `main` — see
+`docs/superpowers/specs/2026-09-09-story-length-settings-design.md`.
+**Not yet pushed to `origin/main`** (local `main` is currently ahead of
+the remote) — push whenever the household is ready to fast-forward it.
 
-- **On-device verification of the storybook rewrite pipeline.** It has
-  never been exercised against the real local `qwen3.5:9b` model — only
-  against fakes in the test suite. Blocked on an on-device session: play
-  one full story to conclusion and confirm the rewrite actually completes
-  (`rewrite_status: "done"`).
-- **Wiring the iOS screens to the real server API** (`list_stories`,
-  `get_story`, `synthesize_page`) instead of `MockStories.swift`. This is
-  a new sub-project and needs a `superpowers:brainstorming` session and an
-  approved spec before implementation, per "Working process" above.
+An away-from-home demo mode has an approved spec merged
+(`docs/superpowers/specs/2026-09-09-away-from-home-demo-mode-design.md`)
+but no implementation yet — a candidate for a future sub-project, not
+in progress.
+
+Wiring the iOS screens to the real server API (`list_stories`, `get_story`,
+`synthesize_page`) instead of `MockStories.swift` is **partially in
+flight**: PR #17 (open, not yet merged, not yet tested on-device) wires
+just The End screen — a "Finish this story" menu item that sends the
+existing `conclude_story` action, and real auto-navigation to The End
+gated on both `rewriting_started` arriving and the concluding turn's
+audio actually finishing local playback. The Library and Reading screens
+are still 100% mock-data-only and untouched by PR #17; wiring those (plus
+Landing's/StoryView's real "Read Stories" buttons, and swapping
+`ReadingView`'s `AVSpeechSynthesizer` stand-in for a real
+`synthesize_page` round trip) is unscoped and needs its own
+`superpowers:brainstorming` session per "Working process" above before
+implementation.
