@@ -141,6 +141,12 @@ class StoryArc:
     def is_done(self) -> bool:
         return self._is_done
 
+    @property
+    def has_started(self) -> bool:
+        """True once record_turn has ever run -- i.e. this is a real story
+        in progress, not a fresh arc waiting for its first turn."""
+        return self._turn_count > 0
+
     def _stage_for_turn(self, turn: int) -> Stage:
         # turn <= 0 is the pre-first-turn state (a fresh arc, before
         # record_turn has ever been called) -- treated the same as turn 1
