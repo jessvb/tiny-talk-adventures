@@ -127,7 +127,19 @@ _CONCLUSION_PATTERN = _phrase_pattern(_CONCLUSION_PHRASES)
 class StoryArc:
     def __init__(self, target_turns: int = config.STORY_TARGET_TURNS) -> None:
         self._target_turns = target_turns
-        self._grace_ceiling = target_turns + 3
+        # Grace turns scale with target_turns rather than a fixed +3 --
+        # that fixed offset was empirically tuned back when target_turns
+        # was a constant 7 (a ~43% overrun ceiling; see config.py's
+        # STORY_TARGET_TURNS comment). Once target_turns became
+        # parent-adjustable down to 4, the same fixed +3 became a
+        # ~75-100% overrun at the low end (a real story ran to 7 turns on
+        # a target of 4). round(target_turns * 3/7) preserves that ~43%
+        # ratio at any target_turns, and is exactly 3 again at
+        # target_turns=7 -- the one value this was ever tuned against.
+        # max(1, ...) keeps at least one non-forced RESOLUTION turn even
+        # at very low target_turns, so a story is never forced-ended with
+        # zero chance to conclude on its own.
+        self._grace_ceiling = target_turns + max(1, round(target_turns * 3 / 7))
         self._turn_count = 0
         self._is_done = False
 

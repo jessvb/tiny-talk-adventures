@@ -78,15 +78,13 @@ def test_resolution_and_forced_guidance_both_instruct_ending_with_the_end():
     # child a clear sense of closure and makes _CONCLUSION_PATTERN's
     # natural-conclusion detection far more reliable (it's already one of
     # _CONCLUSION_PHRASES).
-    arc = StoryArc(target_turns=1)  # grace ceiling = 4; turn 2+ is already resolution
+    arc = StoryArc(target_turns=1)  # grace ceiling = 2; turn 2+ is already resolution
     arc.record_turn("something happens")  # turn 1
-    resolution_guidance = arc.record_turn("something happens")  # turn 2
+    resolution_guidance = arc.record_turn("something happens")  # turn 2 -- natural resolution, not yet forced
     assert arc.stage is Stage.RESOLUTION
     assert '"the end.' in resolution_guidance.lower()
 
-    arc.record_turn("something happens")  # turn 3
-    arc.record_turn("something happens")  # turn 4 -- last turn within the grace ceiling
-    forced_guidance = arc.record_turn("something happens")  # turn 5 -- past the ceiling
+    forced_guidance = arc.record_turn("something happens")  # turn 3 -- past the ceiling
     assert '"the end.' in forced_guidance.lower()
 
 
@@ -141,9 +139,33 @@ def test_turn_count_past_grace_ceiling_forces_guidance_then_marks_done():
     assert arc.is_done is True
 
 
+def test_grace_ceiling_scales_down_for_low_target_turns():
+    # Regression test: on-device, target_turns=4 (Settings' minimum) ran a
+    # story to 7 turns -- the old fixed "+3" grace was tuned when
+    # target_turns was a constant 7 (a ~43% overrun ceiling), so at the new
+    # minimum of 4 the same fixed +3 was a ~75-100% overrun. Grace now
+    # scales with target_turns, preserving that ~43% ratio: ceiling=6, not 7.
+    arc = StoryArc(target_turns=4)
+    for _ in range(6):
+        arc.record_turn("something happens")
+        arc.record_reply("something else happens, with no trigger phrase")
+    assert arc.is_done is False  # still within the grace ceiling
+
+    guidance = arc.record_turn("something happens")  # turn 7, past ceiling
+    assert guidance == (
+        "This must be the last reply. Resolve the problem from earlier "
+        "in the story and bring it to a warm, complete ending right now. "
+        "Do not ask what should happen next. The story is over. End "
+        "your reply with the words \"The end.\""
+    )
+    arc.record_reply("anything at all, even without a conclusion phrase")
+    assert arc.is_done is True
+
+
 def test_force_conclude_guidance_is_the_same_as_grace_ceiling_guidance():
     target_turns = 3
-    grace_ceiling = target_turns + 3  # matches StoryArc's own __init__ formula
+    # matches StoryArc's own __init__ formula
+    grace_ceiling = target_turns + max(1, round(target_turns * 3 / 7))
     arc = StoryArc(target_turns=target_turns)
     for _ in range(grace_ceiling):
         arc.record_turn("keep going")
