@@ -66,15 +66,29 @@ struct TheEndView: View {
                         // needed here.
                         model.screen = .reading
                     } label: {
-                        Text("Read it now")
+                        HStack(spacing: 10) {
+                            if detail.rewriteStatus == .pending {
+                                ProgressView()
+                                    .tint(TTA.Palette.cream)
+                            }
+                            Text("Read it now")
+                        }
                     }
-                    .buttonStyle(.ttaPrimary)
+                    // ChunkyButtonStyle never reads isEnabled -- it only
+                    // reacts to isPressed -- so .disabled() alone would
+                    // make this untappable without looking any different.
+                    // A parent found the previous plain .opacity() dim on
+                    // the vivid scarf-red fill too subtle to read as
+                    // "disabled" at a glance -- swapping to an actual
+                    // muted fill/edge pair (still from the warm palette,
+                    // not an off-brand cold grey) plus the spinner above
+                    // reads unambiguously as "in progress" instead.
+                    .buttonStyle(
+                        detail.rewriteStatus == .done
+                            ? ChunkyButtonStyle(fill: TTA.Palette.scarf, edge: TTA.Palette.scarfShadow)
+                            : ChunkyButtonStyle(fill: TTA.Palette.inkSoft, edge: TTA.Palette.ink)
+                    )
                     .disabled(detail.rewriteStatus != .done)
-                    // ChunkyButtonStyle (.ttaPrimary) never reads
-                    // isEnabled -- it only reacts to isPressed -- so
-                    // .disabled() alone would make this untappable
-                    // without looking any different. Dim it explicitly.
-                    .opacity(detail.rewriteStatus == .done ? 1 : 0.45)
                     .padding(.top, 24)
 
                     // Same copy as LibraryView's statusCaption -- one
