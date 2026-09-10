@@ -1,4 +1,5 @@
 import SwiftUI
+import TinyTalkCore
 
 /// Grown-up settings screen (design 1a). The design's "Story length" /
 /// "Elsie's voice speed" / "Real animal facts" / "Camera inspiration" rows
@@ -15,6 +16,13 @@ struct SettingsView: View {
     /// watching the coordinator's debugLog live, not something a curious
     /// child tapping around Settings should stumble into.
     @State private var showDebugLogSheet = false
+    /// Revealed by the same long-press as showDebugLogSheet -- see that
+    /// property's doc comment. Not persisted: resets to hidden each time
+    /// Settings is reopened, same as the debug sheet requires
+    /// re-discovering the gesture.
+    @State private var showAwayFromHomeCard = false
+    @State private var groqApiKey: String = KeychainStore.get("groqApiKey") ?? ""
+    @State private var animalFactsApiKey: String = KeychainStore.get("animalFactsApiKey") ?? ""
 
     var body: some View {
         ZStack {
@@ -26,6 +34,7 @@ struct SettingsView: View {
                     VStack(spacing: 18) {
                         serverCard
                         underTheHoodCard
+                        awayFromHomeCard
                         storybookPreviewCard
                         replayButton
                     }
@@ -89,7 +98,11 @@ struct SettingsView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
             }
 
-            Text("Your Mac on the home WiFi. Speech, story and voice all run there — nothing is sent to the internet.")
+            Text(
+                model.awayFromHomeEnabled
+                    ? "Away from home: Elsie's brain is in Groq's cloud right now, not your Mac."
+                    : "Your Mac on the home WiFi. Speech, story and voice all run there — nothing is sent to the internet."
+            )
                 .font(TTA.Typography.body(13.5))
                 .foregroundColor(TTA.Palette.inkSoft)
 
@@ -120,6 +133,7 @@ struct SettingsView: View {
                 // not just its count. No visual affordance on purpose.
                 .onLongPressGesture(minimumDuration: 1.0) {
                     showDebugLogSheet = true
+                    showAwayFromHomeCard = true
                 }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -136,6 +150,67 @@ struct SettingsView: View {
         .padding(16)
         .background(TTA.Palette.cream)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var awayFromHomeCard: some View {
+        if showAwayFromHomeCard {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("AWAY FROM HOME")
+                    .font(TTA.Typography.display(12))
+                    .tracking(1.5)
+                    .foregroundColor(TTA.Palette.inkSoft)
+
+                Text("For demos only, away from the home WiFi: speech and story go through Groq's cloud AI instead of your Mac. Needs a free Groq API key.")
+                    .font(TTA.Typography.body(12.5))
+                    .foregroundColor(TTA.Palette.inkSoft)
+
+                SecureField("Groq API key", text: $groqApiKey)
+                    .font(.system(.body, design: .monospaced))
+                    .padding(11)
+                    .background(TTA.Palette.paper)
+                    .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .onChange(of: groqApiKey) { newValue in
+                        if newValue.isEmpty {
+                            KeychainStore.delete("groqApiKey")
+                        } else {
+                            KeychainStore.set(newValue, forKey: "groqApiKey")
+                        }
+                    }
+
+                SecureField("API Ninjas key (optional -- animal facts)", text: $animalFactsApiKey)
+                    .font(.system(.body, design: .monospaced))
+                    .padding(11)
+                    .background(TTA.Palette.paper)
+                    .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .onChange(of: animalFactsApiKey) { newValue in
+                        if newValue.isEmpty {
+                            KeychainStore.delete("animalFactsApiKey")
+                        } else {
+                            KeychainStore.set(newValue, forKey: "animalFactsApiKey")
+                        }
+                    }
+
+                Toggle(
+                    "Away-from-home mode",
+                    isOn: Binding(
+                        get: { model.awayFromHomeEnabled },
+                        set: { model.setAwayFromHomeEnabled($0) }
+                    )
+                )
+                .disabled(groqApiKey.isEmpty)
+                .tint(TTA.Palette.wood)
+
+                if model.awayFromHomeEnabled {
+                    Text("On: Elsie's brain runs in Groq's cloud right now, not your Mac.")
+                        .font(TTA.Typography.body(11.5))
+                        .foregroundColor(TTA.Palette.alert)
+                }
+            }
+            .padding(16)
+            .background(TTA.Palette.cream)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
     }
 
     /// Developer preview of the Library/Reading/The End screens against
