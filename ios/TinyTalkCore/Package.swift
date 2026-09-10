@@ -13,7 +13,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "TinyTalkCore"),
-        .testTarget(name: "TinyTalkCoreTests", dependencies: ["TinyTalkCore"]),
+        .testTarget(name: "TinyTalkCoreTests", dependencies: ["TinyTalkCore", "TinyTalkPlatform"]),
         .target(
             name: "TinyTalkPlatform",
             dependencies: [
