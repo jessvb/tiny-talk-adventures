@@ -124,16 +124,21 @@ STORY_TARGET_TURNS = int(os.environ.get("TINYTALK_STORY_TARGET_TURNS", "7"))
 # tolerates a page count that's a little off rather than rejecting it.
 STORYBOOK_PAGE_COUNT = int(os.environ.get("TINYTALK_STORYBOOK_PAGE_COUNT", "5"))
 
-# How many total attempts storybook.py's kid-safety check gets before giving
-# up on a rewrite: attempt 1 is the normal rewrite, and each further attempt
-# tells the model exactly which word(s) it needs to avoid this time. Real
-# incident that prompted this: a child suggested "a sharp rock to gently cut
-# a bush" mid-story, and the one-shot rewrite got discarded outright even
-# though the same scene could easily have been retold without the flagged
-# word. 1 disables retrying (first failure is immediately final), matching
-# the old always-discard behavior.
-STORYBOOK_SAFETY_RETRY_ATTEMPTS = int(
-    os.environ.get("TINYTALK_STORYBOOK_SAFETY_RETRY_ATTEMPTS", "3")
+# How many total attempts storybook.py's rewrite gets before giving up:
+# attempt 1 is the normal rewrite, and each further attempt asks the model
+# to try again -- naming the exact word(s) to avoid if the kid-safety check
+# flagged it, or just asking for valid JSON again if the reply was
+# unparseable. Real incident that prompted the safety-retry half: a child
+# suggested "a sharp rock to gently cut a bush" mid-story, and the one-shot
+# rewrite got discarded outright even though the same scene could easily
+# have been retold without the flagged word. The parse-retry half was added
+# after a real on-device rewrite came back with one page object missing its
+# opening brace -- a different failure mode, but the same "give the small
+# local model one more try before discarding the whole story" logic
+# applies. 1 disables retrying (first failure of either kind is immediately
+# final), matching the old always-discard behavior.
+STORYBOOK_REWRITE_RETRY_ATTEMPTS = int(
+    os.environ.get("TINYTALK_STORYBOOK_REWRITE_RETRY_ATTEMPTS", "3")
 )
 
 SYSTEM_PROMPT = (

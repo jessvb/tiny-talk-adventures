@@ -127,7 +127,19 @@ _CONCLUSION_PATTERN = _phrase_pattern(_CONCLUSION_PHRASES)
 class StoryArc:
     def __init__(self, target_turns: int = config.STORY_TARGET_TURNS) -> None:
         self._target_turns = target_turns
-        self._grace_ceiling = target_turns + 3
+        # Grace turns scale with target_turns rather than a fixed +3 --
+        # that fixed offset was empirically tuned back when target_turns
+        # was a constant 7 (a ~43% overrun ceiling; see config.py's
+        # STORY_TARGET_TURNS comment). Once target_turns became
+        # parent-adjustable down to 4, the same fixed +3 became a
+        # ~75-100% overrun at the low end (a real story ran to 7 turns on
+        # a target of 4). round(target_turns * 3/7) preserves that ~43%
+        # ratio at any target_turns, and is exactly 3 again at
+        # target_turns=7 -- the one value this was ever tuned against.
+        # max(1, ...) keeps at least one non-forced RESOLUTION turn even
+        # at very low target_turns, so a story is never forced-ended with
+        # zero chance to conclude on its own.
+        self._grace_ceiling = target_turns + max(1, round(target_turns * 3 / 7))
         self._turn_count = 0
         self._is_done = False
 
@@ -153,7 +165,13 @@ class StoryArc:
         # itself, since that's the turn it's about to produce guidance for.
         if turn <= 1:
             return Stage.INTRO
-        setup_end = round(self._target_turns / 4)
+        # max(2, ...): turn 1 is always INTRO (above), so round(target/4)
+        # rounding down to <=1 (true for target_turns in {4, 5}, the low
+        # end of Settings' adjustable range) would make SETUP unreachable
+        # by any turn number -- silently skipping the one stage whose job
+        # is introducing a conflict (on-device testing found stories with
+        # no conflict at all before this floor was added).
+        setup_end = max(2, round(self._target_turns / 4))
         rising_end = round(self._target_turns * 2 / 3)
         if turn <= setup_end:
             return Stage.SETUP
