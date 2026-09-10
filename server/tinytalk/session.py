@@ -85,6 +85,17 @@ _CONCLUDE_SAFETY_RETRY_TEMPLATE = (
     "reply, and it should end with the words \"The end.\""
 )
 
+# Fed back when a forced-conclude attempt comes back empty -- confirmed on
+# real hardware that simply resubmitting the exact same messages tends to
+# reproduce the same empty completion again (the model has nothing new to
+# react to), so this gives it something to actually respond to instead of
+# just hoping resampling alone breaks the pattern.
+_CONCLUDE_EMPTY_RETRY_NUDGE = (
+    "You didn't write anything. Please write your ending now -- a few "
+    "warm sentences that finish the story, ending with the words "
+    "\"The end.\""
+)
+
 
 class Transport(Protocol):
     async def send_text(self, payload: str) -> None: ...
@@ -758,13 +769,18 @@ class SessionRunner:
                         # filter_reply() also falls back on a genuinely
                         # empty completion (a separate failure mode from a
                         # flagged one, see its own comment) -- nothing to
-                        # name, so just retry the same messages.
+                        # name, so nudge it to actually write something
+                        # instead of resubmitting the identical messages.
                         logger.warning(
                             "conclude_story got an empty reply -- retrying "
                             "(attempt %d/%d)",
                             attempt,
                             config.CONCLUDE_SAFETY_RETRY_ATTEMPTS,
                         )
+                        messages = [
+                            *messages,
+                            {"role": "user", "content": _CONCLUDE_EMPTY_RETRY_NUDGE},
+                        ]
                     llm_start = time.monotonic()
                     raw, first_chunk_at, llm_done = await self._stream_llm_reply(messages)
                     reply = safety.filter_reply(raw)

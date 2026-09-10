@@ -1320,6 +1320,35 @@ async def test_conclude_story_falls_back_after_exhausting_safety_retries(transpo
     assert session.conversation.turns == ()
 
 
+async def test_conclude_story_nudges_the_model_after_an_empty_reply(transport, monkeypatch):
+    # Real incident: a forced-conclude reply came back empty, and BOTH
+    # retries also came back empty -- fast (~500ms vs ~5.9s for the first
+    # attempt), consistent with the model immediately terminating again
+    # against an unchanged prompt rather than genuinely retrying. Unlike
+    # the flagged-word branch (which feeds back what to avoid), the
+    # empty-reply branch was resubmitting the EXACT SAME messages, giving
+    # the model nothing new to react to.
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.save_story", lambda conversation, **kwargs: None
+    )
+    llm = FakeLlm(chunks=["The fox found a shiny red apple."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+
+    llm.calls = []
+    llm.chunks_by_call = [[], ["They landed safely and hugged. The end."]]
+    await session.handle_text(CONCLUDE)
+    await session.wait_for_turn()
+
+    assert len(llm.calls) == 2
+    # The retry's messages must differ from the first attempt's -- not a
+    # byte-for-byte resubmission.
+    assert llm.calls[1] != llm.calls[0]
+    assert len(llm.calls[1]) > len(llm.calls[0])
+    replies = transport.messages_of_type("response_text")
+    assert replies[-1]["text"] == "They landed safely and hugged. The end."
+
+
 async def test_a_concluding_turn_enters_rewriting_and_pushes_rewriting_started(transport, monkeypatch):
     monkeypatch.setattr("tinytalk.session.story_store.save_story", _fake_save_story)
     monkeypatch.setattr(
