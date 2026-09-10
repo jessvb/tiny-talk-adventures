@@ -63,7 +63,7 @@ async def test_build_and_attach_parses_and_saves_a_valid_rewrite(tmp_path):
     # grounds_it_in_the_real_shared_fact below for a test that isolates
     # this specifically (the model's epilogue deliberately differs from
     # the real fact there).
-    assert story["epilogue"] == "And one true thing we learned: foxes have excellent hearing"
+    assert story["epilogue"] == "And one true thing we learned about the fox: foxes have excellent hearing"
     assert story["rewrite_status"] == "done"
     assert story["turns"], "raw transcript must still be present"
 
@@ -255,7 +255,7 @@ async def test_build_and_attach_ignores_the_models_own_epilogue_text_and_grounds
     )
 
     story = load_story(story_id, stories_dir=tmp_path)
-    assert story["epilogue"] == "And one true thing we learned: foxes have excellent hearing"
+    assert story["epilogue"] == "And one true thing we learned about the fox: foxes have excellent hearing"
 
 
 async def test_build_and_attach_retries_and_saves_once_a_later_attempt_is_safe(tmp_path):

@@ -191,8 +191,8 @@ async def build_and_attach(
             # style the design mock uses; when none exist, it's omitted
             # unconditionally, regardless of what the model volunteered.
             if shared_facts:
-                _, fact = shared_facts[0]
-                epilogue = f"And one true thing we learned: {fact}"
+                animal, fact = shared_facts[0]
+                epilogue = f"And one true thing we learned about the {animal}: {fact}"
             else:
                 epilogue = None
 
