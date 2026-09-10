@@ -75,6 +75,16 @@ _STT_FAILURE_GUIDANCE = (
     "question so they have a natural opening to jump back in."
 )
 
+# Fed back to the model when a forced-conclude reply gets flagged by the
+# kid-safety check -- same idea as storybook.py's own _SAFETY_RETRY_TEMPLATE,
+# but phrased for a single spoken reply rather than a JSON rewrite.
+_CONCLUDE_SAFETY_RETRY_TEMPLATE = (
+    "That reply isn't appropriate for a young child -- it mentioned: "
+    "{terms}. Give the same warm, complete ending again, same story, but "
+    "leave out any mention of that. Remember: this must be the last "
+    "reply, and it should end with the words \"The end.\""
+)
+
 
 class Transport(Protocol):
     async def send_text(self, payload: str) -> None: ...
@@ -653,6 +663,21 @@ class SessionRunner:
                 self._conversation.add_agent(" ".join(actually_heard), interrupted=True)
         self._spoken = []
 
+    async def _stream_llm_reply(
+        self, messages: list[dict[str, str]]
+    ) -> tuple[str, float | None, float]:
+        """One LLM streaming call -- returns the raw joined text plus the
+        timing markers _run_turn's own latency log line needs. Factored out
+        so a forced-conclude safety retry can call this more than once per
+        turn without duplicating the streaming loop."""
+        parts: list[str] = []
+        first_chunk_at: float | None = None
+        async for chunk in self._llm.stream_reply(messages):
+            if first_chunk_at is None:
+                first_chunk_at = time.monotonic()
+            parts.append(chunk)
+        return "".join(parts).strip(), first_chunk_at, time.monotonic()
+
     async def _run_turn(
         self, transcript: str, turn_id: int, *, forced_conclude: bool = False
     ) -> None:
@@ -693,16 +718,56 @@ class SessionRunner:
                 self._system_prompt + "\n\n" + guidance
             )
 
-            parts: list[str] = []
             llm_start = time.monotonic()
-            first_chunk_at: float | None = None
-            async for chunk in self._llm.stream_reply(messages):
-                if first_chunk_at is None:
-                    first_chunk_at = time.monotonic()
-                parts.append(chunk)
-            llm_done = time.monotonic()
-            reply = safety.filter_reply("".join(parts).strip())
+            raw, first_chunk_at, llm_done = await self._stream_llm_reply(messages)
+            reply = safety.filter_reply(raw)
             if forced_conclude:
+                # An explicit "finish this story" request must not end on
+                # the generic safety-fallback line -- unlike a normal turn
+                # (where the conversation just continues and a redirect is
+                # a fine recovery), this reply becomes the story's
+                # permanent, saved ending. Retry with the flagged word(s)
+                # fed back, mirroring storybook.py's own rewrite retry,
+                # before finally accepting the fallback as a last resort.
+                attempt = 1
+                while (
+                    reply == safety.SAFE_FALLBACK
+                    and attempt < config.CONCLUDE_SAFETY_RETRY_ATTEMPTS
+                ):
+                    attempt += 1
+                    blocked_terms = safety.find_blocked(raw)
+                    if blocked_terms:
+                        logger.warning(
+                            "conclude_story reply flagged by the kid-safety "
+                            "check (%s) -- retrying (attempt %d/%d)",
+                            ", ".join(blocked_terms),
+                            attempt,
+                            config.CONCLUDE_SAFETY_RETRY_ATTEMPTS,
+                        )
+                        messages = [
+                            *messages,
+                            {"role": "assistant", "content": raw},
+                            {
+                                "role": "user",
+                                "content": _CONCLUDE_SAFETY_RETRY_TEMPLATE.format(
+                                    terms=", ".join(blocked_terms)
+                                ),
+                            },
+                        ]
+                    else:
+                        # filter_reply() also falls back on a genuinely
+                        # empty completion (a separate failure mode from a
+                        # flagged one, see its own comment) -- nothing to
+                        # name, so just retry the same messages.
+                        logger.warning(
+                            "conclude_story got an empty reply -- retrying "
+                            "(attempt %d/%d)",
+                            attempt,
+                            config.CONCLUDE_SAFETY_RETRY_ATTEMPTS,
+                        )
+                    llm_start = time.monotonic()
+                    raw, first_chunk_at, llm_done = await self._stream_llm_reply(messages)
+                    reply = safety.filter_reply(raw)
                 self._story_arc.mark_done()
             else:
                 self._story_arc.record_reply(reply)

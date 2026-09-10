@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from conftest import FailingLlm, FakeLlm, FakeStt, FakeTransport, FakeTts
+from tinytalk import config
 from tinytalk.conversation import INTERRUPTED_MARKER
 from tinytalk.engines import EngineError
 from tinytalk.safety import SAFE_FALLBACK
@@ -1260,6 +1261,63 @@ async def test_conclude_story_pushes_the_done_arc_stage_regardless_of_actual_pro
     await session.wait_for_turn()
 
     assert transport.messages_of_type("arc_stage")[-1]["stage"] == "done"
+
+
+async def test_conclude_story_retries_a_reply_the_safety_check_flags(transport, monkeypatch):
+    # Real incident: "Finish this story" got a reply that mentioned a
+    # blocked word, filter_reply() swapped in SAFE_FALLBACK ("Hmm, let's
+    # take the story somewhere else!"), and mark_done() fired regardless --
+    # the child's story permanently "ended" on a generic redirect line
+    # instead of a real conclusion. Unlike a normal turn (where the
+    # conversation just continues and a redirect is a fine recovery), this
+    # reply becomes the saved, permanent ending, so it needs the same
+    # feed-the-flagged-word-back retry storybook.py's rewrite already has.
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.save_story", lambda conversation, **kwargs: None
+    )
+    llm = FakeLlm(chunks=["The fox found a shiny red apple."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)  # a normal turn first, so there's a story in progress
+
+    # Reset the call log so the retry-attempt indexing below counts only
+    # this conclude turn's own attempts, not the setup turn above.
+    llm.calls = []
+    llm.chunks_by_call = [
+        ["They got hurt in the fall, but"],
+        ["They landed safely and hugged. The end."],
+    ]
+    await session.handle_text(CONCLUDE)
+    await session.wait_for_turn()
+
+    assert len(llm.calls) == 2
+    assert "hurt" in llm.calls[1][-1]["content"].lower()
+    replies = transport.messages_of_type("response_text")
+    assert replies[-1]["text"] == "They landed safely and hugged. The end."
+    assert replies[-1]["text"] != SAFE_FALLBACK
+
+
+async def test_conclude_story_falls_back_after_exhausting_safety_retries(transport, monkeypatch):
+    # Every attempt keeps getting flagged -- the story must still end
+    # (an explicit "finish this story" request can't be allowed to hang
+    # forever), but only after genuinely trying, not on the first flag.
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.save_story", lambda conversation, **kwargs: None
+    )
+    llm = FakeLlm(chunks=["The fox found a shiny red apple."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+
+    llm.calls = []
+    llm.chunks_by_call = [["hurt one"], ["hurt two"], ["hurt three"], ["hurt four"]]
+    await session.handle_text(CONCLUDE)
+    await session.wait_for_turn()
+
+    assert len(llm.calls) == config.CONCLUDE_SAFETY_RETRY_ATTEMPTS
+    replies = transport.messages_of_type("response_text")
+    assert replies[-1]["text"] == SAFE_FALLBACK
+    # The story must still be marked done -- an explicit conclude request
+    # can't be left hanging just because every attempt was unsafe.
+    assert session.conversation.turns == ()
 
 
 async def test_a_concluding_turn_enters_rewriting_and_pushes_rewriting_started(transport, monkeypatch):
