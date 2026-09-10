@@ -34,7 +34,6 @@ public actor AnimalFactTracker {
         attempted = []
         anyAnimalMentioned = false
         _sharedFacts = []
-        cache.save([:])
     }
 
     public func recordTurn(transcript: String, stage: StoryStage) async -> String {
@@ -55,11 +54,11 @@ public actor AnimalFactTracker {
     }
 
     private func getFact(_ canonical: String) async -> String? {
-        var current = cache.load()
-        if let cached = current[canonical] {
+        if let cached = cache.load()[canonical] {
             return cached.randomElement()
         }
         guard let facts = await fetcher.fetchFacts(for: canonical) else { return nil }
+        var current = cache.load()
         current[canonical] = facts
         cache.save(current)
         return facts.randomElement()

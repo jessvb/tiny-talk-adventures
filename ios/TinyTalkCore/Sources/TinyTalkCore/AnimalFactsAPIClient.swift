@@ -50,7 +50,7 @@ public final class AnimalFactsAPIClient: AnimalFactFetching, @unchecked Sendable
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
             let records = try JSONDecoder().decode([AnimalRecord].self, from: data)
             guard let first = records.first, let characteristics = first.characteristics else {
-                return records.isEmpty ? [] : []
+                return []
             }
             return AnimalFacts.extractFacts(from: AnimalRecordCharacteristics(
                 mostDistinctiveFeature: characteristics.mostDistinctiveFeature,

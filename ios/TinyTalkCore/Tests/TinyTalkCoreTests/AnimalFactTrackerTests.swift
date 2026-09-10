@@ -86,7 +86,7 @@ final class AnimalFactTrackerTests: XCTestCase {
         await tracker.reset()
         _ = await tracker.recordTurn(transcript: "a fox", stage: .setup)
 
-        XCTAssertEqual(fetcher.requestedNames, ["fox", "fox"])
+        XCTAssertEqual(fetcher.requestedNames, ["fox"])
         let shared = await tracker.sharedFacts()
         XCTAssertEqual(shared.count, 1) // only this story's fact, not both
     }
