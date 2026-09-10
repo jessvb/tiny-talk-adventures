@@ -94,7 +94,8 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
                 audioBuffer = Data()
             }
         case .objectSeen(let label):
-            objectTracker.recordSeen(label: label)
+            let tracker = lock.withLockReturning { objectTracker }
+            tracker.recordSeen(label: label)
         case .newStory:
             lock.withLock {
                 turnTask?.cancel()
@@ -118,7 +119,20 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
         continuation.finish()
     }
 
+    /// Captures conversation/storyArc/objectTracker once, under lock, at
+    /// the top of the turn -- and operates only on those captured locals
+    /// for the rest of the turn. This is deliberate: those three
+    /// properties can be reassigned to fresh instances mid-turn by a
+    /// concurrent .newStory (or by another turn's completeStory()), and
+    /// reading `self.x` fresh at each use site -- as this used to do --
+    /// let a still-running turn silently read/write whichever instance
+    /// happened to be current at that exact statement, which is how a
+    /// just-concluded story could be lost or a reply could leak into the
+    /// wrong story's transcript. See task-13-report.md's fix-up entry.
     private func runTurn(turnId: Int, pcm: Data) async {
+        let (localConversation, localStoryArc, localObjectTracker) = lock.withLockReturning {
+            (conversation, storyArc, objectTracker)
+        }
         do {
             try Task.checkCancellation()
             let transcript = try await sttClient.transcribe(pcm)
@@ -127,22 +141,22 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
 
             let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
-                conversation.addChild(trimmed)
+                localConversation.addChild(trimmed)
             }
 
-            var guidance = storyArc.recordTurn(childText: transcript)
-            let factGuidance = await animalFactTracker.recordTurn(transcript: transcript, stage: storyArc.stage)
+            var guidance = localStoryArc.recordTurn(childText: transcript)
+            let factGuidance = await animalFactTracker.recordTurn(transcript: transcript, stage: localStoryArc.stage)
             if !factGuidance.isEmpty { guidance += "\n\n" + factGuidance }
-            let objectGuidance = objectTracker.consumeGuidance()
+            let objectGuidance = localObjectTracker.consumeGuidance()
             if !objectGuidance.isEmpty { guidance += "\n\n" + objectGuidance }
             if trimmed.isEmpty { guidance += "\n\n" + Self.sttFailureGuidance }
 
-            let messages = conversation.toMessages(systemPrompt: systemPrompt + "\n\n" + guidance)
+            let messages = localConversation.toMessages(systemPrompt: systemPrompt + "\n\n" + guidance)
             try Task.checkCancellation()
             let rawReply = try await chatClient.complete(messages: messages)
             try Task.checkCancellation()
             let reply = Safety.filterReply(rawReply.trimmingCharacters(in: .whitespacesAndNewlines))
-            storyArc.recordReply(replyText: reply)
+            localStoryArc.recordReply(replyText: reply)
 
             continuation.yield(.message(.responseText(reply, turnId: turnId)))
 
@@ -150,12 +164,13 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
                 try Task.checkCancellation()
                 continuation.yield(.audio(pcmChunk))
             }
+            try Task.checkCancellation() // closes the window between the last audio chunk and recording the reply
 
-            conversation.addAgent(reply)
+            localConversation.addAgent(reply)
             continuation.yield(.message(.turnEnd(turnId: turnId)))
 
-            if storyArc.isDone {
-                await completeStory()
+            if localStoryArc.isDone {
+                await completeStory(conversation: localConversation, storyArc: localStoryArc, objectTracker: localObjectTracker)
             }
         } catch is CancellationError {
             return
@@ -167,7 +182,22 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
         }
     }
 
-    private func completeStory() async {
+    /// Takes the turn's own conversation/storyArc/objectTracker as
+    /// parameters (the same instances runTurn captured at its start,
+    /// never `self`'s live properties) and only resets `self`'s
+    /// properties back to fresh instances if they still point at these
+    /// same objects (===) -- so a concurrent .newStory that already
+    /// replaced them isn't clobbered back to empty by a
+    /// now-superseded turn's own cleanup.
+    ///
+    /// Disclosed, accepted residual risk: if .newStory lands in the
+    /// narrow window while this function's own two awaits
+    /// (sharedFacts()/reset()) are in flight, a stale
+    /// animalFactTracker.reset() can still wipe a new story's
+    /// already-accumulated animal-facts progress. Not fixed here --
+    /// closing it needs a generation-counter mechanism disproportionate
+    /// to this demo feature.
+    private func completeStory(conversation: DemoConversation, storyArc: StoryArc, objectTracker: ObjectTracker) async {
         let turns = conversation.fullHistory
         let sharedFacts = await animalFactTracker.sharedFacts()
         let payload = PendingDemoStoryPayload(
@@ -181,9 +211,9 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
         onStoryCompleted?(payload)
 
         lock.withLock {
-            conversation = DemoConversation()
-            storyArc = StoryArc(targetTurns: targetTurns)
-            objectTracker = ObjectTracker()
+            if self.conversation === conversation { self.conversation = DemoConversation() }
+            if self.storyArc === storyArc { self.storyArc = StoryArc(targetTurns: targetTurns) }
+            if self.objectTracker === objectTracker { self.objectTracker = ObjectTracker() }
         }
         await animalFactTracker.reset()
     }
