@@ -1,0 +1,210 @@
+import Foundation
+
+public final class DemoConnection: ServerConnecting, @unchecked Sendable {
+    /// Verbatim copy of config.py's SYSTEM_PROMPT, so demo mode's Elsie
+    /// sounds the same as the real server's.
+    public static let defaultSystemPrompt =
+        "You are a warm, interesting storyteller telling a story out loud with a young, " +
+        "intelligent child, aged about three to six. You and the child are making the " +
+        "story up together. You like to subtly add educational facts to the story to make it " +
+        "more interesting. Like any good arts major, you love to develop a good story arc.\n" +
+        "\n" +
+        "Rules you always follow:\n" +
+        "- Reply with one to three short sentences. Never more. The child is " +
+        "listening, not reading.\n" +
+        "- Keep everything gentle and wholesome. No violence, no weapons, no death, " +
+        "no frightening peril.\n" +
+        "- End most replies by asking the child what should happen next.\n" +
+        "- If the child interrupts you, follow their idea happily. Never scold them " +
+        "for interrupting and never insist on finishing your previous sentence.\n" +
+        "- Keep the story grounded in the real world: no magic, no talking " +
+        "plants or objects, no impossible physics. Animal characters can " +
+        "talk and think like people, but everything else about the world " +
+        "should be realistic.\n" +
+        "- Write plain spoken words only: no emoji, no asterisks, no stage " +
+        "directions, no narration about yourself."
+
+    private static let sttFailureGuidance =
+        "You didn't hear anything new from the child just now -- it might " +
+        "have been background noise. Don't mention this or ask them to " +
+        "repeat themselves. Instead, gently continue the story yourself " +
+        "using what's already happened, and end with an easy, inviting " +
+        "question so they have a natural opening to jump back in."
+
+    private let chatClient: any ChatCompleting
+    private let sttClient: any SpeechTranscribing
+    private let ttsClient: any SpeechSynthesizing
+    private let animalFactTracker: AnimalFactTracker
+    private let systemPrompt: String
+    private let targetTurns: Int
+    private let onStoryCompleted: ((PendingDemoStoryPayload) -> Void)?
+
+    private let continuation: AsyncStream<ServerConnectionEvent>.Continuation
+    private let stream: AsyncStream<ServerConnectionEvent>
+
+    private let lock = NSLock()
+    private var currentTurnId = 0
+    private var audioBuffer = Data()
+    private var conversation = DemoConversation()
+    private var storyArc: StoryArc
+    private var objectTracker = ObjectTracker()
+    private var turnTask: Task<Void, Never>?
+
+    public init(
+        chatClient: any ChatCompleting,
+        sttClient: any SpeechTranscribing,
+        ttsClient: any SpeechSynthesizing,
+        animalFactTracker: AnimalFactTracker,
+        systemPrompt: String = DemoConnection.defaultSystemPrompt,
+        targetTurns: Int = 7,
+        onStoryCompleted: ((PendingDemoStoryPayload) -> Void)? = nil
+    ) {
+        self.chatClient = chatClient
+        self.sttClient = sttClient
+        self.ttsClient = ttsClient
+        self.animalFactTracker = animalFactTracker
+        self.systemPrompt = systemPrompt
+        self.targetTurns = targetTurns
+        self.onStoryCompleted = onStoryCompleted
+        self.storyArc = StoryArc(targetTurns: targetTurns)
+        (stream, continuation) = AsyncStream<ServerConnectionEvent>.makeStream()
+    }
+
+    public func send(_ message: ClientMessage) async throws {
+        switch message {
+        case .speechStart(let turnId):
+            lock.withLock {
+                turnTask?.cancel()
+                turnTask = nil
+                currentTurnId = turnId
+                audioBuffer = Data()
+            }
+        case .speechEnd:
+            let (turnId, pcm) = lock.withLockReturning { (currentTurnId, audioBuffer) }
+            let task = Task { [weak self] in
+                guard let self else { return }
+                await self.runTurn(turnId: turnId, pcm: pcm)
+            }
+            lock.withLock { turnTask = task }
+        case .interrupt(let turnId):
+            lock.withLock {
+                turnTask?.cancel()
+                turnTask = nil
+                currentTurnId = turnId
+                audioBuffer = Data()
+            }
+        case .objectSeen(let label):
+            objectTracker.recordSeen(label: label)
+        case .newStory:
+            lock.withLock {
+                turnTask?.cancel()
+                turnTask = nil
+                conversation = DemoConversation()
+                storyArc = StoryArc(targetTurns: targetTurns)
+                objectTracker = ObjectTracker()
+            }
+            await animalFactTracker.reset()
+        }
+    }
+
+    public func send(audio pcm: Data) async throws {
+        lock.withLock { audioBuffer.append(pcm) }
+    }
+
+    public func events() -> AsyncStream<ServerConnectionEvent> { stream }
+
+    public func close() {
+        lock.lock(); turnTask?.cancel(); turnTask = nil; lock.unlock()
+        continuation.finish()
+    }
+
+    private func runTurn(turnId: Int, pcm: Data) async {
+        do {
+            try Task.checkCancellation()
+            let transcript = try await sttClient.transcribe(pcm)
+            try Task.checkCancellation()
+            continuation.yield(.message(.transcriptFinal(transcript, turnId: turnId)))
+
+            let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                conversation.addChild(trimmed)
+            }
+
+            var guidance = storyArc.recordTurn(childText: transcript)
+            let factGuidance = await animalFactTracker.recordTurn(transcript: transcript, stage: storyArc.stage)
+            if !factGuidance.isEmpty { guidance += "\n\n" + factGuidance }
+            let objectGuidance = objectTracker.consumeGuidance()
+            if !objectGuidance.isEmpty { guidance += "\n\n" + objectGuidance }
+            if trimmed.isEmpty { guidance += "\n\n" + Self.sttFailureGuidance }
+
+            let messages = conversation.toMessages(systemPrompt: systemPrompt + "\n\n" + guidance)
+            try Task.checkCancellation()
+            let rawReply = try await chatClient.complete(messages: messages)
+            try Task.checkCancellation()
+            let reply = Safety.filterReply(rawReply.trimmingCharacters(in: .whitespacesAndNewlines))
+            storyArc.recordReply(replyText: reply)
+
+            continuation.yield(.message(.responseText(reply, turnId: turnId)))
+
+            for await pcmChunk in ttsClient.synthesize(reply) {
+                try Task.checkCancellation()
+                continuation.yield(.audio(pcmChunk))
+            }
+
+            conversation.addAgent(reply)
+            continuation.yield(.message(.turnEnd(turnId: turnId)))
+
+            if storyArc.isDone {
+                await completeStory()
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            continuation.yield(.message(.error(
+                "Elsie's cloud brain is having trouble -- let's try again in a moment.",
+                turnId: turnId
+            )))
+        }
+    }
+
+    private func completeStory() async {
+        let turns = conversation.fullHistory
+        let sharedFacts = await animalFactTracker.sharedFacts()
+        let payload = PendingDemoStoryPayload(
+            id: String(UUID().uuidString.prefix(8)).lowercased(),
+            createdAt: ISO8601DateFormatter().string(from: Date()),
+            turns: turns.map {
+                PendingDemoStoryTurn(speaker: $0.speaker.rawValue, text: $0.text, interrupted: $0.interrupted)
+            },
+            sharedFacts: sharedFacts.map { [$0.animal, $0.fact] }
+        )
+        onStoryCompleted?(payload)
+
+        lock.withLock {
+            conversation = DemoConversation()
+            storyArc = StoryArc(targetTurns: targetTurns)
+            objectTracker = ObjectTracker()
+        }
+        await animalFactTracker.reset()
+    }
+}
+
+private extension NSLock {
+    func withLockReturning<T>(_ body: () -> T) -> T {
+        lock(); defer { unlock() }
+        return body()
+    }
+
+    /// Void-returning counterpart to withLockReturning. Both exist because
+    /// this toolchain's NSLock.lock()/unlock() are marked unavailable from
+    /// asynchronous contexts (a Swift concurrency lint against blocking an
+    /// async context directly) -- routing every lock/unlock pair through a
+    /// synchronous, non-async wrapper like this one is the standard
+    /// workaround, and keeps the actual locking semantics (same lock, same
+    /// critical sections) identical to a bare lock()/unlock() pair.
+    @discardableResult
+    func withLock<T>(_ body: () -> T) -> T {
+        lock(); defer { unlock() }
+        return body()
+    }
+}
