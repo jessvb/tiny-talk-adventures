@@ -197,6 +197,178 @@ final class SessionCoordinatorTests: XCTestCase {
         runLoop.cancel()
     }
 
+    /// The core correctness guarantee behind The End screen's
+    /// auto-navigation: readyToShowTheEnd must NOT fire just because
+    /// rewritingStarted arrived -- see that property's doc comment for
+    /// the exact real-world race this proves doesn't cause a premature
+    /// signal. Uses playDelayNanos the same way
+    /// testInterruptDuringSlowPlaybackGenuinelyCancelsInFlightPlay does,
+    /// to force a genuine suspension a real device's audio playback
+    /// would also have -- an instantly-resolving play() would never
+    /// expose this race.
+    func testReadyToShowTheEndWaitsForPlaybackEvenWhenRewritingStartedArrivesFirst() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        audio.playDelayNanos = 50_000_000 // 50ms -- genuinely in-flight when rewritingStarted arrives
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        connection.emit(.message(.responseText("The end.", turnId: 1)))
+        connection.emit(.audio(Data([1, 2, 3]))) // starts a 50ms (simulated) playback
+        try? await Task.sleep(nanoseconds: 10_000_000) // let play() start, well before its 50ms delay elapses
+
+        // The server always sends rewriting_started strictly after this
+        // turn's turn_end (see session.py's _run_turn) -- but nothing
+        // makes consumeServerEvents() wait for runTurn()'s own in-flight
+        // play() call before processing it, so it can arrive here, at
+        // the client, while that chunk is still (simulated-)playing.
+        connection.emit(.message(.rewritingStarted))
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        var ready = await coordinator.readyToShowTheEnd
+        XCTAssertFalse(ready, "must not be ready while the concluding turn's audio is still playing")
+        var rewriting = await coordinator.isRewriting
+        XCTAssertTrue(rewriting, "isRewriting itself should already reflect the server's push")
+
+        // Now the turn actually finishes -- turnEnd only reaches runTurn's
+        // loop after the buffered audio chunk's play() call resolves.
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        try? await Task.sleep(nanoseconds: 80_000_000) // longer than the 50ms play() delay
+
+        ready = await coordinator.readyToShowTheEnd
+        XCTAssertTrue(ready, "must become ready once playback has genuinely finished")
+
+        runLoop.cancel()
+    }
+
+    /// The opposite ordering from the test above: playback finishes
+    /// (turnEnd reaches runTurn()) before rewritingStarted has even
+    /// arrived. Proves the join works regardless of which signal lands
+    /// first -- readyToShowTheEnd must still end up true, not stuck
+    /// waiting on an event that already happened before the flag existed
+    /// to combine with it.
+    func testReadyToShowTheEndFiresWhenRewritingStartedArrivesAfterPlaybackFinishes() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio() // instant playback -- turnEnd reaches runTurn almost immediately
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        connection.emit(.message(.responseText("The end.", turnId: 1)))
+        connection.emit(.audio(Data([1, 2, 3])))
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        var ready = await coordinator.readyToShowTheEnd
+        XCTAssertFalse(ready, "must not be ready before rewritingStarted has arrived at all")
+
+        connection.emit(.message(.rewritingStarted))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        ready = await coordinator.readyToShowTheEnd
+        XCTAssertTrue(ready, "must become ready once rewritingStarted arrives, even though playback already finished")
+
+        runLoop.cancel()
+    }
+
+    func testConcludeStorySendsConcludeStoryAndEntersWaitingForReply() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        await coordinator.concludeStory()
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        XCTAssertEqual(connection.sentMessages, [.concludeStory(turnId: 1)])
+        let state = await coordinator.state
+        XCTAssertEqual(state, .waitingForReply)
+
+        // The server's forced final reply arrives exactly like a normal
+        // turn's -- proves concludeStory() actually set up a turnTask to
+        // receive it, not just sent the control frame.
+        connection.emit(.message(.responseText("The end.", turnId: 1)))
+        connection.emit(.audio(Data([1])))
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let finalState = await coordinator.state
+        XCTAssertEqual(finalState, .idle)
+        XCTAssertEqual(audio.played, [Data([1])])
+
+        runLoop.cancel()
+    }
+
+    func testListStoriesAndGetStoryUpdatePolledState() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        await coordinator.listStories()
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        XCTAssertEqual(connection.sentMessages, [.listStories])
+
+        connection.emit(.message(.storyList([
+            SavedStorySummary(id: "pip", title: "Pip", createdAt: Date(), pageCount: 5, rewriteStatus: .done),
+        ])))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        let list = await coordinator.latestStoryList
+        XCTAssertEqual(list?.map(\.id), ["pip"])
+
+        await coordinator.getStory(storyId: "pip")
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        XCTAssertEqual(connection.sentMessages, [.listStories, .getStory(storyId: "pip")])
+
+        connection.emit(.message(.storyDetail(
+            SavedStoryDetail(id: "pip", title: "Pip", pages: [StoryPage(text: "Once upon a time.")], epilogue: nil, rewriteStatus: .done)
+        )))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        let detail = await coordinator.latestStoryDetail
+        XCTAssertEqual(detail?.id, "pip")
+        XCTAssertEqual(detail?.pages, [StoryPage(text: "Once upon a time.")])
+
+        runLoop.cancel()
+    }
+
+    func testIsRewritingTracksRewritingStartedAndDone() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        var rewriting = await coordinator.isRewriting
+        XCTAssertFalse(rewriting)
+
+        connection.emit(.message(.rewritingStarted))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        rewriting = await coordinator.isRewriting
+        XCTAssertTrue(rewriting)
+
+        connection.emit(.message(.rewritingDone))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        rewriting = await coordinator.isRewriting
+        XCTAssertFalse(rewriting, "isRewriting must go back to false once the rewrite finishes")
+
+        runLoop.cancel()
+    }
+
     /// A disconnect arriving while idle (no turn active, no turnTask) must
     /// be handled without crashing or corrupting state. Note this
     /// deliberately does NOT try to detect whether coordinator.start()
@@ -1631,6 +1803,21 @@ final class SessionCoordinatorTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 20_000_000)
 
         XCTAssertFalse(audio.played.contains(ditty), "no ditty once the resumed turn has already ended")
+
+        runLoop.cancel()
+    }
+
+    func testUpdateSettingsSendsTheControlFrame() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        await coordinator.updateSettings(targetTurns: 9, pageCount: 4)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        XCTAssertEqual(connection.sentMessages, [.updateSettings(targetTurns: 9, pageCount: 4)])
 
         runLoop.cancel()
     }

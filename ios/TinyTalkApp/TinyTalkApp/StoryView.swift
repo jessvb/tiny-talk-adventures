@@ -268,6 +268,10 @@ struct StoryView: View {
                     menuOpen = false
                     Task { await model.startNewStory() }
                 }
+                menuRow("Finish this story", systemImage: "book.closed.fill") {
+                    menuOpen = false
+                    Task { await model.finishStory() }
+                }
                 menuRow("Home", systemImage: "house.fill") {
                     menuOpen = false
                     model.goHome()

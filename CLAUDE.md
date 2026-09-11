@@ -125,22 +125,49 @@ The iOS phone client's core loop (Onboarding/Landing/Story/Settings, design
 1a) is also implemented and merged — see
 `docs/superpowers/specs/2026-09-05-kid-facing-ui-design.md`.
 
-Three threads are open right now, each blocked on something other than
-more unsupervised implementation work:
+Object recognition (PR #8) and the ditty-resume-backgrounding bug (PR #11
+— root cause was `playerNode` not being reset in `rebuildCaptureTap()`)
+are both merged and closed.
 
-- **Object recognition** (PR #8, branch `worktree-object-recognition`):
-  code-complete, swaps in a bundled FastViT Core ML model and fixes a
-  story-weave-in bug found on-device. Blocked on the user confirming the
-  last on-device test (does the recognized object's identity survive into
-  the next story turn) and merging.
-- **A backgrounding bug** (worktree `ditty-resume-backgrounding`, no PR
-  yet): the waiting "ditty" doesn't always resume after the app is
-  backgrounded and foregrounded. Mid systematic-debugging — evidence
-  logging has been added (a debug-log panel in Settings) but the bug
-  hasn't been reproduced with it yet. Blocked on an on-device repro
-  session.
-- **Library / Reading / The End screens:** deferred when the core loop UI
-  shipped (PR #9) because the server has no arc-stage wire message, no
-  story-conclude action, and no read/list API in `story_store.py`. This is
-  a new sub-project and needs a `superpowers:brainstorming` session and an
-  approved spec before implementation, per "Working process" above.
+Storybook persistence (server side) is merged and **on-device verified**:
+`server/tinytalk/storybook.py`'s background rewrite pipeline (title/pages/
+epilogue from a saved story's transcript, gated by a `REWRITING` session
+state so it never runs concurrently with a live story's LLM turns) plus
+the arc-stage wire message, story-conclude action, and read/list API in
+`story_store.py` are merged (PR #13) — see
+`docs/superpowers/specs/2026-09-08-storybook-persistence-design.md`. A
+real on-device play-through (2026-09-10) had the kid-safety check flag
+content mid-rewrite, which exercised PR #18's retry logic
+(`build_and_attach()` retrying up to
+`config.STORYBOOK_SAFETY_RETRY_ATTEMPTS` times against the real local
+`qwen3.5:9b`) — the rewrite still completed as `rewrite_status: "done"`.
+Both the base rewrite pipeline and the safety-retry fix are now confirmed
+against real hardware, not just the fakes-based test suite. PR #14 (a
+small epilogue-grammar fix, tests-only verified, no on-device step
+needed) is open and ready to merge whenever convenient.
+
+Parent-adjustable story length ("turns per story", "pages in the
+storybook", via a new `update_settings` wire message) is implemented and
+merged to local `main` — see
+`docs/superpowers/specs/2026-09-09-story-length-settings-design.md`.
+**Not yet pushed to `origin/main`** (local `main` is currently ahead of
+the remote) — push whenever the household is ready to fast-forward it.
+
+An away-from-home demo mode has an approved spec merged
+(`docs/superpowers/specs/2026-09-09-away-from-home-demo-mode-design.md`)
+but no implementation yet — a candidate for a future sub-project, not
+in progress.
+
+Wiring the iOS screens to the real server API (`list_stories`, `get_story`,
+`synthesize_page`) instead of `MockStories.swift` is **partially in
+flight**: PR #17 (open, not yet merged, not yet tested on-device) wires
+just The End screen — a "Finish this story" menu item that sends the
+existing `conclude_story` action, and real auto-navigation to The End
+gated on both `rewriting_started` arriving and the concluding turn's
+audio actually finishing local playback. The Library and Reading screens
+are still 100% mock-data-only and untouched by PR #17; wiring those (plus
+Landing's/StoryView's real "Read Stories" buttons, and swapping
+`ReadingView`'s `AVSpeechSynthesizer` stand-in for a real
+`synthesize_page` round trip) is unscoped and needs its own
+`superpowers:brainstorming` session per "Working process" above before
+implementation.

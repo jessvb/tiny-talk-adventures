@@ -47,18 +47,39 @@ class FakeStt:
 
 
 class FakeLlm:
-    """Yields fixed chunks, optionally pausing so a test can interrupt mid-stream."""
+    """Yields fixed chunks, optionally pausing so a test can interrupt mid-stream.
 
-    def __init__(self, chunks: list[str] | None = None, delay: float = 0.0) -> None:
+    `chunks_by_call`, if given, overrides `chunks` and picks a different
+    chunk list per call() -- index min(len(self.calls) - 1, last index), so
+    the last list repeats if more calls happen than lists were given (same
+    convention as test_storybook.py's FakeRewriteLlm). Needed for a
+    same-turn retry loop (e.g. session.py's forced-conclude safety retry),
+    where every attempt happens inside one _run_turn() call, too fast for a
+    test to reassign `chunks` between attempts the way existing tests
+    reassign it between separate turns.
+    """
+
+    def __init__(
+        self,
+        chunks: list[str] | None = None,
+        delay: float = 0.0,
+        chunks_by_call: list[list[str]] | None = None,
+    ) -> None:
         self.chunks = chunks if chunks is not None else ["Once upon a time. ", "A fox ran."]
+        self.chunks_by_call = chunks_by_call
         self.delay = delay
         self.calls: list[list[dict[str, str]]] = []
         self.cancelled = False
 
     async def stream_reply(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         self.calls.append(messages)
+        if self.chunks_by_call is not None:
+            index = min(len(self.calls) - 1, len(self.chunks_by_call) - 1)
+            chunks = self.chunks_by_call[index]
+        else:
+            chunks = self.chunks
         try:
-            for chunk in self.chunks:
+            for chunk in chunks:
                 if self.delay:
                     await asyncio.sleep(self.delay)
                 yield chunk

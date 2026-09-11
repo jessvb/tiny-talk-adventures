@@ -39,6 +39,28 @@ final class SessionStateTests: XCTestCase {
         }
     }
 
+    /// Mirrors the server's Event.CONCLUDE ("Finish this story" menu
+    /// action, see server/tinytalk/state.py): legal from every state --
+    /// the child/parent can ask to finish the story regardless of what's
+    /// currently happening -- and always lands in .waitingForReply, since
+    /// sending conclude_story itself triggers the server's forced final
+    /// reply, same as a normal speechEnd.
+    func testConcludeFromEveryStateLandsInWaitingForReply() throws {
+        let setups: [(String, [SessionEvent])] = [
+            ("idle", []),
+            ("listening", [.speechStart]),
+            ("waitingForReply", [.speechStart, .speechEnd]),
+            ("speaking", [.speechStart, .speechEnd, .audioChunkReceived]),
+        ]
+        for (name, setup) in setups {
+            let machine = SessionStateMachine()
+            for event in setup {
+                _ = try machine.handle(event)
+            }
+            XCTAssertEqual(try machine.handle(.conclude), .waitingForReply, "from \(name)")
+        }
+    }
+
     func testBargeInThenCompletesANewTurn() throws {
         let machine = SessionStateMachine()
         _ = try machine.handle(.speechStart)

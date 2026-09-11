@@ -38,6 +38,7 @@ from .protocol import (
     SpeechStart,
     SyncDemoStories,
     SynthesizePage,
+    UpdateSettings,
     decode_client_message,
     encode_arc_stage,
     encode_error,
@@ -75,6 +76,27 @@ _STT_FAILURE_GUIDANCE = (
     "question so they have a natural opening to jump back in."
 )
 
+# Fed back to the model when a forced-conclude reply gets flagged by the
+# kid-safety check -- same idea as storybook.py's own _SAFETY_RETRY_TEMPLATE,
+# but phrased for a single spoken reply rather than a JSON rewrite.
+_CONCLUDE_SAFETY_RETRY_TEMPLATE = (
+    "That reply isn't appropriate for a young child -- it mentioned: "
+    "{terms}. Give the same warm, complete ending again, same story, but "
+    "leave out any mention of that. Remember: this must be the last "
+    "reply, and it should end with the words \"The end.\""
+)
+
+# Fed back when a forced-conclude attempt comes back empty -- confirmed on
+# real hardware that simply resubmitting the exact same messages tends to
+# reproduce the same empty completion again (the model has nothing new to
+# react to), so this gives it something to actually respond to instead of
+# just hoping resampling alone breaks the pattern.
+_CONCLUDE_EMPTY_RETRY_NUDGE = (
+    "You didn't write anything. Please write your ending now -- a few "
+    "warm sentences that finish the story, ending with the words "
+    "\"The end.\""
+)
+
 
 class Transport(Protocol):
     async def send_text(self, payload: str) -> None: ...
@@ -108,7 +130,10 @@ class SessionRunner:
         self._tts = tts
         self._system_prompt = system_prompt
         self._conversation = conversation or Conversation()
-        self._story_arc = StoryArc()
+        self._target_turns = config.STORY_TARGET_TURNS
+        self._page_count = config.STORYBOOK_PAGE_COUNT
+        self._story_page_count = config.STORYBOOK_PAGE_COUNT
+        self._begin_story()
         self._animal_facts = AnimalFactTracker()
         self._object_recognition = ObjectTracker()
         self._machine = TurnStateMachine()
@@ -183,6 +208,8 @@ class SessionRunner:
                 await self.handle_synthesize_page(story_id, page_index)
             case SyncDemoStories(stories=stories):
                 await self.handle_sync_demo_stories(stories)
+            case UpdateSettings(target_turns=target_turns, page_count=page_count):
+                await self.handle_update_settings(target_turns, page_count)
 
     async def handle_conclude_story(self, turn_id: int) -> None:
         """The "Finish this story" action: cancels whatever's in flight
@@ -231,7 +258,7 @@ class SessionRunner:
             self._stt.reset()
         self._turn_replay_buffer = []
         self._conversation = Conversation()
-        self._story_arc = StoryArc()
+        self._begin_story()
         self._animal_facts = AnimalFactTracker()
         self._object_recognition = ObjectTracker()
         self._machine = TurnStateMachine()
@@ -250,6 +277,48 @@ class SessionRunner:
     async def handle_list_stories(self) -> None:
         stories = story_store.list_stories()
         await self._send_text_unbuffered(encode_story_list(stories))
+
+    def _begin_story(self) -> None:
+        """One place where a story's settings are captured -- the arc's
+        target_turns and the page count its eventual rewrite will use.
+        See handle_update_settings for why this is also called from
+        there (a change made while no story is in progress must still
+        reach the next one, and __init__'s own StoryArc construction
+        only ever runs once per SERVER PROCESS -- session.py's
+        SessionRunner is a long-lived singleton rebind_transport() reuses
+        across every connection, not something built fresh per
+        connection, see app.py's serve())."""
+        self._story_arc = StoryArc(target_turns=self._target_turns)
+        self._story_page_count = self._page_count
+
+    async def handle_update_settings(self, target_turns: int, page_count: int) -> None:
+        """Parent-adjustable story-length settings from the Settings
+        screen -- see protocol.py's UpdateSettings and this project's
+        story-length-settings design spec. Clamped here (not at decode
+        time in protocol.py) since this is a semantic/business-rule
+        bound, not a protocol-validity concern -- an out-of-range value
+        is well-formed, just outside what this app supports. Takes
+        effect for the next story only: StoryArc()/_page_count are only
+        ever read at the start of a story (see __init__, handle_new_story,
+        and _run_turn's post-conclusion reset), so there is nothing
+        in-flight to migrate."""
+        self._target_turns = max(4, min(12, target_turns))
+        self._page_count = max(3, min(10, page_count))
+        # __init__'s arc/page-count capture happens once per SERVER
+        # PROCESS (see _begin_story's own doc comment), and the
+        # post-conclusion reset captures the next story's settings
+        # before the parent has had any chance to change anything -- so
+        # "applies to the next story" needs the not-yet-started arc (and
+        # its page count) rebuilt here too. An arc mid-story
+        # (has_started) is deliberately left alone -- that's the "never
+        # retroactively" half of the requirement.
+        if not self._story_arc.has_started:
+            self._begin_story()
+        logger.info(
+            "update_settings: target_turns=%d, page_count=%d (will apply to the next story)",
+            self._target_turns,
+            self._page_count,
+        )
 
     async def handle_get_story(self, story_id: str) -> None:
         story = story_store.load_story(story_id)
@@ -641,6 +710,21 @@ class SessionRunner:
                 self._conversation.add_agent(" ".join(actually_heard), interrupted=True)
         self._spoken = []
 
+    async def _stream_llm_reply(
+        self, messages: list[dict[str, str]]
+    ) -> tuple[str, float | None, float]:
+        """One LLM streaming call -- returns the raw joined text plus the
+        timing markers _run_turn's own latency log line needs. Factored out
+        so a forced-conclude safety retry can call this more than once per
+        turn without duplicating the streaming loop."""
+        parts: list[str] = []
+        first_chunk_at: float | None = None
+        async for chunk in self._llm.stream_reply(messages):
+            if first_chunk_at is None:
+                first_chunk_at = time.monotonic()
+            parts.append(chunk)
+        return "".join(parts).strip(), first_chunk_at, time.monotonic()
+
     async def _run_turn(
         self, transcript: str, turn_id: int, *, forced_conclude: bool = False
     ) -> None:
@@ -681,16 +765,61 @@ class SessionRunner:
                 self._system_prompt + "\n\n" + guidance
             )
 
-            parts: list[str] = []
             llm_start = time.monotonic()
-            first_chunk_at: float | None = None
-            async for chunk in self._llm.stream_reply(messages):
-                if first_chunk_at is None:
-                    first_chunk_at = time.monotonic()
-                parts.append(chunk)
-            llm_done = time.monotonic()
-            reply = safety.filter_reply("".join(parts).strip())
+            raw, first_chunk_at, llm_done = await self._stream_llm_reply(messages)
+            reply = safety.filter_reply(raw)
             if forced_conclude:
+                # An explicit "finish this story" request must not end on
+                # the generic safety-fallback line -- unlike a normal turn
+                # (where the conversation just continues and a redirect is
+                # a fine recovery), this reply becomes the story's
+                # permanent, saved ending. Retry with the flagged word(s)
+                # fed back, mirroring storybook.py's own rewrite retry,
+                # before finally accepting the fallback as a last resort.
+                attempt = 1
+                while (
+                    reply == safety.SAFE_FALLBACK
+                    and attempt < config.CONCLUDE_SAFETY_RETRY_ATTEMPTS
+                ):
+                    attempt += 1
+                    blocked_terms = safety.find_blocked(raw)
+                    if blocked_terms:
+                        logger.warning(
+                            "conclude_story reply flagged by the kid-safety "
+                            "check (%s) -- retrying (attempt %d/%d)",
+                            ", ".join(blocked_terms),
+                            attempt,
+                            config.CONCLUDE_SAFETY_RETRY_ATTEMPTS,
+                        )
+                        messages = [
+                            *messages,
+                            {"role": "assistant", "content": raw},
+                            {
+                                "role": "user",
+                                "content": _CONCLUDE_SAFETY_RETRY_TEMPLATE.format(
+                                    terms=", ".join(blocked_terms)
+                                ),
+                            },
+                        ]
+                    else:
+                        # filter_reply() also falls back on a genuinely
+                        # empty completion (a separate failure mode from a
+                        # flagged one, see its own comment) -- nothing to
+                        # name, so nudge it to actually write something
+                        # instead of resubmitting the identical messages.
+                        logger.warning(
+                            "conclude_story got an empty reply -- retrying "
+                            "(attempt %d/%d)",
+                            attempt,
+                            config.CONCLUDE_SAFETY_RETRY_ATTEMPTS,
+                        )
+                        messages = [
+                            *messages,
+                            {"role": "user", "content": _CONCLUDE_EMPTY_RETRY_NUDGE},
+                        ]
+                    llm_start = time.monotonic()
+                    raw, first_chunk_at, llm_done = await self._stream_llm_reply(messages)
+                    reply = safety.filter_reply(raw)
                 self._story_arc.mark_done()
             else:
                 self._story_arc.record_reply(reply)
@@ -751,7 +880,7 @@ class SessionRunner:
                 turns = list(self._conversation.full_history)
                 shared_facts = list(self._animal_facts.shared_facts)
                 self._conversation = Conversation()
-                self._story_arc = StoryArc()
+                self._begin_story()
                 self._animal_facts = AnimalFactTracker()
                 self._object_recognition = ObjectTracker()
                 if saved_path is not None:
@@ -781,7 +910,7 @@ class SessionRunner:
         try:
             await storybook.build_and_attach(
                 story_id, turns, shared_facts, llm=self._llm,
-                page_count=config.STORYBOOK_PAGE_COUNT,
+                page_count=self._story_page_count,
             )
         except Exception:  # noqa: BLE001 - the REWRITING gate must always release
             logger.exception("unexpected failure running storybook rewrite for %s", story_id)

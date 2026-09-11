@@ -1,6 +1,6 @@
 import pytest
 
-from tinytalk.safety import SAFE_FALLBACK, filter_reply, is_safe
+from tinytalk.safety import SAFE_FALLBACK, filter_reply, find_blocked, is_safe
 
 
 @pytest.mark.parametrize(
@@ -200,6 +200,36 @@ def test_filter_replaces_reproduction_content_with_fallback():
 )
 def test_explicit_sexual_content_is_unsafe(text):
     assert is_safe(text) is False
+
+
+def test_find_blocked_returns_empty_list_for_safe_text():
+    assert find_blocked("The fox ran through the sunny meadow.") == []
+
+
+def test_find_blocked_names_the_matched_word():
+    # storybook.py's safety-retry loop needs to tell the LLM specifically
+    # what to avoid on the next attempt -- a bare True/False from is_safe()
+    # isn't enough for that, so this must name the actual matched word(s).
+    assert find_blocked("He picked up the knife.") == ["knife"]
+
+
+def test_find_blocked_names_every_distinct_match_in_order():
+    assert find_blocked("There was blood on the knife.") == ["blood", "knife"]
+
+
+def test_find_blocked_respects_the_safe_phrase_mask():
+    assert find_blocked("She wished upon a shooting star.") == []
+    assert find_blocked(
+        "He wished on a shooting star while shooting arrows at the target."
+    ) == ["shooting"]
+
+
+def test_is_safe_is_consistent_with_find_blocked():
+    # is_safe() must stay a thin wrapper -- no separate matching logic that
+    # could drift from what find_blocked() reports.
+    assert is_safe("He picked up the knife.") is (
+        not find_blocked("He picked up the knife.")
+    )
 
 
 def test_bare_mate_and_breed_nouns_are_not_blocked():

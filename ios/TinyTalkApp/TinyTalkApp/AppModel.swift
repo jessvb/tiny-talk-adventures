@@ -39,6 +39,13 @@ struct StoryTurn: Identifiable, Equatable {
 final class AppModel: ObservableObject {
     @Published var serverAddress: String
     @Published var awayFromHomeEnabled: Bool
+    /// Parent-adjustable story length -- see docs/superpowers/specs/
+    /// 2026-09-09-story-length-settings-design.md. Persisted the same
+    /// way serverAddress is; sent to the server on every connect() and
+    /// immediately on every change while connected (updateStorySettings()
+    /// below). Applies to the NEXT story only -- never retroactively.
+    @Published var storyTurnCount: Int
+    @Published var storybookPageCount: Int
     @Published var screen: AppScreen
     @Published var state: SessionState = .idle
     @Published var lastTranscript: String = ""
@@ -57,6 +64,9 @@ final class AppModel: ObservableObject {
     /// whichever screen navigates to them (a Library card tap, or a
     /// Settings preview button).
     @Published var selectedStory: SavedStoryDetail?
+    /// Mirrors the coordinator's isRewriting -- a UI (TheEndView) polls
+    /// this to show/hide a "still being created" state.
+    @Published var isRewriting = false
     /// The turn_id most recently sent on speechStart/interrupt/resume --
     /// debug UI, added while diagnosing the disconnect/reconnect turn-id
     /// mismatch bug, to let you SEE at a glance whether a reconnect
@@ -130,10 +140,40 @@ final class AppModel: ObservableObject {
     /// the user chose themselves must never be silently overridden by an
     /// auto-resume on their next manual reconnect.
     private var pendingResumeTurnId: Int?
+    /// True once this coordinator's readyToShowTheEnd has been seen and
+    /// listStories() requested for it -- guards against asking twice on
+    /// every 100ms poll tick while waiting for the response. Reset on
+    /// disconnect() (a torn-down coordinator can never deliver a pending
+    /// request), NOT on startNewStory() (readyToShowTheEnd only ever
+    /// fires once per coordinator regardless).
+    private var pendingTheEndLookup = false
+    /// The story_id a getStory() request is currently in flight for, as
+    /// part of navigating to The End -- distinguishes "this storyDetail
+    /// answers the request we just made" from an unrelated stale one.
+    /// Reset on disconnect() for the same reason as pendingTheEndLookup.
+    private var pendingTheEndDetailStoryId: String?
+    /// The story_id The End screen has already been shown for, this app
+    /// lifetime -- deliberately NOT reset on disconnect(): its whole
+    /// purpose is surviving the coordinator teardown a backgrounding-
+    /// triggered disconnect causes (see handleAppForegrounded()), so a
+    /// story already shown once doesn't re-trigger navigation on a later,
+    /// unrelated reconnect.
+    private var lastAcknowledgedConcludedStoryId: String?
+    /// isRewriting from the PREVIOUS poll tick -- lets the poll loop
+    /// detect the true->false edge (rewriting_done just arrived) rather
+    /// than re-fetching on every tick while it happens to be false.
+    /// Starts false to match a fresh coordinator's own isRewriting
+    /// default, so the very first poll tick after any connect() can
+    /// never look like a spurious true->false transition.
+    private var previousIsRewriting = false
 
     init() {
         serverAddress = UserDefaults.standard.string(forKey: "serverAddress") ?? "ws://192.168.1.1:8765"
         awayFromHomeEnabled = UserDefaults.standard.bool(forKey: "awayFromHomeEnabled")
+        let storedTurnCount = UserDefaults.standard.integer(forKey: "storyTurnCount")
+        storyTurnCount = storedTurnCount == 0 ? 7 : storedTurnCount
+        let storedPageCount = UserDefaults.standard.integer(forKey: "storybookPageCount")
+        storybookPageCount = storedPageCount == 0 ? 5 : storedPageCount
         let hasOnboarded = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
         screen = hasOnboarded ? .landing : .onboarding
     }
@@ -301,6 +341,11 @@ final class AppModel: ObservableObject {
                 print("AppModel: failed to sync demo stories: \(error)")
             }
         }
+        // The server's per-session settings default to its own config
+        // constants until told otherwise -- send the parent's current
+        // preference now so even the very first story of this connection
+        // uses it, not just the second one onward.
+        Task { await coordinator.updateSettings(targetTurns: storyTurnCount, pageCount: storybookPageCount) }
         startPollingState()
     }
 
@@ -417,6 +462,13 @@ final class AppModel: ObservableObject {
         turns = []
         lastAppendedTranscriptTurnId = nil
         lastAppendedReplyTurnId = nil
+        // A torn-down coordinator can never deliver on either pending
+        // request -- see their doc comments. lastAcknowledgedConcludedStoryId
+        // is deliberately NOT reset here.
+        pendingTheEndLookup = false
+        pendingTheEndDetailStoryId = nil
+        isRewriting = false
+        previousIsRewriting = false
     }
 
     /// What the "Disconnect" button calls -- a disconnect the user chose
@@ -446,6 +498,15 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// What the "Finish this story" menu item calls -- see
+    /// SessionCoordinator.concludeStory(). Bypasses the model's own
+    /// phrase-matching entirely: the server forces a real final reply
+    /// and marks the story done unconditionally.
+    func finishStory() async {
+        guard let coordinator else { return }
+        await coordinator.concludeStory()
+    }
+
     /// Debug/testing affordance: abandon the current story and start a
     /// fresh one without disconnecting -- see SessionCoordinator.newStory().
     func startNewStory() async {
@@ -470,6 +531,20 @@ final class AppModel: ObservableObject {
         let coordinatorToUpdate = coordinator
         let newValue = !isMicMuted
         Task { await coordinatorToUpdate?.setMuted(newValue) }
+    }
+
+    /// What Settings' story-length steppers call on every change -- see
+    /// storyTurnCount's doc comment. Persists immediately regardless of
+    /// connection state; sends to the server immediately only if already
+    /// connected (otherwise the persisted values go out via connect()'s
+    /// own send below, on the next connection).
+    func updateStorySettings(turnCount: Int, pageCount: Int) {
+        storyTurnCount = turnCount
+        storybookPageCount = pageCount
+        UserDefaults.standard.set(turnCount, forKey: "storyTurnCount")
+        UserDefaults.standard.set(pageCount, forKey: "storybookPageCount")
+        guard isConnected, let coordinator else { return }
+        Task { await coordinator.updateSettings(targetTurns: turnCount, pageCount: pageCount) }
     }
 
     /// Checks camera permission/availability before presenting the
@@ -598,8 +673,22 @@ final class AppModel: ObservableObject {
     func handleAppForegrounded() async {
         guard shouldReconnectOnForeground else { return }
         shouldReconnectOnForeground = false
+        // Captured before connectResumingIfPending() clears it: nil here
+        // means nothing was mid-turn when this app backgrounded -- which
+        // is also exactly the state a story left behind once it
+        // concluded (turnEnd already walked the client back to .idle
+        // before REWRITING, a server-only concept, ever begins). If the
+        // story finished concluding (or finished its whole rewrite)
+        // while this app was away, the OLD coordinator's readyToShowTheEnd
+        // never got the chance to fire locally -- backgrounding tore that
+        // coordinator down before it could. The check below, on the
+        // FRESH coordinator, is the only remaining way to discover it.
+        let wasResumingATurn = pendingResumeTurnId != nil
         print("AppModel: foregrounded -- reconnecting with pendingResumeTurnId=\(String(describing: pendingResumeTurnId))")
         await connectResumingIfPending()
+        if !wasResumingATurn {
+            await coordinator?.listStories()
+        }
     }
 
     /// Appends one of RealAudioEngine's own diagnostic lines (already
@@ -641,6 +730,10 @@ final class AppModel: ObservableObject {
                 let muted = await coordinator.isMuted
                 let turnId = await coordinator.activeTurnId
                 let log = await coordinator.debugLog
+                let rewriting = await coordinator.isRewriting
+                let readyToShowTheEnd = await coordinator.readyToShowTheEnd
+                let storyList = await coordinator.latestStoryList
+                let storyDetail = await coordinator.latestStoryDetail
                 // Read regardless of `closed` (cheap, and reading it only
                 // inside the `guard closed` branch below would still be
                 // correct -- kept alongside the other coordinator reads
@@ -688,6 +781,71 @@ final class AppModel: ObservableObject {
                         self.turns.append(StoryTurn(speaker: .elsie, text: reply))
                         self.lastAppendedReplyTurnId = replyTurnId
                     }
+                    self.isRewriting = rewriting
+
+                    // The story just concluded and both signals have
+                    // combined (see SessionCoordinator.readyToShowTheEnd's
+                    // doc comment) -- kick off the lookup exactly once
+                    // per coordinator.
+                    if readyToShowTheEnd, !self.pendingTheEndLookup {
+                        self.pendingTheEndLookup = true
+                        Task { await coordinator.listStories() }
+                    }
+
+                    // A fresh story list arrived, from either the trigger
+                    // above or the backgrounding-recovery check in
+                    // handleAppForegrounded() -- newest entry first
+                    // (matches story_store.list_stories()'s own
+                    // ordering). Only act on it once per concluded story
+                    // (lastAcknowledgedConcludedStoryId guards this --
+                    // its whole purpose is surviving a coordinator
+                    // teardown, see its own doc comment), and only start
+                    // a detail request if one isn't already in flight.
+                    if let newest = storyList?.first,
+                       newest.id != self.lastAcknowledgedConcludedStoryId,
+                       self.pendingTheEndDetailStoryId == nil {
+                        self.pendingTheEndDetailStoryId = newest.id
+                        self.lastAcknowledgedConcludedStoryId = newest.id
+                        // Show The End immediately with a pending
+                        // placeholder -- "right after the last message
+                        // is finished being spoken," per the design, not
+                        // once the rewrite (which can still be in
+                        // progress) finishes. The getStory() request
+                        // below fills in the real detail (possibly
+                        // already .done) as soon as it arrives.
+                        self.selectedStory = SavedStoryDetail(id: newest.id, title: nil, pages: [], epilogue: nil, rewriteStatus: .pending)
+                        if self.screen != .theEnd {
+                            self.screen = .theEnd
+                        }
+                        let storyId = newest.id
+                        Task { await coordinator.getStory(storyId: storyId) }
+                    }
+
+                    // The detail request above (or the re-fetch below)
+                    // has answered -- update selectedStory in place so a
+                    // live TheEndView reflects it (un-greys Read-it-now
+                    // once rewriteStatus flips to .done/.failed) without
+                    // ever leaving the screen.
+                    if let storyDetail, storyDetail.id == self.pendingTheEndDetailStoryId {
+                        self.pendingTheEndDetailStoryId = nil
+                        self.selectedStory = storyDetail
+                    } else if let storyDetail, self.screen == .theEnd, storyDetail.id == self.selectedStory?.id {
+                        self.selectedStory = storyDetail
+                    }
+
+                    // The rewrite just finished (isRewriting's true->false
+                    // edge) while The End screen is showing this story's
+                    // placeholder -- re-fetch, since the getStory() call
+                    // fired the instant the placeholder appeared may have
+                    // raced ahead of the rewrite actually completing and
+                    // so still holds a stale .pending detail.
+                    if self.previousIsRewriting, !rewriting, self.screen == .theEnd,
+                       let storyId = self.selectedStory?.id, self.pendingTheEndDetailStoryId == nil {
+                        self.pendingTheEndDetailStoryId = storyId
+                        Task { await coordinator.getStory(storyId: storyId) }
+                    }
+                    self.previousIsRewriting = rewriting
+
                     // Only overwrite with a real server error -- a nil here
                     // just means "no server error yet," and must not erase
                     // a client-side error (e.g. audio capture failing to

@@ -130,6 +130,18 @@ class SyncDemoStories:
     stories: tuple[dict, ...]
 
 
+@dataclass(frozen=True)
+class UpdateSettings:
+    """Parent-adjustable story-length settings from the Settings screen --
+    persisted client-side, sent once after connecting and again whenever
+    changed while connected. Applied to the next story construction, not
+    retroactively to one already in progress -- see SessionRunner's
+    handle_update_settings()."""
+
+    target_turns: int
+    page_count: int
+
+
 ClientMessage = (
     SpeechStart
     | SpeechEnd
@@ -141,6 +153,7 @@ ClientMessage = (
     | SynthesizePage
     | ConcludeStory
     | SyncDemoStories
+    | UpdateSettings
 )
 
 _CLIENT_MESSAGE_TYPES: dict[str, type] = {
@@ -154,6 +167,7 @@ _CLIENT_MESSAGE_TYPES: dict[str, type] = {
     "synthesize_page": SynthesizePage,
     "conclude_story": ConcludeStory,
     "sync_demo_stories": SyncDemoStories,
+    "update_settings": UpdateSettings,
 }
 _TYPES_REQUIRING_TURN_ID = (SpeechStart, Interrupt, ConcludeStory)
 
@@ -203,6 +217,18 @@ def decode_client_message(raw: str) -> ClientMessage:
         if not isinstance(stories, list) or not all(isinstance(s, dict) for s in stories):
             raise ProtocolError(f"sync_demo_stories requires a list of story objects: {raw!r}")
         return SyncDemoStories(stories=tuple(stories))
+    if message_type is UpdateSettings:
+        target_turns = payload.get("target_turns")
+        page_count = payload.get("page_count")
+        if not isinstance(target_turns, int):
+            raise ProtocolError(
+                f"update_settings requires an integer target_turns: {raw!r}"
+            )
+        if not isinstance(page_count, int):
+            raise ProtocolError(
+                f"update_settings requires an integer page_count: {raw!r}"
+            )
+        return UpdateSettings(target_turns=target_turns, page_count=page_count)
     return message_type()
 
 

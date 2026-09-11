@@ -444,7 +444,22 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         // (runTurn()'s TTS loop, or the waiting ditty) indefinitely.
         let gate = PlaybackCompletionGate()
         await withCheckedContinuation { continuation in
-            playerNode.scheduleBuffer(buffer) {
+            // completionCallbackType: .dataPlayedBack -- the plain
+            // scheduleBuffer(_:completionHandler:) overload used here
+            // before defaults to .dataConsumed, which fires as soon as
+            // AVAudioPlayerNode has handed the buffer off to the render
+            // engine, NOT once it has actually been heard through the
+            // speaker (any downstream output latency, e.g. a route
+            // change or just normal hardware buffering, still happens
+            // afterward). Confirmed on real hardware as the root cause of
+            // The End screen appearing while Elsie's last sentence was
+            // still audibly playing: every doc comment on
+            // readyToShowTheEnd (SessionCoordinator.swift) explicitly
+            // assumes this await already means "genuinely finished
+            // playing," which .dataConsumed does not actually guarantee.
+            // .dataPlayedBack is the one AVAudioPlayerNodeCompletionCallbackType
+            // case that accounts for that remaining output latency.
+            playerNode.scheduleBuffer(buffer, at: nil, options: [], completionCallbackType: .dataPlayedBack) { _ in
                 if gate.tryResume() {
                     continuation.resume()
                 }

@@ -156,9 +156,20 @@ _SAFE_PATTERN = re.compile(
 )
 
 
-def is_safe(text: str) -> bool:
+def find_blocked(text: str) -> list[str]:
+    """Returns every distinct blocked word/phrase matched in `text`, in the
+    order they first appear -- lets a caller (storybook.py's safety-retry
+    loop) tell the LLM specifically what to avoid, not just that something
+    was wrong."""
     masked = _SAFE_PATTERN.sub("", text)
-    return _BLOCKED_PATTERN.search(masked) is None
+    seen: dict[str, None] = {}
+    for match in _BLOCKED_PATTERN.finditer(masked):
+        seen.setdefault(match.group(0).lower(), None)
+    return list(seen)
+
+
+def is_safe(text: str) -> bool:
+    return not find_blocked(text)
 
 
 def filter_reply(text: str) -> str:

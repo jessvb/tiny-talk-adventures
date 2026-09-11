@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from conftest import FailingLlm, FakeLlm, FakeStt, FakeTransport, FakeTts
+from tinytalk import config
 from tinytalk.conversation import INTERRUPTED_MARKER
 from tinytalk.engines import EngineError
 from tinytalk.safety import SAFE_FALLBACK
@@ -1054,6 +1055,91 @@ async def test_new_story_says_so_in_the_log(caplog, transport):
     )
 
 
+async def test_new_session_defaults_to_config_target_turns_and_page_count(transport):
+    from tinytalk import config
+
+    session = make_session(transport)
+    assert session._target_turns == config.STORY_TARGET_TURNS
+    assert session._page_count == config.STORYBOOK_PAGE_COUNT
+
+
+async def test_handle_update_settings_changes_the_next_storys_target_turns(transport):
+    session = make_session(transport)
+    await session.handle_text(
+        '{"type": "update_settings", "target_turns": 4, "page_count": 3}'
+    )
+    await session.handle_new_story()
+    assert session._story_arc._target_turns == 4
+    assert session._page_count == 3
+
+
+async def test_handle_update_settings_clamps_values_above_the_range(transport):
+    session = make_session(transport)
+    await session.handle_text(
+        '{"type": "update_settings", "target_turns": 999, "page_count": 999}'
+    )
+    assert session._target_turns == 12
+    assert session._page_count == 10
+
+
+async def test_handle_update_settings_clamps_values_below_the_range(transport):
+    session = make_session(transport)
+    await session.handle_text(
+        '{"type": "update_settings", "target_turns": 0, "page_count": 1}'
+    )
+    assert session._target_turns == 4
+    assert session._page_count == 3
+
+
+async def test_update_settings_does_not_change_the_currently_in_progress_story(transport):
+    """Confirms the spec's "applies to the next story, never retroactively"
+    requirement: an already-constructed StoryArc keeps its original
+    target_turns even after update_settings arrives mid-story.
+
+    A fresh, never-started session's arc does NOT count as "in progress"
+    -- see StoryArc.has_started and handle_update_settings's rebuild-if-
+    not-started fix -- so this test must actually advance the arc past
+    its first turn first, the same way
+    test_handle_update_settings_mid_story_does_not_rebuild_the_in_progress_arc
+    below does, or it would (incorrectly) exercise the "before any story
+    starts" path instead of the "mid-story" one this test is named for."""
+    session = make_session(transport)
+    await run_full_turn(session)  # advances _story_arc._turn_count past 0
+    original_target = session._story_arc._target_turns
+    await session.handle_text(
+        '{"type": "update_settings", "target_turns": 4, "page_count": 3}'
+    )
+    assert session._story_arc._target_turns == original_target
+
+
+async def test_handle_update_settings_before_any_story_starts_rebuilds_the_arc(transport):
+    """The bug this guards against: SessionRunner is a process-wide
+    singleton (see app.py's serve()/build_session()) -- __init__'s
+    StoryArc() construction runs once per SERVER PROCESS, not once per
+    connection. Before this fix, a setting changed while no story was in
+    progress (the natural parent flow: Settings -> change value -> back
+    -> start a story) never reached the next story at all."""
+    session = make_session(transport)
+    await session.handle_text(
+        '{"type": "update_settings", "target_turns": 4, "page_count": 3}'
+    )
+    assert session._story_arc._target_turns == 4
+    assert session._story_page_count == 3
+
+
+async def test_handle_update_settings_mid_story_does_not_rebuild_the_in_progress_arc(transport):
+    """The other half: a change arriving once a story has genuinely
+    started must NOT retroactively alter that story's own pacing --
+    only the has_started check in handle_update_settings prevents this."""
+    session = make_session(transport)
+    await run_full_turn(session)  # advances _story_arc._turn_count past 0
+    original_target = session._story_arc._target_turns
+    await session.handle_text(
+        '{"type": "update_settings", "target_turns": 4, "page_count": 3}'
+    )
+    assert session._story_arc._target_turns == original_target
+
+
 CONCLUDE = '{"type": "conclude_story", "turn_id": 9}'
 
 
@@ -1175,6 +1261,92 @@ async def test_conclude_story_pushes_the_done_arc_stage_regardless_of_actual_pro
     await session.wait_for_turn()
 
     assert transport.messages_of_type("arc_stage")[-1]["stage"] == "done"
+
+
+async def test_conclude_story_retries_a_reply_the_safety_check_flags(transport, monkeypatch):
+    # Real incident: "Finish this story" got a reply that mentioned a
+    # blocked word, filter_reply() swapped in SAFE_FALLBACK ("Hmm, let's
+    # take the story somewhere else!"), and mark_done() fired regardless --
+    # the child's story permanently "ended" on a generic redirect line
+    # instead of a real conclusion. Unlike a normal turn (where the
+    # conversation just continues and a redirect is a fine recovery), this
+    # reply becomes the saved, permanent ending, so it needs the same
+    # feed-the-flagged-word-back retry storybook.py's rewrite already has.
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.save_story", lambda conversation, **kwargs: None
+    )
+    llm = FakeLlm(chunks=["The fox found a shiny red apple."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)  # a normal turn first, so there's a story in progress
+
+    # Reset the call log so the retry-attempt indexing below counts only
+    # this conclude turn's own attempts, not the setup turn above.
+    llm.calls = []
+    llm.chunks_by_call = [
+        ["They got hurt in the fall, but"],
+        ["They landed safely and hugged. The end."],
+    ]
+    await session.handle_text(CONCLUDE)
+    await session.wait_for_turn()
+
+    assert len(llm.calls) == 2
+    assert "hurt" in llm.calls[1][-1]["content"].lower()
+    replies = transport.messages_of_type("response_text")
+    assert replies[-1]["text"] == "They landed safely and hugged. The end."
+    assert replies[-1]["text"] != SAFE_FALLBACK
+
+
+async def test_conclude_story_falls_back_after_exhausting_safety_retries(transport, monkeypatch):
+    # Every attempt keeps getting flagged -- the story must still end
+    # (an explicit "finish this story" request can't be allowed to hang
+    # forever), but only after genuinely trying, not on the first flag.
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.save_story", lambda conversation, **kwargs: None
+    )
+    llm = FakeLlm(chunks=["The fox found a shiny red apple."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+
+    llm.calls = []
+    llm.chunks_by_call = [["hurt one"], ["hurt two"], ["hurt three"], ["hurt four"]]
+    await session.handle_text(CONCLUDE)
+    await session.wait_for_turn()
+
+    assert len(llm.calls) == config.CONCLUDE_SAFETY_RETRY_ATTEMPTS
+    replies = transport.messages_of_type("response_text")
+    assert replies[-1]["text"] == SAFE_FALLBACK
+    # The story must still be marked done -- an explicit conclude request
+    # can't be left hanging just because every attempt was unsafe.
+    assert session.conversation.turns == ()
+
+
+async def test_conclude_story_nudges_the_model_after_an_empty_reply(transport, monkeypatch):
+    # Real incident: a forced-conclude reply came back empty, and BOTH
+    # retries also came back empty -- fast (~500ms vs ~5.9s for the first
+    # attempt), consistent with the model immediately terminating again
+    # against an unchanged prompt rather than genuinely retrying. Unlike
+    # the flagged-word branch (which feeds back what to avoid), the
+    # empty-reply branch was resubmitting the EXACT SAME messages, giving
+    # the model nothing new to react to.
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.save_story", lambda conversation, **kwargs: None
+    )
+    llm = FakeLlm(chunks=["The fox found a shiny red apple."])
+    session = make_session(transport, llm=llm)
+    await run_full_turn(session)
+
+    llm.calls = []
+    llm.chunks_by_call = [[], ["They landed safely and hugged. The end."]]
+    await session.handle_text(CONCLUDE)
+    await session.wait_for_turn()
+
+    assert len(llm.calls) == 2
+    # The retry's messages must differ from the first attempt's -- not a
+    # byte-for-byte resubmission.
+    assert llm.calls[1] != llm.calls[0]
+    assert len(llm.calls[1]) > len(llm.calls[0])
+    replies = transport.messages_of_type("response_text")
+    assert replies[-1]["text"] == "They landed safely and hugged. The end."
 
 
 async def test_a_concluding_turn_enters_rewriting_and_pushes_rewriting_started(transport, monkeypatch):
