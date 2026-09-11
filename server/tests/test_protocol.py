@@ -4,6 +4,7 @@ import pytest
 
 from tinytalk.protocol import (
     ConcludeStory,
+    GetPageImage,
     GetStory,
     Interrupt,
     ListStories,
@@ -18,6 +19,7 @@ from tinytalk.protocol import (
     encode_arc_stage,
     encode_error,
     encode_page_audio_done,
+    encode_page_image_done,
     encode_response_text,
     encode_rewriting_done,
     encode_rewriting_started,
@@ -41,6 +43,8 @@ from tinytalk.protocol import (
         ('{"type": "get_story", "story_id": "abcd1234"}', GetStory(story_id="abcd1234")),
         ('{"type": "synthesize_page", "story_id": "abcd1234", "page_index": 2}',
          SynthesizePage(story_id="abcd1234", page_index=2)),
+        ('{"type": "get_page_image", "story_id": "abcd1234", "page_index": 1}',
+         GetPageImage(story_id="abcd1234", page_index=1)),
         ('{"type": "conclude_story", "turn_id": 5}', ConcludeStory(turn_id=5)),
         ('{"type": "update_settings", "target_turns": 8, "page_count": 6}',
          UpdateSettings(target_turns=8, page_count=6)),
@@ -107,6 +111,28 @@ def test_decode_rejects_get_story_blank_story_id():
 def test_decode_rejects_synthesize_page_missing_page_index():
     with pytest.raises(ProtocolError, match="page_index"):
         decode_client_message('{"type": "synthesize_page", "story_id": "a"}')
+
+
+def test_decode_rejects_get_page_image_missing_page_index():
+    with pytest.raises(ProtocolError):
+        decode_client_message('{"type": "get_page_image", "story_id": "a"}')
+
+
+def test_decode_rejects_get_page_image_missing_story_id():
+    with pytest.raises(ProtocolError):
+        decode_client_message('{"type": "get_page_image", "page_index": 0}')
+
+
+def test_encode_page_image_done_with_image():
+    raw = encode_page_image_done("abcd1234", 2, has_image=True)
+    assert json.loads(raw) == {
+        "type": "page_image_done", "story_id": "abcd1234", "page_index": 2, "has_image": True,
+    }
+
+
+def test_encode_page_image_done_without_image():
+    raw = encode_page_image_done("abcd1234", 2, has_image=False)
+    assert json.loads(raw)["has_image"] is False
 
 
 def test_decode_rejects_conclude_story_missing_turn_id():
