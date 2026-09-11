@@ -40,11 +40,7 @@ public final class AVSpeechTts: NSObject, SpeechSynthesizing, @unchecked Sendabl
                 synthesizer.stopSpeaking(at: .immediate)
             }
             let utterance = AVSpeechUtterance(string: text)
-            if let voiceIdentifier, let voice = AVSpeechSynthesisVoice(identifier: voiceIdentifier) {
-                utterance.voice = voice
-            } else {
-                utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
-            }
+            utterance.voice = Self.resolveVoice(preferring: voiceIdentifier)
             // One AVAudioConverter reused across every buffer callback for
             // this utterance, not a fresh one per chunk. write(_:)'s
             // callback fires once per internal synthesis chunk (many times
@@ -102,6 +98,28 @@ public final class AVSpeechTts: NSObject, SpeechSynthesizing, @unchecked Sendabl
                 }
             }
         }
+    }
+
+    /// Matilda (Premium, en-AU) is this app's chosen storyteller voice --
+    /// picked by the household over the default compact/robotic system
+    /// voice after an on-device listening comparison of several Enhanced/
+    /// Premium options. Looked up by name+quality, not a hardcoded
+    /// identifier string (Apple doesn't document those as stable across
+    /// OS versions), so a device that hasn't downloaded Matilda yet (Settings
+    /// > Accessibility > Spoken Content/Live Speech > Voices > English (AU))
+    /// degrades gracefully to the plain system default instead of silently
+    /// resolving nothing. An explicit voiceIdentifier (if the caller passes
+    /// one) always wins over this default.
+    private static func resolveVoice(preferring voiceIdentifier: String?) -> AVSpeechSynthesisVoice? {
+        if let voiceIdentifier, let voice = AVSpeechSynthesisVoice(identifier: voiceIdentifier) {
+            return voice
+        }
+        if let matilda = AVSpeechSynthesisVoice.speechVoices().first(where: {
+            $0.name == "Matilda" && $0.quality == .premium
+        }) {
+            return matilda
+        }
+        return AVSpeechSynthesisVoice(language: "en-US")
     }
 
     private static func convert(_ buffer: AVAudioPCMBuffer, with converter: AVAudioConverter, to targetFormat: AVAudioFormat) -> Data? {
