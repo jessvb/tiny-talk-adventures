@@ -7,6 +7,8 @@ from tinytalk.story_store import (
     list_stories,
     load_story,
     update_story_rewrite,
+    update_story_illustrations,
+    read_page_image,
 )
 
 
@@ -222,3 +224,82 @@ def test_list_stories_skips_files_with_corrupt_encoding(tmp_path):
 
     assert len(summaries) == 1
     assert summaries[0]["id"] == valid_id
+
+
+def test_save_story_defaults_illustrations_status_to_none(tmp_path):
+    path = save_story(make_conversation(), stories_dir=tmp_path)
+    payload = json.loads(path.read_text())
+    assert payload["illustrations_status"] is None
+
+
+def test_update_story_illustrations_patches_pages_and_status(tmp_path):
+    path = save_story(make_conversation(), stories_dir=tmp_path)
+    story_id = story_id_from_path(path)
+    update_story_rewrite(
+        story_id,
+        title="A Story",
+        pages=[{"text": "Page one."}, {"text": "Page two."}],
+        epilogue=None,
+        rewrite_status="done",
+        stories_dir=tmp_path,
+    )
+
+    ok = update_story_illustrations(
+        story_id,
+        image_filenames=[f"{story_id}-page-0.png", None],
+        illustrations_status="partial",
+        stories_dir=tmp_path,
+    )
+
+    assert ok is True
+    story = load_story(story_id, stories_dir=tmp_path)
+    assert story["pages"][0]["image_path"] == f"{story_id}-page-0.png"
+    assert story["pages"][1]["image_path"] is None
+    assert story["illustrations_status"] == "partial"
+
+
+def test_update_story_illustrations_returns_false_for_unknown_story(tmp_path):
+    ok = update_story_illustrations(
+        "nope1234", image_filenames=[], illustrations_status="failed", stories_dir=tmp_path
+    )
+    assert ok is False
+
+
+def test_read_page_image_returns_bytes_when_present(tmp_path):
+    path = save_story(make_conversation(), stories_dir=tmp_path)
+    story_id = story_id_from_path(path)
+    update_story_rewrite(
+        story_id, title="A Story", pages=[{"text": "Page one."}], epilogue=None,
+        rewrite_status="done", stories_dir=tmp_path,
+    )
+    filename = f"{story_id}-page-0.png"
+    (tmp_path / filename).write_bytes(b"fake-png-bytes")
+    update_story_illustrations(
+        story_id, image_filenames=[filename], illustrations_status="done", stories_dir=tmp_path
+    )
+
+    data = read_page_image(story_id, 0, stories_dir=tmp_path)
+
+    assert data == b"fake-png-bytes"
+
+
+def test_read_page_image_returns_none_when_no_image(tmp_path):
+    path = save_story(make_conversation(), stories_dir=tmp_path)
+    story_id = story_id_from_path(path)
+    update_story_rewrite(
+        story_id, title="A Story", pages=[{"text": "Page one."}], epilogue=None,
+        rewrite_status="done", stories_dir=tmp_path,
+    )
+
+    assert read_page_image(story_id, 0, stories_dir=tmp_path) is None
+
+
+def test_read_page_image_returns_none_for_out_of_range_page(tmp_path):
+    path = save_story(make_conversation(), stories_dir=tmp_path)
+    story_id = story_id_from_path(path)
+    update_story_rewrite(
+        story_id, title="A Story", pages=[{"text": "Page one."}], epilogue=None,
+        rewrite_status="done", stories_dir=tmp_path,
+    )
+
+    assert read_page_image(story_id, 5, stories_dir=tmp_path) is None

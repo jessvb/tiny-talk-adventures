@@ -56,6 +56,7 @@ def save_story(
         "pages": None,
         "epilogue": None,
         "rewrite_status": "pending",
+        "illustrations_status": None,
     }
     try:
         stories_dir.mkdir(parents=True, exist_ok=True)
@@ -155,3 +156,55 @@ def update_story_rewrite(
     except (OSError, json.JSONDecodeError, UnicodeDecodeError, KeyError) as exc:
         logger.error("failed to update rewrite for story %s: %s", story_id, exc)
         return False
+
+
+def update_story_illustrations(
+    story_id: str,
+    *,
+    image_filenames: list[str | None],
+    illustrations_status: str,
+    stories_dir: Path = STORIES_DIR,
+) -> bool:
+    """Patches illustrations.py's per-page image filenames and pass status
+    into an already-saved, already-rewritten story file. image_filenames
+    is positional with the story's existing `pages` list (index i's
+    filename becomes pages[i]["image_path"]). Logged, not raised, on any
+    failure -- same reasoning as update_story_rewrite()."""
+    path = _find_story_path(story_id, stories_dir=stories_dir)
+    if path is None:
+        logger.error("cannot update illustrations -- no saved story with id %r", story_id)
+        return False
+    try:
+        payload = json.loads(path.read_text())
+        pages = payload.get("pages") or []
+        for page, filename in zip(pages, image_filenames):
+            page["image_path"] = filename
+        payload["pages"] = pages
+        payload["illustrations_status"] = illustrations_status
+        path.write_text(json.dumps(payload, indent=2))
+        return True
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError, KeyError) as exc:
+        logger.error("failed to update illustrations for story %s: %s", story_id, exc)
+        return False
+
+
+def read_page_image(
+    story_id: str, page_index: int, *, stories_dir: Path = STORIES_DIR
+) -> bytes | None:
+    """Raw PNG bytes for one page's illustration, or None if that story or
+    page doesn't exist, that page has no image, or the file can't be
+    read."""
+    story = load_story(story_id, stories_dir=stories_dir)
+    pages = story.get("pages") if story else None
+    if not pages or page_index < 0 or page_index >= len(pages):
+        return None
+    filename = pages[page_index].get("image_path")
+    if not filename:
+        return None
+    try:
+        return (stories_dir / filename).read_bytes()
+    except OSError as exc:
+        logger.error(
+            "failed to read page image for story %s page %d: %s", story_id, page_index, exc
+        )
+        return None
