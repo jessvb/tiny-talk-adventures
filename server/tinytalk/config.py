@@ -141,6 +141,19 @@ STORYBOOK_REWRITE_RETRY_ATTEMPTS = int(
     os.environ.get("TINYTALK_STORYBOOK_REWRITE_RETRY_ATTEMPTS", "3")
 )
 
+# Same idea as STORYBOOK_SAFETY_RETRY_ATTEMPTS above, but for the
+# "Finish this story" (conclude_story) live turn, not the background
+# rewrite -- a separate knob because this one attempt happens inline in
+# the live dialog (latency matters more here) rather than in a
+# fire-and-forget background task. Real incident that prompted this: a
+# forced-conclude reply got flagged by the kid-safety check, got swapped
+# for the generic SAFE_FALLBACK redirect line, and the story was marked
+# done anyway -- the child's story permanently "ended" on a redirect
+# instead of a real conclusion, with no retry.
+CONCLUDE_SAFETY_RETRY_ATTEMPTS = int(
+    os.environ.get("TINYTALK_CONCLUDE_SAFETY_RETRY_ATTEMPTS", "3")
+)
+
 SYSTEM_PROMPT = (
     "You are a warm, interesting storyteller telling a story out loud with a young, "
     "intelligent child, aged about three to six. You and the child are making the "
