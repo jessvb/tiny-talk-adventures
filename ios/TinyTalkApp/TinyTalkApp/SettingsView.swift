@@ -198,6 +198,7 @@ struct SettingsView: View {
                         set: { model.setAwayFromHomeEnabled($0) }
                     )
                 )
+                .foregroundColor(TTA.Palette.inkSoft)
                 .disabled(groqApiKey.isEmpty)
                 .tint(TTA.Palette.wood)
 
