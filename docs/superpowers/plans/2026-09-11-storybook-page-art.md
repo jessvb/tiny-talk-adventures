@@ -244,14 +244,14 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'tinytalk.image_gen'`.
 In `server/pyproject.toml`, add to the `dependencies` list (`server/pyproject.toml:6-14`):
 
 ```toml
-    "diffusers>=0.37.0,<0.38.0",
+    "diffusers>=0.34.0,<0.35.0",
     "transformers",
     "accelerate",
     "torch>=2.0",
     "pillow",
 ```
 
-**Pin note (ruled during Task 2 execution, not originally in this plan):** `diffusers>=0.38.0` was found to require `safetensors>=0.8.0-rc.0`, which conflicts with the already-installed `moshi_mlx==0.3.0` (used for Kyutai STT), which requires `safetensors<0.6`. `diffusers==0.37.0` is the latest version still on the pre-bump `safetensors>=0.3.1` requirement, confirmed compatible. The IP-Adapter/safety-checker API this plan uses (`load_ip_adapter`, `set_ip_adapter_scale`, `nsfw_content_detected`) has been stable in diffusers since well before 0.37, so this pin change does not affect anything else in this plan.
+**Pin note (ruled during Task 2 execution, not originally in this plan):** `diffusers>=0.38.0` requires `safetensors>=0.8.0-rc.0`, which conflicts with the already-installed `moshi_mlx==0.3.0` (used for Kyutai STT), which requires `safetensors<0.6`. A first correction to `>=0.37.0,<0.38.0` (compatible on `safetensors`) turned out to hit a second, independent conflict: `diffusers==0.37.0` requires `huggingface-hub>=0.34.0`, but `moshi_mlx` requires `huggingface-hub<0.29`. `diffusers==0.34.0` is compatible with both constraints (`safetensors>=0.3.1`, `huggingface-hub>=0.27.0`) — verified via a full `pip install` + `pip check` (no broken requirements) in this exact venv. The IP-Adapter/safety-checker API this plan uses (`load_ip_adapter`, `set_ip_adapter_scale`, `nsfw_content_detected`) was independently confirmed present on the installed 0.34.0.
 
 Run: `cd server && source .venv/bin/activate && pip install -e ".[dev]"`
 Expected: installs successfully (this will take a while — `torch` is a large download).
