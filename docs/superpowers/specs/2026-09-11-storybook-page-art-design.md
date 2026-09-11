@@ -238,3 +238,27 @@ honest pending/degraded state rather than a fabricated one.
   fully mock**, per the scope decision above — a story browsed from
   Library still shows no real art (or any other real data) until that
   separate, not-yet-brainstormed sub-project happens.
+- **Away-from-home demo mode has no local image source at all — flagged
+  as future work, not built here.** That sub-project
+  ([[project_away_from_home_demo_mode]] in memory;
+  `2026-09-09-away-from-home-demo-mode-design.md`) lets the phone bypass
+  the home Mac server entirely via cloud APIs (Groq) when off the home
+  WiFi. This spec's illustration pipeline is Core ML on the Mac's own
+  Neural Engine — there's no equivalent running on the phone, and no
+  local Mac reachable to fall back to while genuinely away from home.
+  This is the same general class of gap that project's own memory
+  already tracks as issue #24 ("features built the same way silently
+  no-op in demo mode unless `DemoConnection` is deliberately extended")
+  — GetPageImage would be one more such feature. The likely future fix,
+  raised by the user during this brainstorm and intentionally deferred
+  rather than designed now: a free-tier cloud image-generation API (an
+  API-key-gated fallback), mirroring how away-from-home mode already
+  substitutes Groq for the local LLM rather than leaving that path with
+  no story dialogue at all. Filed as its own GitHub issue rather than
+  designed here — issue #26. **Development note for this sub-project's
+  own implementation:** keep `illustrations.py`'s image-generation
+  backend swapped in behind the same fake/injectable interface already
+  planned for testing (see Testing, above) — that seam is what would let
+  a future cloud backend slot in for away-from-home mode without
+  redesigning this pipeline, so no extra work is needed now beyond not
+  hard-coding the Core ML call path directly into the per-page loop.
