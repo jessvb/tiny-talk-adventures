@@ -1,0 +1,152 @@
+from typing import AsyncIterator
+
+from PIL import Image
+
+from tinytalk.illustrations import generate_and_attach
+from tinytalk.story_store import load_story, save_story, story_id_from_path, update_story_rewrite
+from tinytalk.conversation import Conversation
+
+
+class FakeExtractionLlm:
+    """Returns a fixed scene-prompt string for every prompt-extraction
+    call, one per page in order."""
+
+    def __init__(self, prompts: list[str] | None = None) -> None:
+        self.prompts = prompts
+        self.calls: list[list[dict[str, str]]] = []
+
+    async def stream_reply(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+        self.calls.append(messages)
+        if self.prompts is not None:
+            index = min(len(self.calls) - 1, len(self.prompts) - 1)
+            yield self.prompts[index]
+        else:
+            yield "a fox in a forest"
+
+
+class FakeImageBackend:
+    """Records every generate() call; returns a tiny real PIL image
+    unless that call index is in `flagged_indices`, in which case it
+    returns None (simulating a safety-checker drop)."""
+
+    def __init__(self, flagged_indices: set[int] | None = None) -> None:
+        self.calls: list[tuple[str, object]] = []
+        self.flagged_indices = flagged_indices or set()
+
+    def generate(self, prompt, *, reference_image):
+        index = len(self.calls)
+        self.calls.append((prompt, reference_image))
+        if index in self.flagged_indices:
+            return None
+        return Image.new("RGB", (8, 8), color=(255, 0, 0))
+
+
+def _saved_story_with_pages(tmp_path, pages):
+    conversation = Conversation()
+    conversation.add_child("hello")
+    path = save_story(conversation, stories_dir=tmp_path)
+    story_id = story_id_from_path(path)
+    update_story_rewrite(
+        story_id, title="A Story", pages=pages, epilogue=None,
+        rewrite_status="done", stories_dir=tmp_path,
+    )
+    return story_id
+
+
+async def test_generates_one_image_per_page_in_order(tmp_path):
+    pages = [{"text": "Page one."}, {"text": "Page two."}, {"text": "Page three."}]
+    story_id = _saved_story_with_pages(tmp_path, pages)
+    backend = FakeImageBackend()
+
+    await generate_and_attach(
+        story_id, pages, llm=FakeExtractionLlm(), image_backend=backend, stories_dir=tmp_path
+    )
+
+    assert len(backend.calls) == 3
+    story = load_story(story_id, stories_dir=tmp_path)
+    assert story["illustrations_status"] == "done"
+    for page in story["pages"]:
+        assert page["image_path"] is not None
+        assert (tmp_path / page["image_path"]).exists()
+
+
+async def test_page_one_generates_reference_free_later_pages_use_it(tmp_path):
+    pages = [{"text": "Page one."}, {"text": "Page two."}]
+    story_id = _saved_story_with_pages(tmp_path, pages)
+    backend = FakeImageBackend()
+
+    await generate_and_attach(
+        story_id, pages, llm=FakeExtractionLlm(), image_backend=backend, stories_dir=tmp_path
+    )
+
+    first_prompt, first_reference = backend.calls[0]
+    second_prompt, second_reference = backend.calls[1]
+    assert first_reference is None
+    assert second_reference is not None  # page 1's own generated image
+
+
+async def test_flagged_page_gets_no_image_but_others_still_do(tmp_path):
+    pages = [{"text": "Page one."}, {"text": "Page two."}, {"text": "Page three."}]
+    story_id = _saved_story_with_pages(tmp_path, pages)
+    backend = FakeImageBackend(flagged_indices={1})
+
+    await generate_and_attach(
+        story_id, pages, llm=FakeExtractionLlm(), image_backend=backend, stories_dir=tmp_path
+    )
+
+    story = load_story(story_id, stories_dir=tmp_path)
+    assert story["illustrations_status"] == "partial"
+    assert story["pages"][0]["image_path"] is not None
+    assert story["pages"][1]["image_path"] is None
+    assert story["pages"][2]["image_path"] is not None
+
+
+async def test_every_page_flagged_marks_failed(tmp_path):
+    pages = [{"text": "Page one."}]
+    story_id = _saved_story_with_pages(tmp_path, pages)
+    backend = FakeImageBackend(flagged_indices={0})
+
+    await generate_and_attach(
+        story_id, pages, llm=FakeExtractionLlm(), image_backend=backend, stories_dir=tmp_path
+    )
+
+    story = load_story(story_id, stories_dir=tmp_path)
+    assert story["illustrations_status"] == "failed"
+    assert story["pages"][0]["image_path"] is None
+
+
+async def test_prompt_extraction_uses_each_pages_own_text(tmp_path):
+    pages = [{"text": "Page one."}, {"text": "Page two."}]
+    story_id = _saved_story_with_pages(tmp_path, pages)
+    llm = FakeExtractionLlm()
+
+    await generate_and_attach(
+        story_id, pages, llm=llm, image_backend=FakeImageBackend(), stories_dir=tmp_path
+    )
+
+    assert len(llm.calls) == 2
+    assert "Page one." in llm.calls[0][0]["content"]
+    assert "Page two." in llm.calls[1][0]["content"]
+
+
+async def test_sets_pending_status_before_generation_completes(tmp_path):
+    # A slow-generating backend should still leave the story readable
+    # with a "pending" status mid-pass, not the pre-illustration None --
+    # verified here by checking the status set at the very start, since
+    # this fake backend completes synchronously (there is no real
+    # concurrency to race against in this fake-based test).
+    pages = [{"text": "Page one."}]
+    story_id = _saved_story_with_pages(tmp_path, pages)
+    statuses_seen = []
+
+    class RecordingBackend(FakeImageBackend):
+        def generate(self, prompt, *, reference_image):
+            statuses_seen.append(load_story(story_id, stories_dir=tmp_path)["illustrations_status"])
+            return super().generate(prompt, reference_image=reference_image)
+
+    await generate_and_attach(
+        story_id, pages, llm=FakeExtractionLlm(), image_backend=RecordingBackend(),
+        stories_dir=tmp_path,
+    )
+
+    assert statuses_seen == ["pending"]
