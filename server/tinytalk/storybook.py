@@ -13,9 +13,10 @@ import asyncio
 import json
 import logging
 
-from . import config, safety, story_store
+from . import config, illustrations, safety, story_store
 from .conversation import Turn
 from .engines import EngineError, LlmEngine
+from .image_gen import ImageGenBackend
 from .story_store import STORIES_DIR
 from pathlib import Path
 
@@ -144,6 +145,7 @@ async def build_and_attach(
     llm: LlmEngine,
     page_count: int = 5,
     stories_dir: Path = STORIES_DIR,
+    image_backend: ImageGenBackend | None = None,
 ) -> None:
     """Runs the rewrite and patches the result into the already-saved
     story -- or marks it "failed", logged, never raised. Called as a
@@ -280,6 +282,10 @@ async def build_and_attach(
         logger.info(
             "storybook rewrite done for story %s: %d pages", story_id, len(pages)
         )
+        if image_backend is not None:
+            await illustrations.generate_and_attach(
+                story_id, pages, llm=llm, image_backend=image_backend, stories_dir=stories_dir,
+            )
     except asyncio.CancelledError:
         raise
     except EngineError as exc:

@@ -3,7 +3,7 @@ from typing import AsyncIterator
 
 from tinytalk.conversation import Turn
 from tinytalk.storybook import build_and_attach
-from tinytalk.story_store import load_story, save_story
+from tinytalk.story_store import load_story, save_story, story_id_from_path
 from tinytalk.conversation import Conversation
 
 
@@ -21,6 +21,17 @@ class FakeRewriteLlm:
         self.calls.append(messages)
         index = min(len(self.calls) - 1, len(self.replies) - 1)
         yield self.replies[index]
+
+
+class FakeImageBackendForStorybook:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def generate(self, prompt, *, reference_image):
+        from PIL import Image
+
+        self.calls += 1
+        return Image.new("RGB", (8, 8), color=(0, 255, 0))
 
 
 def make_saved_story(tmp_path):
@@ -389,3 +400,40 @@ async def test_build_and_attach_marks_failed_and_does_not_raise_on_an_unexpected
 
     story = load_story(story_id, stories_dir=tmp_path)
     assert story["rewrite_status"] == "failed"
+
+
+async def test_build_and_attach_runs_illustrations_when_backend_given(tmp_path):
+    turns = [Turn(speaker="child", text="a fox story", interrupted=False)]
+    conversation = Conversation()
+    conversation.add_child("a fox story")
+    path = save_story(conversation, stories_dir=tmp_path)
+    story_id = story_id_from_path(path)
+    llm = FakeRewriteLlm(
+        json.dumps({"title": "A Fox", "pages": [{"text": "Once there was a fox."}]})
+    )
+    backend = FakeImageBackendForStorybook()
+
+    await build_and_attach(
+        story_id, turns, [], llm=llm, page_count=1, stories_dir=tmp_path,
+        image_backend=backend,
+    )
+
+    assert backend.calls == 1
+    story = load_story(story_id, stories_dir=tmp_path)
+    assert story["illustrations_status"] in ("done", "partial")
+
+
+async def test_build_and_attach_skips_illustrations_when_no_backend(tmp_path):
+    turns = [Turn(speaker="child", text="a fox story", interrupted=False)]
+    conversation = Conversation()
+    conversation.add_child("a fox story")
+    path = save_story(conversation, stories_dir=tmp_path)
+    story_id = story_id_from_path(path)
+    llm = FakeRewriteLlm(
+        json.dumps({"title": "A Fox", "pages": [{"text": "Once there was a fox."}]})
+    )
+
+    await build_and_attach(story_id, turns, [], llm=llm, page_count=1, stories_dir=tmp_path)
+
+    story = load_story(story_id, stories_dir=tmp_path)
+    assert story["illustrations_status"] is None
