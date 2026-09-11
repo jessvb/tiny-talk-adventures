@@ -127,6 +127,50 @@ public actor SessionCoordinator {
     /// coordinator and never matches.
     public private(set) var resumableTurnIdAtDisconnect: Int?
 
+    /// True from rewritingStarted until rewritingDone -- see those
+    /// ServerEvent cases' doc comments. A UI (e.g. TheEndView) polls this
+    /// to show/hide a "still being created" state.
+    public private(set) var isRewriting = false
+    public private(set) var latestStoryList: [SavedStorySummary]?
+    public private(set) var latestStoryDetail: SavedStoryDetail?
+    /// True once BOTH signals for "the story just concluded, AND the
+    /// concluding turn's audio has genuinely finished playing" have been
+    /// observed. A UI must wait for this (not just isRewriting) before
+    /// navigating to The End screen -- see the two private flags below
+    /// for why isRewriting alone is not sufficient.
+    ///
+    /// The server sends rewriting_started immediately after the
+    /// concluding turn's turn_end (see session.py's _run_turn: the
+    /// REWRITE_STARTED transition and turn_end send happen before
+    /// save_story()/encode_rewriting_started()). But "turn_end sent by
+    /// the server" is not the same as "this client has finished PLAYING
+    /// that turn's audio": RealAudioEngine.play() genuinely awaits each
+    /// chunk's real-world playback completion (via its scheduleBuffer
+    /// completion handler), inside runTurn() -- a task consumeServerEvents()
+    /// does not wait for. consumeServerEvents() reads rewriting_started
+    /// off the wire (and would set isRewriting) essentially immediately
+    /// after yielding that turn's turnEnd into turnContinuation, with no
+    /// suspension point forcing it to wait for runTurn() to actually
+    /// finish awaiting that audio. In practice this means
+    /// rewritingStarted routinely arrives WHILE the last sentence is
+    /// still audibly playing, not after -- navigating to The End screen
+    /// on isRewriting alone would cut the story off mid-sentence.
+    public private(set) var readyToShowTheEnd = false
+    /// Set the instant rewritingStarted is observed (see
+    /// consumeServerEvents()). Distinct from isRewriting only in that it
+    /// never resets back to false on rewritingDone -- readyToShowTheEnd
+    /// must not un-latch once both signals have combined, but isRewriting
+    /// itself does need to go back to false (a UI polls it to know when
+    /// the rewrite has actually finished).
+    private var sawRewritingStarted = false
+    /// True once the CURRENT turn's turnEnd has been processed inside
+    /// runTurn() -- i.e. every audio chunk that turn received has
+    /// genuinely finished playing. Reset to false at the start of every
+    /// new turn (handleSpeechEnd, resume, concludeStory) so a stale true
+    /// left over from an earlier, ordinary turn can never combine with a
+    /// later, unrelated rewritingStarted.
+    private var currentTurnPlaybackFinished = false
+
     /// A bounded, most-recent-last log of this coordinator's highest-value
     /// diagnostic messages -- specifically the turn_id-mismatch discards
     /// (consumeServerEvents()) and resume-path events (resume()) that,
@@ -495,6 +539,21 @@ public actor SessionCoordinator {
         isClosed = true
     }
 
+    /// Called from runTurn() when ANY turn's turnEnd is processed (not
+    /// just a concluding one) -- see currentTurnPlaybackFinished's doc
+    /// comment for why that's safe: it's freshly reset to false at the
+    /// start of every turn, so this only ever combines with a
+    /// rewritingStarted that genuinely belongs to THIS turn.
+    private func noteTurnPlaybackFinished() {
+        currentTurnPlaybackFinished = true
+        maybeSignalReadyToShowTheEnd()
+    }
+
+    private func maybeSignalReadyToShowTheEnd() {
+        guard sawRewritingStarted, currentTurnPlaybackFinished else { return }
+        readyToShowTheEnd = true
+    }
+
     private func consumeVADEvents() async {
         for await event in vad.events() {
             switch event {
@@ -539,6 +598,33 @@ public actor SessionCoordinator {
                 continue
             }
 
+            // Story-lifecycle events carry no turn_id -- they're not
+            // scoped to a turn at all (browsing/rewrite status is
+            // orthogonal to live turn-taking, see protocol.py's
+            // ListStories/GetStory doc comments), so they're handled
+            // here directly as actor-level state rather than routed
+            // through turnContinuation/runTurn() like turn-scoped
+            // events. Must be checked before the turn_id-extraction
+            // switch below, which would otherwise have no case for them.
+            switch event {
+            case .message(.rewritingStarted):
+                isRewriting = true
+                sawRewritingStarted = true
+                maybeSignalReadyToShowTheEnd()
+                continue
+            case .message(.rewritingDone):
+                isRewriting = false
+                continue
+            case .message(.storyList(let stories)):
+                latestStoryList = stories
+                continue
+            case .message(.storyDetail(let detail)):
+                latestStoryDetail = detail
+                continue
+            default:
+                break
+            }
+
             let eventTurnId: Int
             switch event {
             case .message(.transcriptPartial(_, let turnId)),
@@ -547,7 +633,9 @@ public actor SessionCoordinator {
                  .message(.turnEnd(let turnId)),
                  .message(.error(_, let turnId)):
                 eventTurnId = turnId
-            case .audio, .closed:
+            case .audio, .closed,
+                 .message(.rewritingStarted), .message(.rewritingDone),
+                 .message(.storyList), .message(.storyDetail):
                 fatalError("unreachable: handled above")
             }
 
@@ -636,6 +724,10 @@ public actor SessionCoordinator {
             await handleConnectionLost(reason: "speech_end send failed while \(machine.state)")
             return
         }
+        // Reset before this new turn starts -- see its own doc comment
+        // for why a stale true from an earlier turn must never survive
+        // into this one.
+        currentTurnPlaybackFinished = false
         let (turnStream, continuation) = AsyncStream<ServerConnectionEvent>.makeStream()
         turnContinuation = continuation
         turnTask = Task { [weak self] in
@@ -691,11 +783,64 @@ public actor SessionCoordinator {
         // there is nothing new to say until this replayed/resumed turn
         // finishes.
         await setMuted(true)
+        currentTurnPlaybackFinished = false
         let (turnStream, continuation) = AsyncStream<ServerConnectionEvent>.makeStream()
         turnContinuation = continuation
         turnTask = Task { [weak self] in
             await self?.runTurn(turnStream)
         }
+    }
+
+    /// The "Finish this story" menu action -- see server's
+    /// handle_conclude_story(). Cancels whatever's in flight (same
+    /// teardown as interrupt()), then -- unlike interrupt(), which lands
+    /// in .listening and waits for a NEW speechStart -- immediately sets
+    /// up to receive the server's forced final reply, since sending
+    /// conclude_story itself triggers that reply with no further speech
+    /// needed first (mirrors handleSpeechEnd()'s ordering: send the
+    /// control frame, then create turnContinuation/turnTask afterward --
+    /// safe because, same as handleSpeechEnd(), the server cannot
+    /// possibly start replying before it has received and processed this
+    /// send, given the real STT/LLM/TTS latency in between).
+    public func concludeStory() async {
+        stopWaitingDitty()
+        audio.stopPlaybackImmediately()
+        turnContinuation?.finish()
+        turnContinuation = nil
+        turnTask?.cancel()
+        turnTask = nil
+        _ = try? machine.handle(.conclude)
+        // Same reasoning as handleSpeechStart()/interrupt(): must be
+        // assigned before the control frame's own await below.
+        currentTurnId += 1
+        await setMuted(true)
+        do {
+            try await connection.send(.concludeStory(turnId: currentTurnId))
+        } catch {
+            await handleConnectionLost(reason: "conclude_story send failed while \(machine.state)")
+            return
+        }
+        currentTurnPlaybackFinished = false
+        let (turnStream, continuation) = AsyncStream<ServerConnectionEvent>.makeStream()
+        turnContinuation = continuation
+        turnTask = Task { [weak self] in
+            await self?.runTurn(turnStream)
+        }
+        startWaitingDitty()
+    }
+
+    /// Requests the saved-story list for the Library screen -- see
+    /// protocol.py's ListStories. Fire-and-forget, same as
+    /// sendObjectSeen(): the response arrives asynchronously and updates
+    /// latestStoryList for a UI to poll.
+    public func listStories() async {
+        try? await connection.send(.listStories)
+    }
+
+    /// Requests one saved story's full detail -- see protocol.py's
+    /// GetStory. Fire-and-forget; the response updates latestStoryDetail.
+    public func getStory(storyId: String) async {
+        try? await connection.send(.getStory(storyId: storyId))
     }
 
     /// Starts the waiting-ditty loop for a turn resume() already set up --
@@ -767,6 +912,13 @@ public actor SessionCoordinator {
                 await setMuted(false)
                 _ = try? machine.handle(.turnEnd)
                 turnContinuation = nil
+                // Every audio chunk this turn received has, by this
+                // point, genuinely finished playing (each was awaited in
+                // the .audio case above before this loop could reach
+                // turnEnd) -- see readyToShowTheEnd's doc comment for why
+                // this specific point, not rewritingStarted's arrival, is
+                // the real "finished being spoken" signal.
+                noteTurnPlaybackFinished()
                 return
             case .message(.error(let text, _)):
                 stopWaitingDitty()
@@ -792,6 +944,9 @@ public actor SessionCoordinator {
                 stopWaitingDitty()
                 await setMuted(false)
                 return
+            case .message(.rewritingStarted), .message(.rewritingDone),
+                 .message(.storyList), .message(.storyDetail):
+                fatalError("unreachable: consumeServerEvents() never forwards story-lifecycle events into turnContinuation")
             }
         }
     }
@@ -841,6 +996,17 @@ public actor SessionCoordinator {
         lastTranscriptTurnId = nil
         lastReplyTurnId = nil
         lastErrorMessage = nil
+        // A fresh story means a fresh conclusion-tracking cycle -- these
+        // should already all be at their defaults in practice (the
+        // REWRITING gate means a new story can't start until the
+        // previous one's rewrite has finished), but reset defensively
+        // rather than trust that invariant silently. latestStoryList/
+        // latestStoryDetail are NOT reset here -- they're about browsing
+        // past stories, unrelated to the live one just abandoned.
+        isRewriting = false
+        sawRewritingStarted = false
+        currentTurnPlaybackFinished = false
+        readyToShowTheEnd = false
         try? await connection.send(.newStory)
     }
 

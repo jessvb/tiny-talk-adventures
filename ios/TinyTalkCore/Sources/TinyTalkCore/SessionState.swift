@@ -27,6 +27,12 @@ public enum SessionEvent: Sendable, Equatable {
     /// server), so the client re-enters exactly where a normal turn would
     /// be right after speech_end.
     case resumed
+    /// The "Finish this story" menu action -- mirrors the server's
+    /// Event.CONCLUDE (see state.py): legal from every state, and always
+    /// lands in .waitingForReply, because sending conclude_story itself
+    /// triggers the server's forced final reply -- no further speech
+    /// needed first, unlike the normal listening -> speechEnd path.
+    case conclude
 }
 
 public enum InvalidTransition: Error, Equatable {
@@ -49,6 +55,10 @@ private let transitions: [TransitionKey: SessionState] = [
     TransitionKey(state: .waitingForReply, event: .interrupt): .listening,
     TransitionKey(state: .speaking, event: .interrupt): .listening,
     TransitionKey(state: .idle, event: .resumed): .waitingForReply,
+    TransitionKey(state: .idle, event: .conclude): .waitingForReply,
+    TransitionKey(state: .listening, event: .conclude): .waitingForReply,
+    TransitionKey(state: .waitingForReply, event: .conclude): .waitingForReply,
+    TransitionKey(state: .speaking, event: .conclude): .waitingForReply,
     TransitionKey(state: .idle, event: .disconnected): .idle,
     TransitionKey(state: .listening, event: .disconnected): .idle,
     TransitionKey(state: .waitingForReply, event: .disconnected): .idle,

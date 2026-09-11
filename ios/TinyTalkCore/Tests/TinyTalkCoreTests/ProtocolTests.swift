@@ -37,6 +37,24 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(ClientMessage.newStory.encode(), #"{"type":"new_story"}"#)
     }
 
+    func testListStoriesEncodesExactType() {
+        XCTAssertEqual(ClientMessage.listStories.encode(), #"{"type":"list_stories"}"#)
+    }
+
+    func testGetStoryEncodesTheStoryId() {
+        XCTAssertEqual(
+            ClientMessage.getStory(storyId: "abc123").encode(),
+            #"{"type":"get_story","story_id":"abc123"}"#
+        )
+    }
+
+    func testConcludeStoryEncodesTheTurnId() {
+        XCTAssertEqual(
+            ClientMessage.concludeStory(turnId: 4).encode(),
+            #"{"type":"conclude_story","turn_id":4}"#
+        )
+    }
+
     func testUpdateSettingsEncodesBothValues() {
         XCTAssertEqual(
             ClientMessage.updateSettings(targetTurns: 8, pageCount: 6).encode(),
@@ -86,6 +104,73 @@ final class ProtocolTests: XCTestCase {
         }
         XCTAssertEqual(message, "Ollama is not running")
         XCTAssertEqual(turnId, 5)
+    }
+
+    func testDecodesRewritingStarted() throws {
+        let event = try decodeServerEvent(#"{"type": "rewriting_started"}"#)
+        XCTAssertEqual(event, .rewritingStarted)
+    }
+
+    func testDecodesRewritingDone() throws {
+        let event = try decodeServerEvent(#"{"type": "rewriting_done"}"#)
+        XCTAssertEqual(event, .rewritingDone)
+    }
+
+    func testDecodesStoryList() throws {
+        let event = try decodeServerEvent(
+            #"""
+            {"type": "story_list", "stories": [
+                {"id": "pip", "title": "Pip the Fox", "created_at": "2026-09-09T12:00:00+00:00", "page_count": 5, "rewrite_status": "done"},
+                {"id": "brave-turtle", "title": null, "created_at": "2026-09-09T13:00:00+00:00", "page_count": 0, "rewrite_status": "pending"}
+            ]}
+            """#
+        )
+        guard case .storyList(let stories) = event else {
+            return XCTFail("expected storyList, got \(event)")
+        }
+        XCTAssertEqual(stories.count, 2)
+        XCTAssertEqual(stories[0].id, "pip")
+        XCTAssertEqual(stories[0].title, "Pip the Fox")
+        XCTAssertEqual(stories[0].pageCount, 5)
+        XCTAssertEqual(stories[0].rewriteStatus, .done)
+        XCTAssertEqual(stories[1].id, "brave-turtle")
+        XCTAssertNil(stories[1].title)
+        XCTAssertEqual(stories[1].rewriteStatus, .pending)
+    }
+
+    func testDecodesStoryDetail() throws {
+        let event = try decodeServerEvent(
+            #"""
+            {"type": "story_detail", "id": "pip", "title": "Pip the Fox",
+             "pages": [{"text": "Once upon a time."}, {"text": "The end."}],
+             "epilogue": "And one true thing we learned about the fox: foxes have excellent hearing",
+             "rewrite_status": "done"}
+            """#
+        )
+        guard case .storyDetail(let detail) = event else {
+            return XCTFail("expected storyDetail, got \(event)")
+        }
+        XCTAssertEqual(detail.id, "pip")
+        XCTAssertEqual(detail.title, "Pip the Fox")
+        XCTAssertEqual(detail.pages, [StoryPage(text: "Once upon a time."), StoryPage(text: "The end.")])
+        XCTAssertEqual(detail.epilogue, "And one true thing we learned about the fox: foxes have excellent hearing")
+        XCTAssertEqual(detail.rewriteStatus, .done)
+    }
+
+    func testDecodesStoryDetailWithNilTitleAndEpilogue() throws {
+        // The .pending/.failed shape (see MockStories.stillWriting/
+        // .couldNotFinish) -- the background rewrite hasn't produced a
+        // title or epilogue yet, or never will.
+        let event = try decodeServerEvent(
+            #"{"type": "story_detail", "id": "brave-turtle", "title": null, "pages": [], "epilogue": null, "rewrite_status": "pending"}"#
+        )
+        guard case .storyDetail(let detail) = event else {
+            return XCTFail("expected storyDetail, got \(event)")
+        }
+        XCTAssertNil(detail.title)
+        XCTAssertEqual(detail.pages, [])
+        XCTAssertNil(detail.epilogue)
+        XCTAssertEqual(detail.rewriteStatus, .pending)
     }
 
     func testDecodeDefaultsMissingTurnIdToZero() throws {

@@ -1,11 +1,11 @@
 import SwiftUI
 import TinyTalkCore
 
-/// Shown right after a story naturally concludes (design 1a's "The End").
-/// For now, reached only via Settings' preview buttons -- wiring this into
-/// the real conclude flow needs the storybook-persistence branch's
-/// ConcludeStory/story_detail wire messages, not yet merged (see
-/// docs/superpowers/plans/2026-09-08-storybook-persistence.md).
+/// Shown right after a story naturally concludes (design 1a's "The End"),
+/// auto-navigated to by AppModel once a concluding turn's audio finishes
+/// playing and the server's rewriting_started/story_detail signals arrive
+/// (see AppModel's readyToShowTheEnd handling). Also still reachable via
+/// Settings' preview buttons against mock data.
 struct TheEndView: View {
     @ObservedObject var model: AppModel
     var childName: String = "you"
@@ -57,13 +57,44 @@ struct TheEndView: View {
                     }
 
                     Button {
-                        model.libraryStories = MockStories.librarySummaries
-                        model.screen = .library
+                        // AppModel already keeps model.selectedStory live for
+                        // this exact story for as long as The End screen is
+                        // showing (see AppModel's getStory()/story_detail
+                        // handling, which re-fetches once the rewrite
+                        // finishes) -- ReadingView reads that same property
+                        // directly, so no separate fetch or mock data is
+                        // needed here.
+                        model.screen = .reading
                     } label: {
-                        Text("Read it now")
+                        HStack(spacing: 10) {
+                            if detail.rewriteStatus == .pending {
+                                ProgressView()
+                                    .tint(TTA.Palette.cream)
+                            }
+                            Text("Read it now")
+                        }
                     }
-                    .buttonStyle(.ttaPrimary)
+                    // ChunkyButtonStyle never reads isEnabled -- it only
+                    // reacts to isPressed -- so .disabled() alone would
+                    // make this untappable without looking any different.
+                    // A parent found the previous plain .opacity() dim on
+                    // the vivid scarf-red fill too subtle to read as
+                    // "disabled" at a glance -- swapping to an actual
+                    // muted fill/edge pair (still from the warm palette,
+                    // not an off-brand cold grey) plus the spinner above
+                    // reads unambiguously as "in progress" instead.
+                    .buttonStyle(
+                        detail.rewriteStatus == .done
+                            ? ChunkyButtonStyle(fill: TTA.Palette.scarf, edge: TTA.Palette.scarfShadow)
+                            : ChunkyButtonStyle(fill: TTA.Palette.inkSoft, edge: TTA.Palette.ink)
+                    )
+                    .disabled(detail.rewriteStatus != .done)
                     .padding(.top, 24)
+
+                    // Same copy as LibraryView's statusCaption -- one
+                    // story's status should read identically wherever it
+                    // shows up.
+                    rewriteStatusCaption(for: detail)
 
                     Button {
                         model.goHome()
@@ -125,6 +156,28 @@ struct TheEndView: View {
                 .frame(width: 9)
         }
         .shadow(color: .black.opacity(0.45), radius: 18, y: 10)
+    }
+
+    /// Same copy LibraryView's statusCaption already uses for
+    /// .pending/.failed -- deliberately identical wording wherever a
+    /// story's rewrite status shows up. .done renders nothing here (the
+    /// epilogue above already covers that case).
+    @ViewBuilder
+    private func rewriteStatusCaption(for detail: SavedStoryDetail) -> some View {
+        switch detail.rewriteStatus {
+        case .done:
+            EmptyView()
+        case .pending:
+            Text("Elsie is still writing this one…")
+                .font(TTA.Typography.story(13, italic: true))
+                .foregroundColor(Color(hex: 0xe6dcf5))
+                .padding(.top, 6)
+        case .failed:
+            Text("Couldn't finish this storybook")
+                .font(TTA.Typography.story(13, italic: true))
+                .foregroundColor(TTA.Palette.alert)
+                .padding(.top, 6)
+        }
     }
 
     private func sparkleDot(delay: Double = 0) -> some View {
