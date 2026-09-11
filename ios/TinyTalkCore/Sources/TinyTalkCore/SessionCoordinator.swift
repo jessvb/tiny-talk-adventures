@@ -914,23 +914,27 @@ public actor SessionCoordinator {
                 // a play() call is taking noticeably longer than the audio
                 // it's actually playing (24kHz mono PCM16 = 48000
                 // bytes/sec), which would mean something is stalling
-                // mid-render rather than the chunk-granularity issue
-                // already fixed. Monotonic clock, matching LatencyLogger's
-                // own reasoning for why wall-clock Date() is the wrong tool
-                // for measuring a duration. Logged only when play() ran
-                // meaningfully longer than its own audio's duration (not
-                // every call -- this fires dozens of times per reply even
-                // in the normal case, and only the outliers matter here).
+                // mid-render. Monotonic clock, matching LatencyLogger's own
+                // reasoning for why wall-clock Date() is the wrong tool for
+                // measuring a duration. On-device evidence (2026-09-11,
+                // 200ms chunks) showed only modest (~100-130ms) per-call
+                // overshoot -- logging every call's overshoot now that
+                // AVSpeechTts yields ~1s chunks (≈12-13 calls/reply, well
+                // under the debug log's 50-entry cap) gives the full
+                // picture instead of just the ones that happened to cross
+                // an arbitrary threshold, in case the larger chunk size
+                // alone isn't enough to make the total overshoot
+                // imperceptible.
                 let playStarted = DispatchTime.now()
                 await audio.play(pcm)
                 let playElapsedSeconds = Double(DispatchTime.now().uptimeNanoseconds - playStarted.uptimeNanoseconds) / 1_000_000_000
                 let expectedSeconds = Double(pcm.count) / 48_000.0
-                if playElapsedSeconds > expectedSeconds + 0.1 {
-                    logDebug(
-                        "play() took \(String(format: "%.2f", playElapsedSeconds))s for a " +
-                        "\(String(format: "%.2f", expectedSeconds))s buffer (\(pcm.count) bytes) -- stall"
-                    )
-                }
+                let overshootSeconds = playElapsedSeconds - expectedSeconds
+                logDebug(
+                    "play() took \(String(format: "%.2f", playElapsedSeconds))s for a " +
+                    "\(String(format: "%.2f", expectedSeconds))s buffer (\(pcm.count) bytes) " +
+                    "-- overshoot \(String(format: "%.3f", overshootSeconds))s"
+                )
             case .message(.turnEnd(_)):
                 // Covers the empty-reply case: no .audio event ever
                 // arrives, so this is the only place left to stop a

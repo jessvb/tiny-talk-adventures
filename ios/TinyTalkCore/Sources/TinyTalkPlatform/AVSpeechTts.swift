@@ -12,9 +12,18 @@ public final class AVSpeechTts: NSObject, SpeechSynthesizing, @unchecked Sendabl
     private static let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatInt16, sampleRate: 24_000, channels: 1, interleaved: true
     )!
-    /// ~200ms of 24kHz mono PCM16 (24000 * 2 bytes/sample * 0.2s). See
+    /// 1s of 24kHz mono PCM16 (24000 * 2 bytes/sample * 1.0s). See
     /// synthesize()'s doc comment on minChunkBytes for why this exists.
-    private static let minChunkBytes = 9_600
+    /// Was 200ms (9_600) -- on-device timing evidence (2026-09-11) ruled
+    /// out synthesis as the bottleneck (12-13s of audio synthesized in
+    /// 0.2-1.0s wall-clock, 10-60x faster than needed) and showed only
+    /// modest (~100-130ms) per-play()-call overhead, meaning the residual
+    /// audible stutter at 200ms chunks (~60-64 calls/reply) is consistent
+    /// with a small, roughly-fixed per-call cost compounding across many
+    /// calls, not one big stall. Since synthesis has enormous headroom,
+    /// there's no cost to buffering further -- this cuts calls per reply
+    /// to roughly 12-13, a further ~5x reduction.
+    private static let minChunkBytes = 24_000
 
     public init(voiceIdentifier: String? = nil) {
         self.voiceIdentifier = voiceIdentifier
