@@ -12,6 +12,9 @@ public final class AVSpeechTts: NSObject, SpeechSynthesizing, @unchecked Sendabl
     private static let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatInt16, sampleRate: 24_000, channels: 1, interleaved: true
     )!
+    /// ~200ms of 24kHz mono PCM16 (24000 * 2 bytes/sample * 0.2s). See
+    /// synthesize()'s doc comment on minChunkBytes for why this exists.
+    private static let minChunkBytes = 9_600
 
     public init(voiceIdentifier: String? = nil) {
         self.voiceIdentifier = voiceIdentifier
@@ -44,8 +47,30 @@ public final class AVSpeechTts: NSObject, SpeechSynthesizing, @unchecked Sendabl
             // converter once per capture session and reuses it across
             // every tap callback the same way.
             var converter: AVAudioConverter?
+            // write(_:)'s callback fires roughly every 10ms (confirmed
+            // on-device: 358-558 byte chunks, ~11.6ms of 24kHz mono PCM16
+            // each -- 1142 chunks for a 13.25s reply). RealAudioEngine.play()
+            // fully awaits each chunk's REAL playback completion
+            // (completionCallbackType: .dataPlayedBack, not just handoff to
+            // the render engine -- see that method's own doc comments) before
+            // the next chunk can even be scheduled, since SessionCoordinator's
+            // consuming loop calls `await audio.play(pcm)` on each .audio
+            // event in turn. Yielding at write(_:)'s native ~11ms granularity
+            // means hundreds of full schedule-then-wait-for-real-playback
+            // round trips per reply -- confirmed on-device as the actual
+            // cause of "tch tch tch", slow/jumpy playback (not a conversion
+            // artifact -- the earlier converter-reuse fix was necessary but
+            // insufficient). Coalescing into ~200ms chunks here cuts that by
+            // roughly 17x, fixed at the source rather than touching
+            // RealAudioEngine/SessionCoordinator, which are shared with the
+            // real server path and already tuned against its larger,
+            // less-frequent Kokoro-produced chunks.
+            var pending = Data()
             synthesizer.write(utterance) { buffer in
                 guard let pcmBuffer = buffer as? AVAudioPCMBuffer, pcmBuffer.frameLength > 0 else {
+                    if !pending.isEmpty {
+                        continuation.yield(pending)
+                    }
                     continuation.finish()
                     return
                 }
@@ -53,11 +78,18 @@ public final class AVSpeechTts: NSObject, SpeechSynthesizing, @unchecked Sendabl
                     converter = AVAudioConverter(from: pcmBuffer.format, to: Self.targetFormat)
                 }
                 guard let converter else {
+                    if !pending.isEmpty {
+                        continuation.yield(pending)
+                    }
                     continuation.finish()
                     return
                 }
                 if let converted = Self.convert(pcmBuffer, with: converter, to: Self.targetFormat) {
-                    continuation.yield(converted)
+                    pending.append(converted)
+                    if pending.count >= Self.minChunkBytes {
+                        continuation.yield(pending)
+                        pending = Data()
+                    }
                 }
             }
         }
