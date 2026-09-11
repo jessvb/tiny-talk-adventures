@@ -2,6 +2,7 @@ from typing import AsyncIterator
 
 from PIL import Image
 
+from tinytalk.engines import EngineError
 from tinytalk.illustrations import generate_and_attach
 from tinytalk.story_store import load_story, save_story, story_id_from_path, update_story_rewrite
 from tinytalk.conversation import Conversation
@@ -39,6 +40,23 @@ class FakeImageBackend:
         if index in self.flagged_indices:
             return None
         return Image.new("RGB", (8, 8), color=(255, 0, 0))
+
+
+class FakeRaisingExtractionLlm:
+    """Behaves like FakeExtractionLlm, but raises EngineError on the
+    call at `raise_on_index` (0-indexed, one call per page) instead of
+    yielding a prompt -- simulating a local-LLM hiccup on one page's
+    prompt-extraction call specifically, not a whole-pass failure."""
+
+    def __init__(self, raise_on_index: int) -> None:
+        self.raise_on_index = raise_on_index
+        self.calls: list[list[dict[str, str]]] = []
+
+    async def stream_reply(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+        self.calls.append(messages)
+        if len(self.calls) - 1 == self.raise_on_index:
+            raise EngineError("local LLM hiccup")
+        yield "a fox in a forest"
 
 
 def _saved_story_with_pages(tmp_path, pages):
@@ -113,6 +131,30 @@ async def test_every_page_flagged_marks_failed(tmp_path):
     story = load_story(story_id, stories_dir=tmp_path)
     assert story["illustrations_status"] == "failed"
     assert story["pages"][0]["image_path"] is None
+
+
+async def test_llm_failure_on_one_page_degrades_only_that_page(tmp_path):
+    # A prompt-extraction failure on one page (e.g. the local LLM
+    # raising EngineError) must degrade only that page -- the same way
+    # image_backend.generate() returning None already does -- not abort
+    # the whole pass and discard already-generated pages.
+    pages = [{"text": "Page one."}, {"text": "Page two."}, {"text": "Page three."}]
+    story_id = _saved_story_with_pages(tmp_path, pages)
+    backend = FakeImageBackend()
+    llm = FakeRaisingExtractionLlm(raise_on_index=1)
+
+    await generate_and_attach(
+        story_id, pages, llm=llm, image_backend=backend, stories_dir=tmp_path
+    )
+
+    story = load_story(story_id, stories_dir=tmp_path)
+    assert story["illustrations_status"] == "partial"
+    assert story["pages"][0]["image_path"] is not None
+    assert story["pages"][1]["image_path"] is None
+    assert story["pages"][2]["image_path"] is not None
+    # Page 2 still got the benefit of page 0's reference image, since
+    # page 0 succeeded before page 1's failure.
+    assert backend.calls[-1][1] is not None
 
 
 async def test_prompt_extraction_uses_each_pages_own_text(tmp_path):

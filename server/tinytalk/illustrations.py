@@ -36,6 +36,21 @@ async def _extract_scene_prompt(llm: LlmEngine, page_text: str) -> str:
     return "".join(parts).strip()
 
 
+def _mark_blank(
+    story_id: str, pages: list[dict], status: str, stories_dir: Path
+) -> None:
+    """Patches an all-None image_filenames list with `status` into the
+    story -- used both for the initial "pending" mark and for a
+    pass-level "failed" mark, so those two blank-image_path writes
+    aren't duplicated at each call site."""
+    story_store.update_story_illustrations(
+        story_id,
+        image_filenames=[None] * len(pages),
+        illustrations_status=status,
+        stories_dir=stories_dir,
+    )
+
+
 async def generate_and_attach(
     story_id: str,
     pages: list[dict],
@@ -54,17 +69,33 @@ async def generate_and_attach(
     REWRITING-gated window -- see that module for how release of the
     gate is guaranteed regardless of outcome here."""
     try:
-        story_store.update_story_illustrations(
-            story_id,
-            image_filenames=[None] * len(pages),
-            illustrations_status="pending",
-            stories_dir=stories_dir,
-        )
+        _mark_blank(story_id, pages, "pending", stories_dir)
         reference_image = None
         image_filenames: list[str | None] = []
         any_succeeded = False
         for index, page in enumerate(pages):
-            scene_prompt = await _extract_scene_prompt(llm, page["text"])
+            try:
+                scene_prompt = await _extract_scene_prompt(llm, page["text"])
+            except asyncio.CancelledError:
+                raise
+            except EngineError as exc:
+                logger.warning(
+                    "illustration for story %s page %d failed during prompt "
+                    "extraction: %s",
+                    story_id,
+                    index,
+                    exc,
+                )
+                image_filenames.append(None)
+                continue
+            except Exception:  # noqa: BLE001 - one page's LLM hiccup must not sink the pass
+                logger.exception(
+                    "unexpected failure extracting scene prompt for story %s page %d",
+                    story_id,
+                    index,
+                )
+                image_filenames.append(None)
+                continue
             image = await asyncio.to_thread(
                 image_backend.generate, scene_prompt, reference_image=reference_image
             )
@@ -107,17 +138,7 @@ async def generate_and_attach(
         raise
     except EngineError as exc:
         logger.error("illustration pass failed for story %s: %s", story_id, exc)
-        story_store.update_story_illustrations(
-            story_id,
-            image_filenames=[None] * len(pages),
-            illustrations_status="failed",
-            stories_dir=stories_dir,
-        )
+        _mark_blank(story_id, pages, "failed", stories_dir)
     except Exception:  # noqa: BLE001 - a background pass must survive one bad story
         logger.exception("unexpected failure during illustration pass for story %s", story_id)
-        story_store.update_story_illustrations(
-            story_id,
-            image_filenames=[None] * len(pages),
-            illustrations_status="failed",
-            stories_dir=stories_dir,
-        )
+        _mark_blank(story_id, pages, "failed", stories_dir)
