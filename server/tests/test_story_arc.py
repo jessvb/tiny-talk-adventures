@@ -9,6 +9,15 @@ def test_new_arc_starts_at_intro_stage_and_is_not_done():
     assert arc.is_done is False
 
 
+def test_has_started_is_false_on_a_fresh_arc_and_true_after_one_turn():
+    arc = StoryArc()
+    assert arc.has_started is False
+
+    arc.record_turn("we walked into the forest")
+
+    assert arc.has_started is True
+
+
 def test_stage_progresses_through_all_boundaries_for_default_target():
     # target_turns=7: intro 1, setup 2, rising_action 3-5, climax 6-7,
     # resolution 8-10.
@@ -37,6 +46,23 @@ def test_custom_target_turns_scales_boundaries():
     for expected_stage in expected:
         arc.record_turn("a squirrel found an acorn")
         assert arc.stage is expected_stage
+
+
+@pytest.mark.parametrize("target_turns", [4, 5])
+def test_setup_stage_is_reachable_at_low_target_turns(target_turns):
+    # Regression test: on-device, target_turns=4 (Settings' minimum)
+    # produced a story with no conflict/tension at all. Root cause:
+    # setup_end = round(target_turns / 4) rounds to <=1 for target_turns
+    # in {4, 5}, and turn 1 is unconditionally INTRO -- so no turn number
+    # could ever land in the SETUP branch, silently skipping the one stage
+    # whose job is introducing a problem/challenge (see
+    # test_setup_guidance_instructs_introducing_a_conflict_right_away's
+    # own on-device-testing rationale for why that stage matters).
+    arc = StoryArc(target_turns=target_turns)
+    arc.record_turn("we walked into the forest")  # turn 1 -- intro
+    guidance = arc.record_turn("a fox appeared").lower()  # turn 2 -- must be setup
+    assert arc.stage is Stage.SETUP
+    assert any(word in guidance for word in ("problem", "challenge", "conflict"))
 
 
 def test_record_turn_returns_guidance_matching_current_stage():
@@ -69,15 +95,14 @@ def test_resolution_and_forced_guidance_both_instruct_ending_with_the_end():
     # child a clear sense of closure and makes _CONCLUSION_PATTERN's
     # natural-conclusion detection far more reliable (it's already one of
     # _CONCLUSION_PHRASES).
-    arc = StoryArc(target_turns=1)  # grace ceiling = 4; turn 2+ is already resolution
-    arc.record_turn("something happens")  # turn 1
-    resolution_guidance = arc.record_turn("something happens")  # turn 2
+    arc = StoryArc(target_turns=2)  # grace ceiling = 3; turn 3+ is already resolution
+    arc.record_turn("something happens")  # turn 1 -- intro
+    arc.record_turn("something happens")  # turn 2 -- setup
+    resolution_guidance = arc.record_turn("something happens")  # turn 3 -- natural resolution, not yet forced
     assert arc.stage is Stage.RESOLUTION
     assert '"the end.' in resolution_guidance.lower()
 
-    arc.record_turn("something happens")  # turn 3
-    arc.record_turn("something happens")  # turn 4 -- last turn within the grace ceiling
-    forced_guidance = arc.record_turn("something happens")  # turn 5 -- past the ceiling
+    forced_guidance = arc.record_turn("something happens")  # turn 4 -- past the ceiling
     assert '"the end.' in forced_guidance.lower()
 
 
@@ -132,9 +157,33 @@ def test_turn_count_past_grace_ceiling_forces_guidance_then_marks_done():
     assert arc.is_done is True
 
 
+def test_grace_ceiling_scales_down_for_low_target_turns():
+    # Regression test: on-device, target_turns=4 (Settings' minimum) ran a
+    # story to 7 turns -- the old fixed "+3" grace was tuned when
+    # target_turns was a constant 7 (a ~43% overrun ceiling), so at the new
+    # minimum of 4 the same fixed +3 was a ~75-100% overrun. Grace now
+    # scales with target_turns, preserving that ~43% ratio: ceiling=6, not 7.
+    arc = StoryArc(target_turns=4)
+    for _ in range(6):
+        arc.record_turn("something happens")
+        arc.record_reply("something else happens, with no trigger phrase")
+    assert arc.is_done is False  # still within the grace ceiling
+
+    guidance = arc.record_turn("something happens")  # turn 7, past ceiling
+    assert guidance == (
+        "This must be the last reply. Resolve the problem from earlier "
+        "in the story and bring it to a warm, complete ending right now. "
+        "Do not ask what should happen next. The story is over. End "
+        "your reply with the words \"The end.\""
+    )
+    arc.record_reply("anything at all, even without a conclusion phrase")
+    assert arc.is_done is True
+
+
 def test_force_conclude_guidance_is_the_same_as_grace_ceiling_guidance():
     target_turns = 3
-    grace_ceiling = target_turns + 3  # matches StoryArc's own __init__ formula
+    # matches StoryArc's own __init__ formula
+    grace_ceiling = target_turns + max(1, round(target_turns * 3 / 7))
     arc = StoryArc(target_turns=target_turns)
     for _ in range(grace_ceiling):
         arc.record_turn("keep going")

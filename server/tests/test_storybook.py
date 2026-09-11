@@ -8,13 +8,19 @@ from tinytalk.conversation import Conversation
 
 
 class FakeRewriteLlm:
-    def __init__(self, reply: str) -> None:
-        self.reply = reply
+    def __init__(self, *replies: str) -> None:
+        # One positional arg keeps every existing single-reply call site
+        # unchanged; a safety-retry test passes several, one per expected
+        # attempt. If more calls happen than replies were given, the last
+        # reply repeats (a test that wants a specific attempt count passes
+        # exactly that many replies and asserts on len(llm.calls)).
+        self.replies = list(replies)
         self.calls: list[list[dict[str, str]]] = []
 
     async def stream_reply(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         self.calls.append(messages)
-        yield self.reply
+        index = min(len(self.calls) - 1, len(self.replies) - 1)
+        yield self.replies[index]
 
 
 def make_saved_story(tmp_path):
@@ -57,7 +63,7 @@ async def test_build_and_attach_parses_and_saves_a_valid_rewrite(tmp_path):
     # grounds_it_in_the_real_shared_fact below for a test that isolates
     # this specifically (the model's epilogue deliberately differs from
     # the real fact there).
-    assert story["epilogue"] == "And one true thing we learned: foxes have excellent hearing"
+    assert story["epilogue"] == "And one true thing we learned about the fox: foxes have excellent hearing"
     assert story["rewrite_status"] == "done"
     assert story["turns"], "raw transcript must still be present"
 
@@ -140,15 +146,24 @@ async def test_build_and_attach_discards_a_fabricated_epilogue_when_no_facts_wer
     assert story["rewrite_status"] == "done"
 
 
-async def test_build_and_attach_sends_the_kid_safety_system_prompt(tmp_path):
+async def test_build_and_attach_sends_kid_safety_framing_but_not_live_dialogue_rules(
+    tmp_path,
+):
     """The rewrite model is still a general-purpose local LLM, and its
     output is later displayed on the Reading screen AND spoken aloud
     unfiltered (session.py's handle_get_story / handle_synthesize_page) --
-    it needs the same kid-safety framing every live-turn LLM call already
-    gets via config.SYSTEM_PROMPT (see session.py's _run_turn prepending
-    it to every messages list), not just this module's own
-    storybook-formatting instructions."""
-    from tinytalk import config
+    it needs the same kid-safety framing every live-turn LLM call gets
+    (no violence, grounded in the real world, etc.).
+
+    Regression test: build_and_attach() used to send config.SYSTEM_PROMPT
+    verbatim, which also carries live-dialogue-only rules ("end most
+    replies by asking the child what should happen next", interrupt
+    handling) that make no sense for a one-shot rewrite into finished
+    prose -- and on-device testing found exactly that: a rewritten page
+    ending with "what should we do next..." instead of concluding. The
+    rewrite's own system prompt must keep the safety framing without that
+    turn-taking rule."""
+    from tinytalk.storybook import _STORYBOOK_SYSTEM_PROMPT
 
     story_id = make_saved_story(tmp_path)
     reply = json.dumps({"title": "A Story", "pages": [{"text": "Once upon a time."}]})
@@ -156,7 +171,10 @@ async def test_build_and_attach_sends_the_kid_safety_system_prompt(tmp_path):
 
     await build_and_attach(story_id, [], [], llm=llm, stories_dir=tmp_path)
 
-    assert llm.calls[0][0] == {"role": "system", "content": config.SYSTEM_PROMPT}
+    system_message = llm.calls[0][0]
+    assert system_message == {"role": "system", "content": _STORYBOOK_SYSTEM_PROMPT}
+    assert "no violence" in system_message["content"].lower()
+    assert "what should happen next" not in system_message["content"].lower()
 
 
 async def test_build_and_attach_marks_failed_when_the_parsed_title_is_unsafe(tmp_path):
@@ -249,7 +267,108 @@ async def test_build_and_attach_ignores_the_models_own_epilogue_text_and_grounds
     )
 
     story = load_story(story_id, stories_dir=tmp_path)
-    assert story["epilogue"] == "And one true thing we learned: foxes have excellent hearing"
+    assert story["epilogue"] == "And one true thing we learned about the fox: foxes have excellent hearing"
+
+
+async def test_build_and_attach_retries_and_saves_once_a_later_attempt_is_safe(tmp_path):
+    """Real incident: a child suggested "a sharp rock to gently cut a bush"
+    mid-story, and the flagged word made it into the model's first rewrite
+    attempt. Rather than discarding the whole story outright, the model
+    should get a chance to rewrite it again without that word."""
+    story_id = make_saved_story(tmp_path)
+    unsafe_reply = json.dumps(
+        {"title": "The Knife Fight", "pages": [{"text": "Once upon a time."}]}
+    )
+    safe_reply = json.dumps(
+        {"title": "The Big Adventure", "pages": [{"text": "Once upon a time."}]}
+    )
+    llm = FakeRewriteLlm(unsafe_reply, safe_reply)
+
+    await build_and_attach(story_id, [], [], llm=llm, stories_dir=tmp_path)
+
+    story = load_story(story_id, stories_dir=tmp_path)
+    assert story["rewrite_status"] == "done"
+    assert story["title"] == "The Big Adventure"
+    assert len(llm.calls) == 2
+
+
+async def test_build_and_attach_safety_retry_tells_the_model_what_to_avoid(tmp_path):
+    story_id = make_saved_story(tmp_path)
+    unsafe_reply = json.dumps(
+        {"title": "The Knife Fight", "pages": [{"text": "Once upon a time."}]}
+    )
+    safe_reply = json.dumps({"title": "A Story", "pages": [{"text": "The end."}]})
+    llm = FakeRewriteLlm(unsafe_reply, safe_reply)
+
+    await build_and_attach(story_id, [], [], llm=llm, stories_dir=tmp_path)
+
+    retry_prompt = llm.calls[1][-1]["content"]
+    assert "knife" in retry_prompt.lower()
+
+
+async def test_build_and_attach_gives_up_after_the_configured_number_of_safety_attempts(
+    tmp_path,
+):
+    from tinytalk import config
+
+    story_id = make_saved_story(tmp_path)
+    unsafe_reply = json.dumps(
+        {"title": "The Knife Fight", "pages": [{"text": "Once upon a time."}]}
+    )
+    llm = FakeRewriteLlm(unsafe_reply)
+
+    await build_and_attach(story_id, [], [], llm=llm, stories_dir=tmp_path)
+
+    story = load_story(story_id, stories_dir=tmp_path)
+    assert story["rewrite_status"] == "failed"
+    assert story["title"] is None
+    assert story["turns"], "raw transcript must survive exhausting every retry"
+    assert len(llm.calls) == config.STORYBOOK_REWRITE_RETRY_ATTEMPTS
+
+
+async def test_build_and_attach_retries_and_saves_once_a_later_attempt_parses(tmp_path):
+    # Regression: on-device, a real rewrite reply came back with one page
+    # object missing its opening brace -- malformed JSON, not a safety
+    # issue. That story got no storybook at all under the old
+    # immediate-fail behavior. A parse failure now gets the same kind of
+    # second chance a safety-check failure already did.
+    story_id = make_saved_story(tmp_path)
+    valid_reply = json.dumps({"title": "A Story", "pages": [{"text": "Once upon a time."}]})
+    llm = FakeRewriteLlm("this is not json at all", valid_reply)
+
+    await build_and_attach(story_id, [], [], llm=llm, stories_dir=tmp_path)
+
+    story = load_story(story_id, stories_dir=tmp_path)
+    assert story["rewrite_status"] == "done"
+    assert story["title"] == "A Story"
+    assert len(llm.calls) == 2
+
+
+async def test_build_and_attach_parse_retry_asks_for_valid_json_again(tmp_path):
+    story_id = make_saved_story(tmp_path)
+    valid_reply = json.dumps({"title": "A Story", "pages": [{"text": "Once upon a time."}]})
+    llm = FakeRewriteLlm("this is not json at all", valid_reply)
+
+    await build_and_attach(story_id, [], [], llm=llm, stories_dir=tmp_path)
+
+    retry_prompt = llm.calls[1][-1]["content"]
+    assert "valid json" in retry_prompt.lower()
+
+
+async def test_build_and_attach_gives_up_after_the_configured_number_of_parse_attempts(
+    tmp_path,
+):
+    from tinytalk import config
+
+    story_id = make_saved_story(tmp_path)
+    llm = FakeRewriteLlm("this is not json at all")
+
+    await build_and_attach(story_id, [], [], llm=llm, stories_dir=tmp_path)
+
+    story = load_story(story_id, stories_dir=tmp_path)
+    assert story["rewrite_status"] == "failed"
+    assert story["turns"], "raw transcript must survive exhausting every retry"
+    assert len(llm.calls) == config.STORYBOOK_REWRITE_RETRY_ATTEMPTS
 
 
 async def test_build_and_attach_marks_failed_and_does_not_raise_on_an_unexpected_exception(

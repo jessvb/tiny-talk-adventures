@@ -55,6 +55,13 @@ final class ProtocolTests: XCTestCase {
         )
     }
 
+    func testUpdateSettingsEncodesBothValues() {
+        XCTAssertEqual(
+            ClientMessage.updateSettings(targetTurns: 8, pageCount: 6).encode(),
+            #"{"type":"update_settings","target_turns":8,"page_count":6}"#
+        )
+    }
+
     func testDecodesTranscriptPartial() throws {
         let event = try decodeServerEvent(#"{"type": "transcript_partial", "text": "a fox", "turn_id": 5}"#)
         guard case .transcriptPartial(let text, let turnId) = event else {

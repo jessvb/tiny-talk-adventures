@@ -1806,4 +1806,19 @@ final class SessionCoordinatorTests: XCTestCase {
 
         runLoop.cancel()
     }
+
+    func testUpdateSettingsSendsTheControlFrame() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        await coordinator.updateSettings(targetTurns: 9, pageCount: 4)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        XCTAssertEqual(connection.sentMessages, [.updateSettings(targetTurns: 9, pageCount: 4)])
+
+        runLoop.cancel()
+    }
 }

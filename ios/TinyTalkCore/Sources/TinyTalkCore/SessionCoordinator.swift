@@ -355,6 +355,16 @@ public actor SessionCoordinator {
         try? await connection.send(.objectSeen(label: label))
     }
 
+    /// Sends the parent's current story-length preference to the server --
+    /// see protocol.py's UpdateSettings and this project's
+    /// story-length-settings design spec. Fire-and-forget, same pattern
+    /// as listStories()/getStory(storyId:): applies to the next story
+    /// only, no response expected, no local state to update here (the
+    /// values themselves live in AppModel/UserDefaults, not this actor).
+    public func updateSettings(targetTurns: Int, pageCount: Int) async {
+        try? await connection.send(.updateSettings(targetTurns: targetTurns, pageCount: pageCount))
+    }
+
     /// Appends to the pre-roll ring buffer, evicting the oldest chunks once
     /// the ~200ms byte cap is exceeded. Only called while NOT .listening, or
     /// while isFlushing is true -- once .listening AND not flushing,

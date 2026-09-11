@@ -42,6 +42,10 @@ public enum ClientMessage: Sendable, Equatable {
     /// results in one more real response_text/turn_end pair the client
     /// must be able to attribute to a turn.
     case concludeStory(turnId: Int)
+    /// Parent-adjustable story-length settings from the Settings screen --
+    /// see protocol.py's UpdateSettings. Sent once after connecting and
+    /// again whenever changed while connected.
+    case updateSettings(targetTurns: Int, pageCount: Int)
 
     public func encode() -> String {
         // Field order and separators are fixed here (no JSONEncoder) so the
@@ -63,6 +67,8 @@ public enum ClientMessage: Sendable, Equatable {
             return #"{"type":"get_story","story_id":"\#(Self.jsonEscaped(storyId))"}"#
         case .concludeStory(let turnId):
             return #"{"type":"conclude_story","turn_id":\#(turnId)}"#
+        case .updateSettings(let targetTurns, let pageCount):
+            return #"{"type":"update_settings","target_turns":\#(targetTurns),"page_count":\#(pageCount)}"#
         }
     }
 
