@@ -197,6 +197,7 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
             var ttsTotalBytes = 0
             var ttsMinChunkBytes = Int.max
             var ttsMaxChunkBytes = 0
+            let synthesisStarted = DispatchTime.now()
             for await pcmChunk in ttsClient.synthesize(reply) {
                 try Task.checkCancellation()
                 ttsChunkCount += 1
@@ -205,24 +206,35 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
                 ttsMaxChunkBytes = max(ttsMaxChunkBytes, pcmChunk.count)
                 continuation.yield(.audio(pcmChunk))
             }
+            let synthesisElapsedSeconds =
+                Double(DispatchTime.now().uptimeNanoseconds - synthesisStarted.uptimeNanoseconds) / 1_000_000_000
             if ttsChunkCount == 0 {
                 onDebugEvent?("[\(DebugTimestamp.now())] TTS produced 0 bytes for turn \(turnId)")
             } else {
-                // Diagnostic for the on-device-reported garbled/quiet audio
-                // bug -- chunk count/size distribution and implied duration
-                // (24kHz mono PCM16 = 48000 bytes/sec) tell us whether
-                // AVSpeechSynthesizer.write() is delivering an unusually
-                // large number of small buffers, which RealAudioEngine.play()
-                // schedules one at a time (each with its own up-to-3s
-                // completion wait -- see that file's scheduleBuffer doc
-                // comments) -- a plausible alternate cause to the
-                // converter-reuse fix already applied, if that fix alone
-                // didn't resolve it.
-                let seconds = Double(ttsTotalBytes) / 48_000.0
+                // Diagnostic for the on-device-reported garbled/stuttering
+                // audio. Chunk count/size distribution and implied audio
+                // duration (24kHz mono PCM16 = 48000 bytes/sec) already
+                // confirmed the "tch tch tch" cause (AVSpeechSynthesizer.
+                // write()'s ~11ms native buffers vs RealAudioEngine.play()'s
+                // fully-sequential per-buffer playback wait -- fixed by
+                // coalescing in AVSpeechTts). Comparing synthesisElapsedSeconds
+                // (this loop's own wall-clock time) against the audio's
+                // implied duration tests a different, still-open hypothesis
+                // for the residual stutter: production (this loop, yielding
+                // into continuation) and playback (SessionCoordinator's
+                // separate consuming task, downstream of the same
+                // AsyncStream) run concurrently, not sequentially -- if
+                // on-device synthesis can't keep up with realtime under
+                // concurrent VAD/mic-capture/TTS load, the playback consumer
+                // would starve waiting for the next chunk with each
+                // individual play() call still measuring perfectly normal,
+                // which a play()-side timing check alone could never catch.
+                let impliedSeconds = Double(ttsTotalBytes) / 48_000.0
                 onDebugEvent?(
                     "[\(DebugTimestamp.now())] TTS for turn \(turnId): \(ttsChunkCount) chunks, " +
-                    "\(ttsTotalBytes) bytes (~\(String(format: "%.2f", seconds))s), " +
-                    "chunk size \(ttsMinChunkBytes)-\(ttsMaxChunkBytes) bytes"
+                    "\(ttsTotalBytes) bytes (~\(String(format: "%.2f", impliedSeconds))s audio), " +
+                    "chunk size \(ttsMinChunkBytes)-\(ttsMaxChunkBytes) bytes, " +
+                    "synthesis took \(String(format: "%.2f", synthesisElapsedSeconds))s wall-clock"
                 )
             }
             try Task.checkCancellation() // closes the window between the last audio chunk and recording the reply

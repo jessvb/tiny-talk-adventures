@@ -909,7 +909,28 @@ public actor SessionCoordinator {
                     // the wait, this is a harmless no-op (already false).
                     await setMuted(false)
                 }
+                // Diagnostic for the on-device-reported stutter that
+                // survived the TTS chunk-coalescing fix: measures whether
+                // a play() call is taking noticeably longer than the audio
+                // it's actually playing (24kHz mono PCM16 = 48000
+                // bytes/sec), which would mean something is stalling
+                // mid-render rather than the chunk-granularity issue
+                // already fixed. Monotonic clock, matching LatencyLogger's
+                // own reasoning for why wall-clock Date() is the wrong tool
+                // for measuring a duration. Logged only when play() ran
+                // meaningfully longer than its own audio's duration (not
+                // every call -- this fires dozens of times per reply even
+                // in the normal case, and only the outliers matter here).
+                let playStarted = DispatchTime.now()
                 await audio.play(pcm)
+                let playElapsedSeconds = Double(DispatchTime.now().uptimeNanoseconds - playStarted.uptimeNanoseconds) / 1_000_000_000
+                let expectedSeconds = Double(pcm.count) / 48_000.0
+                if playElapsedSeconds > expectedSeconds + 0.1 {
+                    logDebug(
+                        "play() took \(String(format: "%.2f", playElapsedSeconds))s for a " +
+                        "\(String(format: "%.2f", expectedSeconds))s buffer (\(pcm.count) bytes) -- stall"
+                    )
+                }
             case .message(.turnEnd(_)):
                 // Covers the empty-reply case: no .audio event ever
                 // arrives, so this is the only place left to stop a
