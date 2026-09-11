@@ -154,6 +154,34 @@ CONCLUDE_SAFETY_RETRY_ATTEMPTS = int(
     os.environ.get("TINYTALK_CONCLUDE_SAFETY_RETRY_ATTEMPTS", "3")
 )
 
+# Stable Diffusion 1.5 base checkpoint used for storybook page
+# illustrations (image_gen.py) -- pinned explicitly, same reasoning as
+# STT_HF_REPO above: a change here is a deliberate choice, not something
+# that should silently drift.
+IMAGE_GEN_MODEL = os.environ.get(
+    "TINYTALK_IMAGE_GEN_MODEL", "stable-diffusion-v1-5/stable-diffusion-v1-5"
+)
+
+# A storybook-illustration-style LoRA applied on top of the base
+# checkpoint so generated pages read as children's-book art rather than
+# photorealistic output. See the page-art design spec's "Feasibility"
+# section for why this specific one was chosen.
+IMAGE_GEN_LORA = os.environ.get(
+    "TINYTALK_IMAGE_GEN_LORA",
+    "artificialguybr/storybookredmond-1-5-version-storybook-kids-lora-style-for-sd-1-5",
+)
+
+# IP-Adapter reference-image conditioning, used for every page after the
+# first so the story's animal stays visually consistent -- see the
+# page-art design spec's "Character consistency" section. SD-1.5-specific
+# checkpoint id; SDXL uses a different subfolder/filename, don't mix them
+# up if this is ever changed.
+IMAGE_GEN_IP_ADAPTER_REPO = os.environ.get("TINYTALK_IMAGE_GEN_IP_ADAPTER_REPO", "h94/IP-Adapter")
+IMAGE_GEN_IP_ADAPTER_WEIGHT = os.environ.get(
+    "TINYTALK_IMAGE_GEN_IP_ADAPTER_WEIGHT", "ip-adapter_sd15.bin"
+)
+IMAGE_GEN_IP_ADAPTER_SCALE = float(os.environ.get("TINYTALK_IMAGE_GEN_IP_ADAPTER_SCALE", "0.5"))
+
 SYSTEM_PROMPT = (
     "You are a warm, interesting storyteller telling a story out loud with a young, "
     "intelligent child, aged about three to six. You and the child are making the "

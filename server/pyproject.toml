@@ -11,6 +11,11 @@ dependencies = [
     "soundfile>=0.12",
     "moshi_mlx>=0.2",
     "python-dotenv>=1.0",
+    "diffusers>=0.34.0,<0.35.0",
+    "transformers",
+    "accelerate",
+    "torch>=2.0",
+    "pillow",
 ]
 
 [project.optional-dependencies]
