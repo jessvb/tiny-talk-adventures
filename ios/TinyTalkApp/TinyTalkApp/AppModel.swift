@@ -140,10 +140,29 @@ final class AppModel: ObservableObject {
 
     /// The Settings toggle calls this (not $awayFromHomeEnabled directly)
     /// so the choice survives an app relaunch, matching serverAddress's
-    /// own persistence.
+    /// own persistence. Also disconnects if a connection is already live:
+    /// the connection type is only ever chosen once, at connect time (see
+    /// connectResumingIfPending()) -- nothing re-evaluates it while
+    /// already connected. Without this, flipping the toggle mid-session
+    /// (reachable from StoryView's own menu) silently kept talking to the
+    /// OLD backend while every "connected" status text (which reads this
+    /// flag, not which connection is actually live) claimed otherwise --
+    /// caught on-device: toggling away-from-home off produced no server
+    /// logs, no saved story, and the same on-device TTS audio as before.
+    /// A story's conversation state has no meaning across a backend
+    /// switch anyway (Groq and the home server are unrelated brains), so
+    /// disconnecting and forcing a fresh connect on the next "Create a
+    /// Story" is the correct behavior, not just an acceptable side effect
+    /// -- and disconnecting mid-story is already a supported path (see
+    /// disconnectUserInitiated(), which the "Home" menu item already
+    /// calls from the same screens this can fire from).
     func setAwayFromHomeEnabled(_ enabled: Bool) {
+        let changingWhileConnected = enabled != awayFromHomeEnabled && isConnected
         awayFromHomeEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "awayFromHomeEnabled")
+        if changingWhileConnected {
+            disconnect()
+        }
     }
 
     /// What Onboarding's primary button calls -- requests mic permission up

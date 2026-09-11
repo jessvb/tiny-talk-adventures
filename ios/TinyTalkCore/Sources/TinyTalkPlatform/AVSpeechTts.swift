@@ -33,20 +33,37 @@ public final class AVSpeechTts: NSObject, SpeechSynthesizing, @unchecked Sendabl
             } else {
                 utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
             }
+            // One AVAudioConverter reused across every buffer callback for
+            // this utterance, not a fresh one per chunk. write(_:)'s
+            // callback fires once per internal synthesis chunk (many times
+            // per utterance); recreating the converter each time restarts
+            // its resampling filter from a cold state at every chunk
+            // boundary, producing exactly the garbled/quiet audio an
+            // on-device test caught -- confirmed by comparison against
+            // AudioEngine.swift's startCapturing(), which creates its
+            // converter once per capture session and reuses it across
+            // every tap callback the same way.
+            var converter: AVAudioConverter?
             synthesizer.write(utterance) { buffer in
                 guard let pcmBuffer = buffer as? AVAudioPCMBuffer, pcmBuffer.frameLength > 0 else {
                     continuation.finish()
                     return
                 }
-                if let converted = Self.convert(pcmBuffer, to: Self.targetFormat) {
+                if converter == nil {
+                    converter = AVAudioConverter(from: pcmBuffer.format, to: Self.targetFormat)
+                }
+                guard let converter else {
+                    continuation.finish()
+                    return
+                }
+                if let converted = Self.convert(pcmBuffer, with: converter, to: Self.targetFormat) {
                     continuation.yield(converted)
                 }
             }
         }
     }
 
-    private static func convert(_ buffer: AVAudioPCMBuffer, to targetFormat: AVAudioFormat) -> Data? {
-        guard let converter = AVAudioConverter(from: buffer.format, to: targetFormat) else { return nil }
+    private static func convert(_ buffer: AVAudioPCMBuffer, with converter: AVAudioConverter, to targetFormat: AVAudioFormat) -> Data? {
         let ratio = targetFormat.sampleRate / buffer.format.sampleRate
         let outFrameCapacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
         guard let outBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outFrameCapacity) else {

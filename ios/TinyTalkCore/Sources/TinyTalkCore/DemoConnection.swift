@@ -166,9 +166,19 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
 
             var guidance = localStoryArc.recordTurn(childText: transcript)
             let factGuidance = await animalFactTracker.recordTurn(transcript: transcript, stage: localStoryArc.stage)
-            if !factGuidance.isEmpty { guidance += "\n\n" + factGuidance }
+            if !factGuidance.isEmpty {
+                guidance += "\n\n" + factGuidance
+                // On-device testing had no way to confirm whether a fact
+                // was actually found and woven in, or whether the
+                // mechanism never fired -- same visibility gap the TTS
+                // debug logging above already closed.
+                onDebugEvent?("[\(DebugTimestamp.now())] animal fact guidance added for turn \(turnId)")
+            }
             let objectGuidance = localObjectTracker.consumeGuidance()
-            if !objectGuidance.isEmpty { guidance += "\n\n" + objectGuidance }
+            if !objectGuidance.isEmpty {
+                guidance += "\n\n" + objectGuidance
+                onDebugEvent?("[\(DebugTimestamp.now())] object recognition guidance added for turn \(turnId)")
+            }
             if trimmed.isEmpty { guidance += "\n\n" + Self.sttFailureGuidance }
 
             let messages = localConversation.toMessages(systemPrompt: systemPrompt + "\n\n" + guidance)
