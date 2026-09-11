@@ -194,13 +194,36 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
             continuation.yield(.message(.responseText(reply, turnId: turnId)))
 
             var ttsChunkCount = 0
+            var ttsTotalBytes = 0
+            var ttsMinChunkBytes = Int.max
+            var ttsMaxChunkBytes = 0
             for await pcmChunk in ttsClient.synthesize(reply) {
                 try Task.checkCancellation()
                 ttsChunkCount += 1
+                ttsTotalBytes += pcmChunk.count
+                ttsMinChunkBytes = min(ttsMinChunkBytes, pcmChunk.count)
+                ttsMaxChunkBytes = max(ttsMaxChunkBytes, pcmChunk.count)
                 continuation.yield(.audio(pcmChunk))
             }
             if ttsChunkCount == 0 {
                 onDebugEvent?("[\(DebugTimestamp.now())] TTS produced 0 bytes for turn \(turnId)")
+            } else {
+                // Diagnostic for the on-device-reported garbled/quiet audio
+                // bug -- chunk count/size distribution and implied duration
+                // (24kHz mono PCM16 = 48000 bytes/sec) tell us whether
+                // AVSpeechSynthesizer.write() is delivering an unusually
+                // large number of small buffers, which RealAudioEngine.play()
+                // schedules one at a time (each with its own up-to-3s
+                // completion wait -- see that file's scheduleBuffer doc
+                // comments) -- a plausible alternate cause to the
+                // converter-reuse fix already applied, if that fix alone
+                // didn't resolve it.
+                let seconds = Double(ttsTotalBytes) / 48_000.0
+                onDebugEvent?(
+                    "[\(DebugTimestamp.now())] TTS for turn \(turnId): \(ttsChunkCount) chunks, " +
+                    "\(ttsTotalBytes) bytes (~\(String(format: "%.2f", seconds))s), " +
+                    "chunk size \(ttsMinChunkBytes)-\(ttsMaxChunkBytes) bytes"
+                )
             }
             try Task.checkCancellation() // closes the window between the last audio chunk and recording the reply
 
