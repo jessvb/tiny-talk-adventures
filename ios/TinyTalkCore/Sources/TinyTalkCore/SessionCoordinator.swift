@@ -541,6 +541,17 @@ public actor SessionCoordinator {
         turnContinuation?.finish()
         turnContinuation = nil
         turnTask?.cancel()
+        // A lost connection means no page_image_done marker for whatever
+        // request is pending will ever arrive -- see
+        // pendingPageImageRequest's doc comment. This matters even though
+        // .closed itself ends consumeServerEvents() for good, because this
+        // method is also reached from the SEND side (a control-frame send
+        // failing in handleSpeechStart()/handleSpeechEnd()/interrupt()),
+        // which leaves consumeServerEvents() running -- without this, a
+        // stuck pendingPageImageRequest would permanently divert every
+        // later .audio frame away from playback instead of to a live turn.
+        pendingPageImageRequest = nil
+        pendingPageImageBytes = nil
         // Captured BEFORE machine.handle(.disconnected) below overwrites
         // machine.state -- see resumableTurnIdAtDisconnect's doc comment for
         // why this has to happen exactly here. Same criteria
@@ -614,12 +625,40 @@ public actor SessionCoordinator {
 
             if case .audio(let data) = event {
                 if pendingPageImageRequest != nil {
+                    // Assumes the server sends a requested page image as
+                    // exactly one binary frame -- if that ever changes to
+                    // multiple chunks, this would need to accumulate them
+                    // instead of overwriting.
                     pendingPageImageBytes = data
                     continue
                 }
                 guard isCurrentTurnAudio else { continue }
                 turnContinuation?.yield(event)
                 continue
+            }
+
+            if case .message(.error) = event, pendingPageImageRequest != nil {
+                // A get_page_image failure (missing story, out-of-range
+                // page_index) is reported as a generic error frame and
+                // session.py's handle_get_page_image never sends a
+                // page_image_done marker in that case -- see
+                // pendingPageImageRequest's doc comment. The wire protocol
+                // gives no way to correlate a specific error back to a
+                // specific pending page-image request (the server's error
+                // path uses whatever turn_id happens to be current, not
+                // anything tied to the request), so ANY error while a
+                // request is pending is treated as a safe-to-clear signal.
+                // Worst case this clears a still-legitimately-in-flight
+                // request early -- that one page's image just never shows
+                // up (no crash, no silence) -- which is far better than
+                // leaving pendingPageImageRequest set forever, which would
+                // permanently divert every later .audio frame away from
+                // playback (see the branch just above). Deliberately does
+                // NOT `continue`: the error frame itself still needs to
+                // fall through to the normal turn-scoped error handling
+                // below (lastErrorMessage / turnContinuation) unchanged.
+                pendingPageImageRequest = nil
+                pendingPageImageBytes = nil
             }
 
             // Story-lifecycle events carry no turn_id -- they're not
@@ -888,7 +927,18 @@ public actor SessionCoordinator {
     public func getPageImage(storyId: String, pageIndex: Int) async {
         pendingPageImageRequest = (storyId: storyId, pageIndex: pageIndex)
         pendingPageImageBytes = nil
-        try? await connection.send(.getPageImage(storyId: storyId, pageIndex: pageIndex))
+        do {
+            try await connection.send(.getPageImage(storyId: storyId, pageIndex: pageIndex))
+        } catch {
+            // The request never reached the server, so nothing will ever
+            // arrive to resolve it -- clear it immediately rather than
+            // leaving pendingPageImageRequest set with a `try?`, which
+            // would permanently divert every later .audio frame away from
+            // playback (see pendingPageImageRequest's doc comment and the
+            // .audio branch in consumeServerEvents()).
+            pendingPageImageRequest = nil
+            pendingPageImageBytes = nil
+        }
     }
 
     /// Starts the waiting-ditty loop for a turn resume() already set up --
