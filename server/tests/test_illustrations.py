@@ -59,6 +59,25 @@ class FakeRaisingExtractionLlm:
         yield "a fox in a forest"
 
 
+class FakeRaisingImageBackend:
+    """Behaves like FakeImageBackend, but raises on the generate() call at
+    `raise_on_index` (0-indexed, one call per page) instead of returning
+    an image or None -- simulating a real backend failure (e.g. an MPS
+    allocation error under memory pressure) on one page specifically, not
+    a whole-pass failure."""
+
+    def __init__(self, raise_on_index: int) -> None:
+        self.raise_on_index = raise_on_index
+        self.calls: list[tuple[str, object]] = []
+
+    def generate(self, prompt, *, reference_image):
+        index = len(self.calls)
+        self.calls.append((prompt, reference_image))
+        if index == self.raise_on_index:
+            raise RuntimeError("simulated MPS allocation failure")
+        return Image.new("RGB", (8, 8), color=(0, 0, 255))
+
+
 def _saved_story_with_pages(tmp_path, pages):
     conversation = Conversation()
     conversation.add_child("hello")
@@ -155,6 +174,39 @@ async def test_llm_failure_on_one_page_degrades_only_that_page(tmp_path):
     # Page 2 still got the benefit of page 0's reference image, since
     # page 0 succeeded before page 1's failure.
     assert backend.calls[-1][1] is not None
+
+
+async def test_image_backend_failure_on_one_page_degrades_only_that_page_and_continues(tmp_path):
+    # A real backend failure (image_backend.generate() raising, not just
+    # returning None) on ONE page must degrade only that page and leave
+    # every earlier page's already-saved image intact -- not propagate to
+    # the outer try/except, which would wipe image_filenames to all-None
+    # and destroy already-succeeded pages' files. Later pages must still
+    # be attempted (not abandoned once one page fails).
+    pages = [
+        {"text": "Page one."}, {"text": "Page two."}, {"text": "Page three."},
+        {"text": "Page four."}, {"text": "Page five."},
+    ]
+    story_id = _saved_story_with_pages(tmp_path, pages)
+    backend = FakeRaisingImageBackend(raise_on_index=2)
+
+    await generate_and_attach(
+        story_id, pages, llm=FakeExtractionLlm(), image_backend=backend, stories_dir=tmp_path
+    )
+
+    story = load_story(story_id, stories_dir=tmp_path)
+    assert story["illustrations_status"] == "partial"
+    assert story["pages"][0]["image_path"] is not None
+    assert (tmp_path / story["pages"][0]["image_path"]).exists()
+    assert story["pages"][1]["image_path"] is not None
+    assert (tmp_path / story["pages"][1]["image_path"]).exists()
+    assert story["pages"][2]["image_path"] is None
+    # Pages after the failing one are still attempted and still succeed.
+    assert story["pages"][3]["image_path"] is not None
+    assert (tmp_path / story["pages"][3]["image_path"]).exists()
+    assert story["pages"][4]["image_path"] is not None
+    assert (tmp_path / story["pages"][4]["image_path"]).exists()
+    assert len(backend.calls) == 5
 
 
 async def test_prompt_extraction_uses_each_pages_own_text(tmp_path):

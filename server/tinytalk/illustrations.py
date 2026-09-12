@@ -10,6 +10,8 @@ import asyncio
 import logging
 from pathlib import Path
 
+from PIL import Image
+
 from . import story_store
 from .engines import EngineError, LlmEngine
 from .image_gen import ImageGenBackend
@@ -24,6 +26,24 @@ _PROMPT_EXTRACTION_TEMPLATE = (
     "a story. Reply with ONLY the scene description, no other "
     "text.\n\nPage text: {text}"
 )
+
+
+def _generate_and_save(
+    image_backend: ImageGenBackend,
+    prompt: str,
+    reference_image: Image.Image | None,
+    path: Path,
+) -> Image.Image | None:
+    """Runs entirely off the event loop (see its asyncio.to_thread call
+    site in generate_and_attach()) -- both the backend's own generation
+    call (already the reason to_thread was used here) and the PNG
+    encode-and-write that follows a successful one. Encoding synchronously
+    on the event loop would stall it for the encode's own duration, same
+    concern as the generation call itself."""
+    image = image_backend.generate(prompt, reference_image=reference_image)
+    if image is not None:
+        image.save(path)
+    return image
 
 
 async def _extract_scene_prompt(llm: LlmEngine, page_text: str) -> str:
@@ -96,9 +116,35 @@ async def generate_and_attach(
                 )
                 image_filenames.append(None)
                 continue
-            image = await asyncio.to_thread(
-                image_backend.generate, scene_prompt, reference_image=reference_image
-            )
+            filename = f"{story_id}-page-{index}.png"
+            try:
+                image = await asyncio.to_thread(
+                    _generate_and_save,
+                    image_backend,
+                    scene_prompt,
+                    reference_image,
+                    stories_dir / filename,
+                )
+            except asyncio.CancelledError:
+                raise
+            except EngineError as exc:
+                logger.warning(
+                    "illustration for story %s page %d failed during image "
+                    "generation: %s",
+                    story_id,
+                    index,
+                    exc,
+                )
+                image_filenames.append(None)
+                continue
+            except Exception:  # noqa: BLE001 - one page's backend failure must not sink the pass
+                logger.exception(
+                    "unexpected failure generating image for story %s page %d",
+                    story_id,
+                    index,
+                )
+                image_filenames.append(None)
+                continue
             if image is None:
                 logger.warning(
                     "illustration for story %s page %d has no image (safety "
@@ -110,8 +156,6 @@ async def generate_and_attach(
                 continue
             if reference_image is None:
                 reference_image = image
-            filename = f"{story_id}-page-{index}.png"
-            image.save(stories_dir / filename)
             image_filenames.append(filename)
             any_succeeded = True
 
