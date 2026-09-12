@@ -1,6 +1,7 @@
 import json
 from typing import AsyncIterator
 
+from tinytalk import storybook
 from tinytalk.conversation import Turn
 from tinytalk.storybook import build_and_attach
 from tinytalk.story_store import load_story, save_story, story_id_from_path
@@ -421,6 +422,41 @@ async def test_build_and_attach_runs_illustrations_when_backend_given(tmp_path):
     assert backend.calls == 1
     story = load_story(story_id, stories_dir=tmp_path)
     assert story["illustrations_status"] in ("done", "partial")
+
+
+async def test_build_and_attach_survives_illustrations_pass_raising(tmp_path, monkeypatch):
+    """Fix 4 regression test: build_and_attach() must not let a raised
+    exception from the illustrations pass reach its OWN outer try/except
+    (which calls _mark_failed(), destroying the just-saved rewrite's
+    pages/rewrite_status/title). Today illustrations.py's own
+    generate_and_attach() already catches everything but CancelledError
+    internally, so this simulates a hypothetical future regression there
+    by monkeypatching it directly, to prove storybook.py's own wrapping
+    (not just incidental behavior of a different module) is what keeps
+    the rewrite safe."""
+
+    async def raising_generate_and_attach(*args, **kwargs):
+        raise RuntimeError("simulated illustrations.py regression")
+
+    monkeypatch.setattr(storybook.illustrations, "generate_and_attach", raising_generate_and_attach)
+
+    turns = [Turn(speaker="child", text="a fox story", interrupted=False)]
+    conversation = Conversation()
+    conversation.add_child("a fox story")
+    path = save_story(conversation, stories_dir=tmp_path)
+    story_id = story_id_from_path(path)
+    llm = FakeRewriteLlm(
+        json.dumps({"title": "A Fox", "pages": [{"text": "Once there was a fox."}]})
+    )
+
+    await build_and_attach(
+        story_id, turns, [], llm=llm, page_count=1, stories_dir=tmp_path,
+        image_backend=FakeImageBackendForStorybook(),
+    )
+
+    story = load_story(story_id, stories_dir=tmp_path)
+    assert story["rewrite_status"] == "done"
+    assert story["title"] == "A Fox"
 
 
 async def test_build_and_attach_skips_illustrations_when_no_backend(tmp_path):
