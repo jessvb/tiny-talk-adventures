@@ -361,15 +361,13 @@ final class SessionCoordinatorTests: XCTestCase {
         connection.emit(.message(.pageImageDone(storyId: "pip", pageIndex: 1, hasImage: true)))
         try? await Task.sleep(nanoseconds: 10_000_000)
 
-        let result = await coordinator.latestPageImage
-        XCTAssertEqual(result?.storyId, "pip")
-        XCTAssertEqual(result?.pageIndex, 1)
-        XCTAssertEqual(result?.data, Data([0x01, 0x02, 0x03]))
+        let images = await coordinator.pageImages
+        XCTAssertEqual(images["pip#1"], Data([0x01, 0x02, 0x03]))
 
         runLoop.cancel()
     }
 
-    func testPageImageDoneWithoutImageLeavesLatestPageImageNil() async {
+    func testPageImageDoneWithoutImageLeavesNoEntryInPageImages() async {
         let connection = FakeConnection()
         let audio = FakeAudio()
         let vad = FakeVAD()
@@ -381,8 +379,49 @@ final class SessionCoordinatorTests: XCTestCase {
         connection.emit(.message(.pageImageDone(storyId: "pip", pageIndex: 1, hasImage: false)))
         try? await Task.sleep(nanoseconds: 10_000_000)
 
-        let result = await coordinator.latestPageImage
-        XCTAssertNil(result)
+        let images = await coordinator.pageImages
+        XCTAssertNil(images["pip#1"])
+
+        runLoop.cancel()
+    }
+
+    /// The core regression test for the FIFO-queue fix: two different
+    /// pages requested before EITHER response arrives (completely
+    /// ordinary during real usage -- SwiftUI's TabView(.page) style fires
+    /// .onAppear for multiple pages during a swipe transition) must both
+    /// resolve correctly once their .audio/page_image_done pairs arrive,
+    /// in order. This FAILS against the old single-slot design
+    /// (pendingPageImageRequest/latestPageImage): the second getPageImage()
+    /// call would silently overwrite the first request's pending state
+    /// before its response was ever processed, permanently losing page 1's
+    /// image.
+    func testTwoConcurrentPageImageRequestsBothResolveCorrectly() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        await coordinator.getPageImage(storyId: "pip", pageIndex: 1)
+        await coordinator.getPageImage(storyId: "pip", pageIndex: 2)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        XCTAssertEqual(
+            connection.sentMessages,
+            [.getPageImage(storyId: "pip", pageIndex: 1), .getPageImage(storyId: "pip", pageIndex: 2)]
+        )
+
+        // Both responses arrive in the order the requests were sent -- see
+        // pendingPageImageRequests' doc comment for why this FIFO ordering
+        // is guaranteed by the server, not merely assumed here.
+        connection.emit(.audio(Data([1, 1, 1])))
+        connection.emit(.message(.pageImageDone(storyId: "pip", pageIndex: 1, hasImage: true)))
+        connection.emit(.audio(Data([2, 2, 2])))
+        connection.emit(.message(.pageImageDone(storyId: "pip", pageIndex: 2, hasImage: true)))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        let images = await coordinator.pageImages
+        XCTAssertEqual(images["pip#1"], Data([1, 1, 1]))
+        XCTAssertEqual(images["pip#2"], Data([2, 2, 2]))
 
         runLoop.cancel()
     }
@@ -432,15 +471,16 @@ final class SessionCoordinatorTests: XCTestCase {
         connection.emit(.message(.pageImageDone(storyId: "someone-else", pageIndex: 1, hasImage: true)))
         try? await Task.sleep(nanoseconds: 10_000_000)
 
-        let afterMismatch = await coordinator.latestPageImage
-        XCTAssertNil(afterMismatch, "a mismatched marker must not resolve an unrelated pending request")
+        let afterMismatch = await coordinator.pageImages
+        XCTAssertNil(afterMismatch["pip#1"], "a mismatched marker must not resolve an unrelated pending request")
+        XCTAssertNil(afterMismatch["someone-else#1"], "a mismatched marker must not fabricate an entry for itself either")
 
         connection.emit(.audio(Data([1, 2, 3])))
         connection.emit(.message(.pageImageDone(storyId: "pip", pageIndex: 1, hasImage: true)))
         try? await Task.sleep(nanoseconds: 10_000_000)
 
-        let result = await coordinator.latestPageImage
-        XCTAssertEqual(result?.data, Data([1, 2, 3]), "the genuinely matching marker must still resolve the still-pending request")
+        let result = await coordinator.pageImages
+        XCTAssertEqual(result["pip#1"], Data([1, 2, 3]), "the genuinely matching marker must still resolve the still-pending request")
 
         runLoop.cancel()
     }

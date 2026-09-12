@@ -633,7 +633,7 @@ final class AppModel: ObservableObject {
                 let readyToShowTheEnd = await coordinator.readyToShowTheEnd
                 let storyList = await coordinator.latestStoryList
                 let storyDetail = await coordinator.latestStoryDetail
-                let pageImage = await coordinator.latestPageImage
+                let coordinatorPageImages = await coordinator.pageImages
                 // Read regardless of `closed` (cheap, and reading it only
                 // inside the `guard closed` branch below would still be
                 // correct -- kept alongside the other coordinator reads
@@ -733,11 +733,16 @@ final class AppModel: ObservableObject {
                         self.selectedStory = storyDetail
                     }
 
-                    if let pageImage {
-                        let key = "\(pageImage.storyId)#\(pageImage.pageIndex)"
-                        if self.pageImages[key] == nil {
-                            self.pageImages[key] = pageImage.data
-                        }
+                    // Union merge: every key the coordinator has accumulated
+                    // that isn't already here gets copied over. Reading the
+                    // coordinator's own accumulating dictionary (rather than
+                    // a single "latest" value) is what makes this safe when
+                    // more than one page-image request is in flight at
+                    // once -- see SessionCoordinator.pageImages' doc
+                    // comment for why a single-slot design used to lose
+                    // whichever request's response arrived first.
+                    for (key, data) in coordinatorPageImages where self.pageImages[key] == nil {
+                        self.pageImages[key] = data
                     }
 
                     // The rewrite just finished (isRewriting's true->false
