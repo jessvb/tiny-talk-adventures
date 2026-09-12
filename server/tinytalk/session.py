@@ -25,9 +25,11 @@ from .animal_facts import AnimalFactTracker
 from .audio import TTS_SAMPLE_RATE, split_sentences
 from .conversation import Conversation
 from .engines import EngineError, LlmEngine, SttEngine, TtsEngine
+from .image_gen import ImageGenBackend
 from .object_recognition import ObjectTracker
 from .protocol import (
     ConcludeStory,
+    GetPageImage,
     GetStory,
     Interrupt,
     ListStories,
@@ -42,6 +44,7 @@ from .protocol import (
     encode_arc_stage,
     encode_error,
     encode_page_audio_done,
+    encode_page_image_done,
     encode_response_text,
     encode_rewriting_done,
     encode_rewriting_started,
@@ -112,6 +115,7 @@ class SessionRunner:
         *,
         system_prompt: str = config.SYSTEM_PROMPT,
         conversation: Conversation | None = None,
+        image_backend: ImageGenBackend | None = None,
     ) -> None:
         self._transport = transport
         # Starts at 0 rather than 1: app.py builds this session around a
@@ -127,6 +131,7 @@ class SessionRunner:
         self._stt = stt
         self._llm = llm
         self._tts = tts
+        self._image_backend = image_backend
         self._system_prompt = system_prompt
         self._conversation = conversation or Conversation()
         self._target_turns = config.STORY_TARGET_TURNS
@@ -205,6 +210,8 @@ class SessionRunner:
                 await self.handle_get_story(story_id)
             case SynthesizePage(story_id=story_id, page_index=page_index):
                 await self.handle_synthesize_page(story_id, page_index)
+            case GetPageImage(story_id=story_id, page_index=page_index):
+                await self.handle_get_page_image(story_id, page_index)
             case UpdateSettings(target_turns=target_turns, page_count=page_count):
                 await self.handle_update_settings(target_turns, page_count)
 
@@ -324,14 +331,21 @@ class SessionRunner:
                 encode_error(f"no saved story with id {story_id!r}", self._current_turn_id)
             )
             return
+        pages = story.get("pages")
+        client_pages = (
+            [{"text": p["text"], "has_image": bool(p.get("image_path"))} for p in pages]
+            if pages
+            else pages
+        )
         await self._send_text_unbuffered(
             encode_story_detail(
                 {
                     "id": story["id"],
                     "title": story.get("title"),
-                    "pages": story.get("pages"),
+                    "pages": client_pages,
                     "epilogue": story.get("epilogue"),
                     "rewrite_status": story.get("rewrite_status", "pending"),
+                    "illustrations_status": story.get("illustrations_status"),
                 }
             )
         )
@@ -351,6 +365,24 @@ class SessionRunner:
             async for pcm in self._tts.synthesize(text):
                 await self._transport.send_bytes(pcm)
             await self._transport.send_text(encode_page_audio_done(story_id, page_index))
+
+    async def handle_get_page_image(self, story_id: str, page_index: int) -> None:
+        story = story_store.load_story(story_id)
+        pages = story.get("pages") if story else None
+        if not pages or page_index < 0 or page_index >= len(pages):
+            await self._send_text_unbuffered(
+                encode_error(
+                    f"no page {page_index} for story {story_id!r}", self._current_turn_id
+                )
+            )
+            return
+        data = story_store.read_page_image(story_id, page_index)
+        async with self._transport_lock:
+            if data is not None:
+                await self._transport.send_bytes(data)
+            await self._transport.send_text(
+                encode_page_image_done(story_id, page_index, has_image=data is not None)
+            )
 
     async def handle_audio(self, pcm: bytes) -> None:
         # Audio arriving outside LISTENING is stale — a frame in flight when
@@ -875,6 +907,7 @@ class SessionRunner:
             await storybook.build_and_attach(
                 story_id, turns, shared_facts, llm=self._llm,
                 page_count=self._story_page_count,
+                image_backend=self._image_backend,
             )
         except Exception:  # noqa: BLE001 - the REWRITING gate must always release
             logger.exception("unexpected failure running storybook rewrite for %s", story_id)

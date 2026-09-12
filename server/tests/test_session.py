@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 
 from conftest import FailingLlm, FakeLlm, FakeStt, FakeTransport, FakeTts
-from tinytalk import config
-from tinytalk.conversation import INTERRUPTED_MARKER
+from tinytalk import config, story_store
+from tinytalk.conversation import Conversation, INTERRUPTED_MARKER
 from tinytalk.engines import EngineError
 from tinytalk.safety import SAFE_FALLBACK
 from tinytalk.session import SessionRunner
@@ -64,11 +64,27 @@ def _stories_dir_list_stories(stories_dir):
 
 
 def _stories_dir_load_story(stories_dir):
-    """Same fix as _stories_dir_list_stories above, for load_story."""
+    """Same fix as _stories_dir_list_stories above, for load_story.
+    Accepts (and overrides) a stories_dir keyword too -- needed because
+    story_store.read_page_image's own body calls
+    load_story(story_id, stories_dir=stories_dir) internally, and a
+    module-level name like `load_story` is looked up fresh from
+    story_store's namespace at each call, not bound early -- so once
+    load_story itself is monkeypatched, that internal call reaches this
+    same replacement, with whatever stories_dir read_page_image was
+    given (see _stories_dir_read_page_image below)."""
     from tinytalk import story_store
 
     original = story_store.load_story
-    return lambda story_id: original(story_id, stories_dir=stories_dir)
+    return lambda story_id, **kwargs: original(story_id, stories_dir=stories_dir)
+
+
+def _stories_dir_read_page_image(stories_dir):
+    """Same fix as _stories_dir_load_story above, for read_page_image."""
+    from tinytalk import story_store
+
+    original = story_store.read_page_image
+    return lambda story_id, page_index: original(story_id, page_index, stories_dir=stories_dir)
 
 
 def _fake_build_and_attach(delay: float = _REWRITE_LLM_DELAY):
@@ -1600,16 +1616,20 @@ async def test_get_story_returns_story_detail(transport, tmp_path, monkeypatch):
 
     detail = transport.messages_of_type("story_detail")[0]
     # Full expected shape, not just title/pages -- locks in the "exactly
-    # these 5 payload keys (id, title, pages, epilogue, rewrite_status),
-    # plus the wire message's own type" guarantee, so a stray extra key
-    # (e.g. accidentally leaking the raw `turns`) would fail this test.
+    # these 6 payload keys (id, title, pages, epilogue, rewrite_status,
+    # illustrations_status), plus the wire message's own type" guarantee,
+    # so a stray extra key (e.g. accidentally leaking the raw `turns`)
+    # would fail this test. Each page gains a has_image bool (Task 6);
+    # this story never ran an illustrations pass, so it's False and
+    # illustrations_status is still None.
     assert detail == {
         "type": "story_detail",
         "id": story_id,
         "title": "Pip",
-        "pages": [{"text": "Once upon a time."}],
+        "pages": [{"text": "Once upon a time.", "has_image": False}],
         "epilogue": None,
         "rewrite_status": "done",
+        "illustrations_status": None,
     }
 
 
@@ -1705,3 +1725,109 @@ async def test_story_browsing_works_while_rewriting(transport, tmp_path, monkeyp
     await session.handle_text('{"type": "list_stories"}')
 
     assert len(transport.messages_of_type("story_list")[0]["stories"]) >= 1
+
+
+# get_page_image (like get_story/synthesize_page above) redirects
+# story_store.load_story/read_page_image via the _stories_dir_* helpers
+# rather than monkeypatch.setattr(story_store, "STORIES_DIR", tmp_path) --
+# see _stories_dir_load_story's docstring above for why the latter
+# silently does nothing.
+
+
+async def test_handle_get_page_image_sends_bytes_and_done_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.load_story", _stories_dir_load_story(tmp_path)
+    )
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.read_page_image",
+        _stories_dir_read_page_image(tmp_path),
+    )
+    transport = FakeTransport()
+    session = SessionRunner(transport=transport, stt=FakeStt(), llm=FakeLlm(), tts=FakeTts())
+    conversation = Conversation()
+    conversation.add_child("hello")
+    path = story_store.save_story(conversation, stories_dir=tmp_path)
+    story_id = story_store.story_id_from_path(path)
+    story_store.update_story_rewrite(
+        story_id, title="A Story", pages=[{"text": "Page one."}], epilogue=None,
+        rewrite_status="done", stories_dir=tmp_path,
+    )
+    filename = f"{story_id}-page-0.png"
+    (tmp_path / filename).write_bytes(b"fake-png-bytes")
+    story_store.update_story_illustrations(
+        story_id, image_filenames=[filename], illustrations_status="done", stories_dir=tmp_path,
+    )
+
+    await session.handle_get_page_image(story_id, 0)
+
+    assert transport.audio == [b"fake-png-bytes"]
+    done = transport.messages_of_type("page_image_done")
+    assert done == [{"type": "page_image_done", "story_id": story_id, "page_index": 0, "has_image": True}]
+
+
+async def test_handle_get_page_image_sends_done_marker_only_when_no_image(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.load_story", _stories_dir_load_story(tmp_path)
+    )
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.read_page_image",
+        _stories_dir_read_page_image(tmp_path),
+    )
+    transport = FakeTransport()
+    session = SessionRunner(transport=transport, stt=FakeStt(), llm=FakeLlm(), tts=FakeTts())
+    conversation = Conversation()
+    conversation.add_child("hello")
+    path = story_store.save_story(conversation, stories_dir=tmp_path)
+    story_id = story_store.story_id_from_path(path)
+    story_store.update_story_rewrite(
+        story_id, title="A Story", pages=[{"text": "Page one."}], epilogue=None,
+        rewrite_status="done", stories_dir=tmp_path,
+    )
+
+    await session.handle_get_page_image(story_id, 0)
+
+    assert transport.audio == []
+    done = transport.messages_of_type("page_image_done")
+    assert done == [{"type": "page_image_done", "story_id": story_id, "page_index": 0, "has_image": False}]
+
+
+async def test_handle_get_page_image_errors_for_unknown_story(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.load_story", _stories_dir_load_story(tmp_path)
+    )
+    transport = FakeTransport()
+    session = SessionRunner(transport=transport, stt=FakeStt(), llm=FakeLlm(), tts=FakeTts())
+
+    await session.handle_get_page_image("nope1234", 0)
+
+    errors = transport.messages_of_type("error")
+    assert len(errors) == 1
+
+
+async def test_handle_get_story_includes_has_image_and_illustrations_status(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "tinytalk.session.story_store.load_story", _stories_dir_load_story(tmp_path)
+    )
+    transport = FakeTransport()
+    session = SessionRunner(transport=transport, stt=FakeStt(), llm=FakeLlm(), tts=FakeTts())
+    conversation = Conversation()
+    conversation.add_child("hello")
+    path = story_store.save_story(conversation, stories_dir=tmp_path)
+    story_id = story_store.story_id_from_path(path)
+    story_store.update_story_rewrite(
+        story_id, title="A Story", pages=[{"text": "Page one."}, {"text": "Page two."}],
+        epilogue=None, rewrite_status="done", stories_dir=tmp_path,
+    )
+    story_store.update_story_illustrations(
+        story_id, image_filenames=[f"{story_id}-page-0.png", None],
+        illustrations_status="partial", stories_dir=tmp_path,
+    )
+
+    await session.handle_get_story(story_id)
+
+    detail = session._transport.messages_of_type("story_detail")[0]
+    assert detail["illustrations_status"] == "partial"
+    assert detail["pages"] == [
+        {"text": "Page one.", "has_image": True},
+        {"text": "Page two.", "has_image": False},
+    ]
