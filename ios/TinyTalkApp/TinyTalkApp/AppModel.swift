@@ -366,10 +366,17 @@ final class AppModel: ObservableObject {
         }
 
         let animalFactsKey = KeychainStore.get("animalFactsApiKey")
+        let ttsClient = AVSpeechTts()
+        // Same on-screen debug log as connection.onDebugEvent below --
+        // see AVSpeechTts.onDebugEvent's own doc comment for why this
+        // exists (diagnosing a resolved-wrong-voice report).
+        ttsClient.onDebugEvent = { [weak self] line in
+            Task { @MainActor in self?.appendAudioDebugEvent(line) }
+        }
         let connection = DemoConnection(
             chatClient: GroqChatClient(apiKey: groqKey),
             sttClient: GroqWhisperClient(apiKey: groqKey),
-            ttsClient: AVSpeechTts(),
+            ttsClient: ttsClient,
             animalFactTracker: AnimalFactTracker(fetcher: AnimalFactsAPIClient(apiKey: animalFactsKey)),
             onStoryCompleted: { [weak self] payload in
                 self?.pendingDemoStore.save(payload)

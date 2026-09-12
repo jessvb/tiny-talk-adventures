@@ -9,6 +9,15 @@ import TinyTalkCore
 public final class AVSpeechTts: NSObject, SpeechSynthesizing, @unchecked Sendable {
     private let synthesizer = AVSpeechSynthesizer()
     private let voiceIdentifier: String?
+    /// Fires once per synthesize() call with which voice actually got
+    /// resolved, plus every "Matilda"-or-en-AU candidate speechVoices()
+    /// reported -- added because a household report ("downloaded Matilda
+    /// Premium, changed the OS default, restarted the app, still heard the
+    /// old voice") had no way to distinguish "resolveVoice()'s exact-match
+    /// found nothing" from "it found something, but not what was expected"
+    /// without this. See AppModel's wiring of this hook into the same
+    /// on-screen debug log RealAudioEngine/DemoConnection already use.
+    public var onDebugEvent: ((String) -> Void)?
     private static let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatInt16, sampleRate: 24_000, channels: 1, interleaved: true
     )!
@@ -40,7 +49,19 @@ public final class AVSpeechTts: NSObject, SpeechSynthesizing, @unchecked Sendabl
                 synthesizer.stopSpeaking(at: .immediate)
             }
             let utterance = AVSpeechUtterance(string: text)
-            utterance.voice = Self.resolveVoice(preferring: voiceIdentifier)
+            let resolvedVoice = Self.resolveVoice(preferring: voiceIdentifier)
+            utterance.voice = resolvedVoice
+            if let onDebugEvent {
+                let candidates = AVSpeechSynthesisVoice.speechVoices()
+                    .filter { $0.name.localizedCaseInsensitiveContains("Matilda") || $0.language == "en-AU" }
+                    .map { "name=\($0.name) quality=\($0.quality.rawValue) lang=\($0.language) id=\($0.identifier)" }
+                    .joined(separator: " | ")
+                onDebugEvent(
+                    "AVSpeechTts: resolved name=\(resolvedVoice?.name ?? "nil") "
+                    + "quality=\(resolvedVoice?.quality.rawValue ?? -1) id=\(resolvedVoice?.identifier ?? "nil") "
+                    + "-- Matilda/en-AU candidates: \(candidates.isEmpty ? "NONE FOUND" : candidates)"
+                )
+            }
             // One AVAudioConverter reused across every buffer callback for
             // this utterance, not a fresh one per chunk. write(_:)'s
             // callback fires once per internal synthesis chunk (many times
