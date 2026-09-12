@@ -71,20 +71,11 @@ def _stories_dir_load_story(stories_dir):
     module-level name like `load_story` is looked up fresh from
     story_store's namespace at each call, not bound early -- so once
     load_story itself is monkeypatched, that internal call reaches this
-    same replacement, with whatever stories_dir read_page_image was
-    given (see _stories_dir_read_page_image below)."""
+    same replacement, with whatever stories_dir the caller was given."""
     from tinytalk import story_store
 
     original = story_store.load_story
     return lambda story_id, **kwargs: original(story_id, stories_dir=stories_dir)
-
-
-def _stories_dir_read_page_image(stories_dir):
-    """Same fix as _stories_dir_load_story above, for read_page_image."""
-    from tinytalk import story_store
-
-    original = story_store.read_page_image
-    return lambda story_id, page_index: original(story_id, page_index, stories_dir=stories_dir)
 
 
 def _fake_build_and_attach(delay: float = _REWRITE_LLM_DELAY):
@@ -1728,20 +1719,25 @@ async def test_story_browsing_works_while_rewriting(transport, tmp_path, monkeyp
 
 
 # get_page_image (like get_story/synthesize_page above) redirects
-# story_store.load_story/read_page_image via the _stories_dir_* helpers
-# rather than monkeypatch.setattr(story_store, "STORIES_DIR", tmp_path) --
-# see _stories_dir_load_story's docstring above for why the latter
-# silently does nothing.
+# story_store.load_story via the _stories_dir_load_story helper -- see
+# its docstring above for why monkeypatch.setattr(story_store,
+# "STORIES_DIR", tmp_path) alone does nothing for a function whose own
+# `stories_dir` default parameter was already bound at definition time.
+# Unlike load_story, handle_get_page_image no longer calls
+# story_store.read_page_image() at all (see session.py's _page_or_error/
+# handle_get_page_image -- Fix 6 folded the image-bytes read directly
+# into session.py, off the already-loaded pages list, to avoid loading
+# the story twice); it reads the file via a plain `story_store.STORIES_DIR`
+# attribute lookup instead, which IS evaluated fresh on every call (not
+# bound early like a default parameter), so a direct STORIES_DIR
+# monkeypatch works correctly for it.
 
 
 async def test_handle_get_page_image_sends_bytes_and_done_marker(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "tinytalk.session.story_store.load_story", _stories_dir_load_story(tmp_path)
     )
-    monkeypatch.setattr(
-        "tinytalk.session.story_store.read_page_image",
-        _stories_dir_read_page_image(tmp_path),
-    )
+    monkeypatch.setattr(story_store, "STORIES_DIR", tmp_path)
     transport = FakeTransport()
     session = SessionRunner(transport=transport, stt=FakeStt(), llm=FakeLlm(), tts=FakeTts())
     conversation = Conversation()
@@ -1765,14 +1761,47 @@ async def test_handle_get_page_image_sends_bytes_and_done_marker(tmp_path, monke
     assert done == [{"type": "page_image_done", "story_id": story_id, "page_index": 0, "has_image": True}]
 
 
+async def test_handle_get_page_image_loads_the_story_only_once(tmp_path, monkeypatch):
+    """Fix 6 regression test: handle_get_page_image must not load the
+    story a second time (once for its own bounds check, once more inside
+    story_store.read_page_image) -- it now reads image_path directly off
+    the pages list _page_or_error already loaded."""
+    load_calls = []
+    real_load_story = _stories_dir_load_story(tmp_path)
+
+    def counting_load_story(story_id, **kwargs):
+        load_calls.append(story_id)
+        return real_load_story(story_id, **kwargs)
+
+    monkeypatch.setattr("tinytalk.session.story_store.load_story", counting_load_story)
+    monkeypatch.setattr(story_store, "STORIES_DIR", tmp_path)
+    transport = FakeTransport()
+    session = SessionRunner(transport=transport, stt=FakeStt(), llm=FakeLlm(), tts=FakeTts())
+    conversation = Conversation()
+    conversation.add_child("hello")
+    path = story_store.save_story(conversation, stories_dir=tmp_path)
+    story_id = story_store.story_id_from_path(path)
+    story_store.update_story_rewrite(
+        story_id, title="A Story", pages=[{"text": "Page one."}], epilogue=None,
+        rewrite_status="done", stories_dir=tmp_path,
+    )
+    filename = f"{story_id}-page-0.png"
+    (tmp_path / filename).write_bytes(b"fake-png-bytes")
+    story_store.update_story_illustrations(
+        story_id, image_filenames=[filename], illustrations_status="done", stories_dir=tmp_path,
+    )
+
+    await session.handle_get_page_image(story_id, 0)
+
+    assert transport.audio == [b"fake-png-bytes"]
+    assert load_calls == [story_id]
+
+
 async def test_handle_get_page_image_sends_done_marker_only_when_no_image(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "tinytalk.session.story_store.load_story", _stories_dir_load_story(tmp_path)
     )
-    monkeypatch.setattr(
-        "tinytalk.session.story_store.read_page_image",
-        _stories_dir_read_page_image(tmp_path),
-    )
+    monkeypatch.setattr(story_store, "STORIES_DIR", tmp_path)
     transport = FakeTransport()
     session = SessionRunner(transport=transport, stt=FakeStt(), llm=FakeLlm(), tts=FakeTts())
     conversation = Conversation()
