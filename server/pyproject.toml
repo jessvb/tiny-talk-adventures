@@ -11,8 +11,25 @@ dependencies = [
     "soundfile>=0.12",
     "moshi_mlx>=0.2",
     "python-dotenv>=1.0",
+    # Pinned to 0.34.0 after a two-round dependency conflict with the
+    # already-installed moshi_mlx (Kyutai STT): diffusers>=0.38.0 needs
+    # safetensors>=0.8.0-rc.0, but moshi_mlx==0.3.0 needs safetensors<0.6;
+    # the next attempt, diffusers>=0.37.0,<0.38.0 (safetensors-compatible),
+    # then hit a second, independent conflict on huggingface-hub
+    # (diffusers==0.37.0 needs >=0.34.0, moshi_mlx needs <0.29). 0.34.0 is
+    # the newest version compatible with both packages' constraints at
+    # once (verified via a full `pip install` + `pip check` in this venv)
+    # and still has the IP-Adapter/safety-checker API (load_ip_adapter,
+    # set_ip_adapter_scale, nsfw_content_detected) this backend needs --
+    # see docs/superpowers/plans/2026-09-11-storybook-page-art.md's Task 2
+    # section for the full history.
     "diffusers>=0.34.0,<0.35.0",
-    "transformers",
+    # Floor, not an exact pin: transformers is diffusers' dependency, not
+    # pinned by the conflict above, but a fresh `pip install` re-resolving
+    # to some future major version without ever being tested against
+    # would be a silent risk -- 4.50.3 is what's actually installed and
+    # verified working in this venv.
+    "transformers>=4.50.3",
     "accelerate",
     "torch>=2.0",
     "pillow",
