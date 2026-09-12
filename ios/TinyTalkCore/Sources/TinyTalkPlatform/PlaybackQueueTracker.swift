@@ -17,21 +17,39 @@ import Foundation
 final class PlaybackQueueTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var outstanding = 0
+    private var generation = 0
     private var waiter: CheckedContinuation<Void, Never>?
 
-    /// Call once per buffer, right before scheduling it.
-    func bufferEnqueued() {
-        lock.withLock { outstanding += 1 }
+    /// Call once per buffer, right before scheduling it. Returns the
+    /// generation token this buffer was enqueued in -- pass it back to
+    /// bufferFinished(generation:) so a completion (or timeout fallback)
+    /// that arrives after a reset() can't decrement a LATER turn's
+    /// count. See reset()'s doc comment for the real bug this closes: a
+    /// barge-in followed immediately by a new turn could otherwise let
+    /// an orphaned 3-second timeout from the discarded turn's buffer
+    /// silently steal a decrement from the new turn's outstanding
+    /// count, letting waitForPlaybackToFinish() resolve one buffer
+    /// early -- the same class of bug (readyToShowTheEnd firing before
+    /// audio has truly finished) this whole mechanism exists to
+    /// prevent. Found in the final whole-plan review; not caught by any
+    /// single task's own review, since it only manifests when Task 1's
+    /// tracker and Task 2's un-cancelled timeout Task are seen together.
+    func bufferEnqueued() -> Int {
+        lock.withLock {
+            outstanding += 1
+            return generation
+        }
     }
 
     /// Call exactly once per enqueued buffer, whichever of (real
     /// completion, timeout fallback) resolves it first -- mirrors how
     /// PlaybackCompletionGate already guarantees "exactly once" per
-    /// buffer today. Safe to call more times than bufferEnqueued() was
-    /// called (never goes negative) -- defensive only, should not
-    /// happen in practice.
-    func bufferFinished() {
+    /// buffer today. No-ops if `generation` is stale (a reset() happened
+    /// since this buffer was enqueued) rather than decrementing whatever
+    /// turn happens to be current now.
+    func bufferFinished(generation callerGeneration: Int) {
         let toResume: CheckedContinuation<Void, Never>? = lock.withLock {
+            guard callerGeneration == generation else { return nil }
             outstanding = max(0, outstanding - 1)
             if outstanding == 0, let waiter {
                 self.waiter = nil
@@ -60,13 +78,18 @@ final class PlaybackQueueTracker: @unchecked Sendable {
         }
     }
 
-    /// Forces outstanding back to zero and resumes any waiter
-    /// immediately -- called when playback is forcibly stopped
-    /// (barge-in), since a stopped buffer's own completion callback is
-    /// not guaranteed to fire (AudioEngine.swift already documents that
-    /// distrust for the pre-existing single-buffer case).
+    /// Forces outstanding back to zero, resumes any waiter immediately,
+    /// and advances generation -- so a completion or timeout for a
+    /// buffer enqueued before this reset() can never affect a LATER
+    /// turn's outstanding count (see bufferFinished(generation:)'s doc
+    /// comment for the real, previously-latent bug this prevents).
+    /// Called when playback is forcibly stopped (barge-in), since a
+    /// stopped buffer's own completion callback is not guaranteed to
+    /// fire (AudioEngine.swift already documents that distrust for the
+    /// pre-existing single-buffer case).
     func reset() {
         let toResume: CheckedContinuation<Void, Never>? = lock.withLock {
+            generation += 1
             outstanding = 0
             let w = waiter
             waiter = nil

@@ -17,12 +17,18 @@
 ///
 /// Because `runTurn()` is `turnTask`'s actual body, cancelling `turnTask`
 /// on interrupt triggers real Swift structured-concurrency cooperative
-/// cancellation of an in-flight `await audio.play()` call -- confirmed
-/// with a test asserting the in-flight call observes cancellation and does
-/// not complete after the interrupt. `stopPlaybackImmediately()` is still
-/// called synchronously first, before any of that cancellation machinery
-/// runs, so the child stops hearing the agent instantly regardless of how
-/// long structured cancellation takes to propagate.
+/// cancellation of whatever runTurn() is currently awaiting. Real-turn
+/// audio calls `await audio.enqueue(_:)`, which schedules a buffer and
+/// returns without waiting for it to actually play -- it's that
+/// `enqueue(_:)` call, not per-chunk playback, that's the in-flight await
+/// cancelled here -- confirmed with a test asserting the in-flight
+/// `enqueue(_:)` call observes cancellation and does not complete after
+/// the interrupt. (Genuinely waiting for real playback completion happens
+/// only once per turn, at turnEnd -- see readyToShowTheEnd's doc comment.)
+/// `stopPlaybackImmediately()` is still called synchronously first, before
+/// any of that cancellation machinery runs, so the child stops hearing the
+/// agent instantly regardless of how long structured cancellation takes to
+/// propagate.
 import Foundation
 
 public actor SessionCoordinator {
@@ -144,14 +150,18 @@ public actor SessionCoordinator {
     /// REWRITE_STARTED transition and turn_end send happen before
     /// save_story()/encode_rewriting_started()). But "turn_end sent by
     /// the server" is not the same as "this client has finished PLAYING
-    /// that turn's audio": RealAudioEngine.play() genuinely awaits each
-    /// chunk's real-world playback completion (via its scheduleBuffer
-    /// completion handler), inside runTurn() -- a task consumeServerEvents()
-    /// does not wait for. consumeServerEvents() reads rewriting_started
+    /// that turn's audio": each `.audio` event inside runTurn() only
+    /// calls `await audio.enqueue(_:)`, which schedules a buffer and
+    /// returns immediately without waiting for it to actually play. The
+    /// one genuine wait for real playback completion happens once per
+    /// turn, in the `.message(.turnEnd(_))` case, via `await
+    /// audio.waitForPlaybackToFinish()` immediately before
+    /// noteTurnPlaybackFinished() -- a suspension consumeServerEvents()
+    /// does not go through. consumeServerEvents() reads rewriting_started
     /// off the wire (and would set isRewriting) essentially immediately
     /// after yielding that turn's turnEnd into turnContinuation, with no
-    /// suspension point forcing it to wait for runTurn() to actually
-    /// finish awaiting that audio. In practice this means
+    /// suspension point forcing it to wait for runTurn()'s own
+    /// waitForPlaybackToFinish() to resolve. In practice this means
     /// rewritingStarted routinely arrives WHILE the last sentence is
     /// still audibly playing, not after -- navigating to The End screen
     /// on isRewriting alone would cut the story off mid-sentence.

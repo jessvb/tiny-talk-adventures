@@ -516,11 +516,11 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             print("RealAudioEngine: engine never started -- dropping this enqueue() call rather than hanging forever")
             return
         }
-        playbackQueueTracker.bufferEnqueued()
+        let generation = playbackQueueTracker.bufferEnqueued()
         let gate = PlaybackCompletionGate()
         playerNode.scheduleBuffer(buffer, at: nil, options: [], completionCallbackType: .dataPlayedBack) { [weak self] _ in
             if gate.tryResume() {
-                self?.playbackQueueTracker.bufferFinished()
+                self?.playbackQueueTracker.bufferFinished(generation: generation)
             }
         }
         // Deliberately unconditional -- see play()'s own doc comment on
@@ -533,7 +533,7 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
                 let message = "RealAudioEngine: enqueue() scheduleBuffer completion did not fire within 3s (likely the engine was stopped mid-render by a concurrent reconfiguration) -- giving up on this buffer rather than hanging forever"
                 print(message)
                 self?.onDebugEvent?("[\(DebugTimestamp.now())] \(message)")
-                self?.playbackQueueTracker.bufferFinished()
+                self?.playbackQueueTracker.bufferFinished(generation: generation)
             }
         }
     }
