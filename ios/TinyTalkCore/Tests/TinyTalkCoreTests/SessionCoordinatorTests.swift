@@ -346,6 +346,75 @@ final class SessionCoordinatorTests: XCTestCase {
         runLoop.cancel()
     }
 
+    func testGetPageImageSendsRequestAndStoresResultOnMatchingDoneMarker() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        await coordinator.getPageImage(storyId: "pip", pageIndex: 1)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        XCTAssertEqual(connection.sentMessages, [.getPageImage(storyId: "pip", pageIndex: 1)])
+
+        connection.emit(.audio(Data([0x01, 0x02, 0x03])))
+        connection.emit(.message(.pageImageDone(storyId: "pip", pageIndex: 1, hasImage: true)))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        let result = await coordinator.latestPageImage
+        XCTAssertEqual(result?.storyId, "pip")
+        XCTAssertEqual(result?.pageIndex, 1)
+        XCTAssertEqual(result?.data, Data([0x01, 0x02, 0x03]))
+
+        runLoop.cancel()
+    }
+
+    func testPageImageDoneWithoutImageLeavesLatestPageImageNil() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        await coordinator.getPageImage(storyId: "pip", pageIndex: 1)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.message(.pageImageDone(storyId: "pip", pageIndex: 1, hasImage: false)))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        let result = await coordinator.latestPageImage
+        XCTAssertNil(result)
+
+        runLoop.cancel()
+    }
+
+    /// Regression guard for the existing turn-scoped audio path
+    /// (testHappyPathReachesIdleAfterTurnEnd's own live-turn .audio
+    /// handling, line 5-28 of this file): with no page-image request
+    /// pending, live TTS audio arriving mid-turn must still reach
+    /// FakeAudio exactly as before this task's change to the .audio
+    /// branch in consumeServerEvents().
+    func testLiveTurnAudioStillPlaysWithNoPageImageRequestPending() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        connection.emit(.message(.responseText("hi", turnId: 1)))
+        connection.emit(.audio(Data([4, 5, 6])))
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(audio.played, [Data([4, 5, 6])])
+
+        runLoop.cancel()
+    }
+
     func testIsRewritingTracksRewritingStartedAndDone() async {
         let connection = FakeConnection()
         let audio = FakeAudio()

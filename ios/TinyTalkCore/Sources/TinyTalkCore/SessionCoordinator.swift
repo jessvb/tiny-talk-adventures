@@ -25,6 +25,12 @@
 /// long structured cancellation takes to propagate.
 import Foundation
 
+public struct PageImageResult: Equatable, Sendable {
+    public let storyId: String
+    public let pageIndex: Int
+    public let data: Data
+}
+
 public actor SessionCoordinator {
     private let connection: any ServerConnecting
     private let audio: any AudioPlaying
@@ -133,6 +139,20 @@ public actor SessionCoordinator {
     public private(set) var isRewriting = false
     public private(set) var latestStoryList: [SavedStorySummary]?
     public private(set) var latestStoryDetail: SavedStoryDetail?
+    /// Set when a page_image_done marker arrives with hasImage true,
+    /// paired with whatever binary frame immediately preceded it -- see
+    /// getPageImage() and consumeServerEvents()'s pendingPageImageRequest
+    /// handling below. nil after a request that came back with no image,
+    /// or before any request has been made.
+    public private(set) var latestPageImage: PageImageResult?
+    /// Set by getPageImage() right before sending the request, cleared
+    /// once the matching page_image_done marker arrives (whether or not
+    /// it carried an image) -- this is what lets consumeServerEvents()
+    /// tell "an .audio frame that's actually a requested page image"
+    /// apart from a stray/unrelated one, since page images are not
+    /// scoped to a turn_id the way live TTS audio is.
+    private var pendingPageImageRequest: (storyId: String, pageIndex: Int)?
+    private var pendingPageImageBytes: Data?
     /// True once BOTH signals for "the story just concluded, AND the
     /// concluding turn's audio has genuinely finished playing" have been
     /// observed. A UI must wait for this (not just isRewriting) before
@@ -592,7 +612,11 @@ public actor SessionCoordinator {
                 return
             }
 
-            if case .audio = event {
+            if case .audio(let data) = event {
+                if pendingPageImageRequest != nil {
+                    pendingPageImageBytes = data
+                    continue
+                }
                 guard isCurrentTurnAudio else { continue }
                 turnContinuation?.yield(event)
                 continue
@@ -621,14 +645,20 @@ public actor SessionCoordinator {
             case .message(.storyDetail(let detail)):
                 latestStoryDetail = detail
                 continue
-            case .message(.pageImageDone):
+            case .message(.pageImageDone(let storyId, let pageIndex, let hasImage)):
                 // No turn_id, same as the other story-lifecycle events
-                // above -- requesting/displaying page art is Task 8's
-                // wire types only; a later task wires real handling
-                // (e.g. caching the decoded image) into this actor.
-                // Consumed here (rather than left to fall through to
-                // the turn_id-extraction switch below, which has no
-                // case for it) purely so that switch stays exhaustive.
+                // above -- see pendingPageImageRequest's doc comment for
+                // why the .audio case above stashes the preceding binary
+                // frame in pendingPageImageBytes rather than yielding it
+                // into turnContinuation.
+                if let request = pendingPageImageRequest,
+                   request.storyId == storyId, request.pageIndex == pageIndex {
+                    latestPageImage = (hasImage ? pendingPageImageBytes : nil).map {
+                        PageImageResult(storyId: storyId, pageIndex: pageIndex, data: $0)
+                    }
+                    pendingPageImageRequest = nil
+                    pendingPageImageBytes = nil
+                }
                 continue
             default:
                 break
@@ -851,6 +881,14 @@ public actor SessionCoordinator {
     /// GetStory. Fire-and-forget; the response updates latestStoryDetail.
     public func getStory(storyId: String) async {
         try? await connection.send(.getStory(storyId: storyId))
+    }
+
+    /// See protocol.py's GetPageImage. Fire-and-forget; the response
+    /// updates latestPageImage.
+    public func getPageImage(storyId: String, pageIndex: Int) async {
+        pendingPageImageRequest = (storyId: storyId, pageIndex: pageIndex)
+        pendingPageImageBytes = nil
+        try? await connection.send(.getPageImage(storyId: storyId, pageIndex: pageIndex))
     }
 
     /// Starts the waiting-ditty loop for a turn resume() already set up --
