@@ -131,12 +131,19 @@ public final class AVSpeechTts: NSObject, SpeechSynthesizing, @unchecked Sendabl
     /// degrades gracefully to the plain system default instead of silently
     /// resolving nothing. An explicit voiceIdentifier (if the caller passes
     /// one) always wins over this default.
+    ///
+    /// Matches on a name SUBSTRING, not equality -- on-device evidence
+    /// (2026-09-12, via onDebugEvent) showed AVSpeechSynthesisVoice.name
+    /// for this voice is actually "Matilda (Premium)", not "Matilda", so
+    /// an exact-equality check silently matched nothing and always fell
+    /// through to the en-US default (Samantha) even with Matilda Premium
+    /// correctly downloaded (quality reported correctly as .premium).
     private static func resolveVoice(preferring voiceIdentifier: String?) -> AVSpeechSynthesisVoice? {
         if let voiceIdentifier, let voice = AVSpeechSynthesisVoice(identifier: voiceIdentifier) {
             return voice
         }
         if let matilda = AVSpeechSynthesisVoice.speechVoices().first(where: {
-            $0.name == "Matilda" && $0.quality == .premium
+            $0.name.localizedCaseInsensitiveContains("Matilda") && $0.quality == .premium
         }) {
             return matilda
         }
