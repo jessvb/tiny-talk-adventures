@@ -909,32 +909,17 @@ public actor SessionCoordinator {
                     // the wait, this is a harmless no-op (already false).
                     await setMuted(false)
                 }
-                // Diagnostic for the on-device-reported stutter that
-                // survived the TTS chunk-coalescing fix: measures whether
-                // a play() call is taking noticeably longer than the audio
-                // it's actually playing (24kHz mono PCM16 = 48000
-                // bytes/sec), which would mean something is stalling
-                // mid-render. Monotonic clock, matching LatencyLogger's own
-                // reasoning for why wall-clock Date() is the wrong tool for
-                // measuring a duration. On-device evidence (2026-09-11,
-                // 200ms chunks) showed only modest (~100-130ms) per-call
-                // overshoot -- logging every call's overshoot now that
-                // AVSpeechTts yields ~1s chunks (≈12-13 calls/reply, well
-                // under the debug log's 50-entry cap) gives the full
-                // picture instead of just the ones that happened to cross
-                // an arbitrary threshold, in case the larger chunk size
-                // alone isn't enough to make the total overshoot
-                // imperceptible.
-                let playStarted = DispatchTime.now()
-                await audio.play(pcm)
-                let playElapsedSeconds = Double(DispatchTime.now().uptimeNanoseconds - playStarted.uptimeNanoseconds) / 1_000_000_000
-                let expectedSeconds = Double(pcm.count) / 48_000.0
-                let overshootSeconds = playElapsedSeconds - expectedSeconds
-                logDebug(
-                    "play() took \(String(format: "%.2f", playElapsedSeconds))s for a " +
-                    "\(String(format: "%.2f", expectedSeconds))s buffer (\(pcm.count) bytes) " +
-                    "-- overshoot \(String(format: "%.3f", overshootSeconds))s"
-                )
+                // Enqueues without waiting for real playback completion --
+                // multiple .audio events now queue back-to-back on the
+                // player node instead of each one fully blocking the next.
+                // The old per-play()-call timing diagnostic (measuring
+                // overshoot against a single buffer's own duration) no
+                // longer means the same thing once calls don't block each
+                // other -- see the turnEnd case below for its replacement,
+                // which measures the one point that still genuinely waits.
+                // See PlaybackQueueTracker's doc comment (AudioEngine.swift)
+                // and docs/superpowers/specs/2026-09-12-pipelined-tts-playback-design.md.
+                await audio.enqueue(pcm)
             case .message(.turnEnd(_)):
                 // Covers the empty-reply case: no .audio event ever
                 // arrives, so this is the only place left to stop a
@@ -945,12 +930,19 @@ public actor SessionCoordinator {
                 await setMuted(false)
                 _ = try? machine.handle(.turnEnd)
                 turnContinuation = nil
-                // Every audio chunk this turn received has, by this
-                // point, genuinely finished playing (each was awaited in
-                // the .audio case above before this loop could reach
-                // turnEnd) -- see readyToShowTheEnd's doc comment for why
-                // this specific point, not rewritingStarted's arrival, is
-                // the real "finished being spoken" signal.
+                // .audio events this turn only enqueue()'d their buffers
+                // (see the .audio case above) -- this is now the one
+                // place that actually waits for genuine playback
+                // completion, preserving readyToShowTheEnd's existing
+                // "audio has truly finished, not just been scheduled"
+                // guarantee (see that property's own doc comment for the
+                // past real bug -- The End appearing mid-sentence -- this
+                // prevents). Resolves immediately for an empty-reply turn,
+                // since no .audio event means nothing was ever enqueued.
+                let waitStarted = DispatchTime.now()
+                await audio.waitForPlaybackToFinish()
+                let waitElapsedSeconds = Double(DispatchTime.now().uptimeNanoseconds - waitStarted.uptimeNanoseconds) / 1_000_000_000
+                logDebug("waitForPlaybackToFinish() took \(String(format: "%.2f", waitElapsedSeconds))s at turnEnd")
                 noteTurnPlaybackFinished()
                 return
             case .message(.error(let text, _)):
