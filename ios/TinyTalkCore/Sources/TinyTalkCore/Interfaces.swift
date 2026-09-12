@@ -9,6 +9,17 @@ public protocol AudioPlaying: Sendable {
     /// dependency -- this is on the critical path for barge-in latency.
     func stopPlaybackImmediately()
     func play(_ pcm: Data) async
+    /// Schedules a buffer for playback and returns as soon as scheduling
+    /// succeeds -- NOT once the buffer has actually finished playing.
+    /// Multiple enqueue(_:) calls queue back-to-back on the underlying
+    /// player node; use waitForPlaybackToFinish() to know when
+    /// everything enqueued so far has genuinely finished. See
+    /// docs/superpowers/specs/2026-09-12-pipelined-tts-playback-design.md.
+    func enqueue(_ pcm: Data) async
+    /// Suspends until every buffer enqueued via enqueue(_:) so far has
+    /// genuinely finished playing (or resolves immediately if none are
+    /// outstanding).
+    func waitForPlaybackToFinish() async
 }
 
 public enum ServerConnectionEvent: Sendable {

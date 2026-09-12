@@ -72,6 +72,7 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     /// formatter matters here specifically (this fires from a notification
     /// callback and a scheduleBuffer completion, not from a fixed thread).
     public var onDebugEvent: (@Sendable (String) -> Void)?
+    private let playbackQueueTracker = PlaybackQueueTracker()
 
     public init() throws {
         let session = AVAudioSession.sharedInstance()
@@ -409,6 +410,13 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
 
     public func stopPlaybackImmediately() {
         playerNode.stop()
+        // A stopped/cancelled buffer's own scheduleBuffer completion
+        // callback is not guaranteed to fire -- see play()'s own doc
+        // comments on why this file already distrusts that assumption
+        // elsewhere. Without this, a future turn's
+        // waitForPlaybackToFinish() could hang forever waiting for a
+        // buffer this stop just discarded.
+        playbackQueueTracker.reset()
     }
 
     public func play(_ pcm: Data) async {
@@ -491,6 +499,49 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// Schedules a buffer without waiting for it to actually finish
+    /// playing -- see AudioPlaying.enqueue(_:)'s doc comment and
+    /// PlaybackQueueTracker's doc comment for why. Mirrors play(_:)'s
+    /// structure almost exactly (same ensureEngineRunning() guard, same
+    /// per-buffer PlaybackCompletionGate + 3-second-timeout race, same
+    /// .dataPlayedBack completion type) -- the only difference is that
+    /// this does not wrap scheduling in a continuation that waits for
+    /// that race to resolve; it fires the schedule and the buffer's own
+    /// timeout fallback, then returns.
+    public func enqueue(_ pcm: Data) async {
+        guard let buffer = pcmDataToBuffer(pcm) else { return }
+        guard await ensureEngineRunning() else {
+            print("RealAudioEngine: engine never started -- dropping this enqueue() call rather than hanging forever")
+            return
+        }
+        playbackQueueTracker.bufferEnqueued()
+        let gate = PlaybackCompletionGate()
+        playerNode.scheduleBuffer(buffer, at: nil, options: [], completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            if gate.tryResume() {
+                self?.playbackQueueTracker.bufferFinished()
+            }
+        }
+        // Deliberately unconditional -- see play()'s own doc comment on
+        // why guarding this with `if !playerNode.isPlaying` was actively
+        // harmful on real hardware.
+        playerNode.play()
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if gate.tryResume() {
+                let message = "RealAudioEngine: enqueue() scheduleBuffer completion did not fire within 3s (likely the engine was stopped mid-render by a concurrent reconfiguration) -- giving up on this buffer rather than hanging forever"
+                print(message)
+                self?.onDebugEvent?("[\(DebugTimestamp.now())] \(message)")
+                self?.playbackQueueTracker.bufferFinished()
+            }
+        }
+    }
+
+    /// Suspends until every buffer enqueued via enqueue(_:) so far has
+    /// genuinely finished playing.
+    public func waitForPlaybackToFinish() async {
+        await playbackQueueTracker.waitForIdle()
     }
 
     /// Retries engine.start() a handful of times with a short delay between
