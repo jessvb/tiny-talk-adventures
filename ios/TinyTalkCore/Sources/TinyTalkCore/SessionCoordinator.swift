@@ -621,6 +621,15 @@ public actor SessionCoordinator {
             case .message(.storyDetail(let detail)):
                 latestStoryDetail = detail
                 continue
+            case .message(.pageImageDone):
+                // No turn_id, same as the other story-lifecycle events
+                // above -- requesting/displaying page art is Task 8's
+                // wire types only; a later task wires real handling
+                // (e.g. caching the decoded image) into this actor.
+                // Consumed here (rather than left to fall through to
+                // the turn_id-extraction switch below, which has no
+                // case for it) purely so that switch stays exhaustive.
+                continue
             default:
                 break
             }
@@ -635,7 +644,8 @@ public actor SessionCoordinator {
                 eventTurnId = turnId
             case .audio, .closed,
                  .message(.rewritingStarted), .message(.rewritingDone),
-                 .message(.storyList), .message(.storyDetail):
+                 .message(.storyList), .message(.storyDetail),
+                 .message(.pageImageDone):
                 fatalError("unreachable: handled above")
             }
 
@@ -945,7 +955,8 @@ public actor SessionCoordinator {
                 await setMuted(false)
                 return
             case .message(.rewritingStarted), .message(.rewritingDone),
-                 .message(.storyList), .message(.storyDetail):
+                 .message(.storyList), .message(.storyDetail),
+                 .message(.pageImageDone):
                 fatalError("unreachable: consumeServerEvents() never forwards story-lifecycle events into turnContinuation")
             }
         }

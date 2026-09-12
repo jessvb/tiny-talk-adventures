@@ -8,9 +8,11 @@ import Foundation
 /// straight mapping, not a rewrite.
 public struct StoryPage: Equatable, Sendable {
     public let text: String
+    public let hasImage: Bool
 
-    public init(text: String) {
+    public init(text: String, hasImage: Bool = false) {
         self.text = text
+        self.hasImage = hasImage
     }
 }
 
@@ -19,6 +21,18 @@ public struct StoryPage: Equatable, Sendable {
 public enum RewriteStatus: String, Equatable, Sendable {
     case pending
     case done
+    case failed
+}
+
+/// Mirrors story_store.py's `illustrations_status` field exactly
+/// (`"pending"`, `"done"`, `"partial"`, `"failed"`). Absent entirely
+/// (`nil`) means the text rewrite hasn't finished yet, or finished but
+/// no illustration pass has run at all -- distinct from any of the four
+/// named states.
+public enum IllustrationsStatus: String, Equatable, Sendable {
+    case pending
+    case done
+    case partial
     case failed
 }
 
@@ -53,13 +67,18 @@ public struct SavedStoryDetail: Equatable, Sendable {
     public let pages: [StoryPage]
     public let epilogue: String?
     public let rewriteStatus: RewriteStatus
+    public let illustrationsStatus: IllustrationsStatus?
 
-    public init(id: String, title: String?, pages: [StoryPage], epilogue: String?, rewriteStatus: RewriteStatus) {
+    public init(
+        id: String, title: String?, pages: [StoryPage], epilogue: String?,
+        rewriteStatus: RewriteStatus, illustrationsStatus: IllustrationsStatus? = nil
+    ) {
         self.id = id
         self.title = title
         self.pages = pages
         self.epilogue = epilogue
         self.rewriteStatus = rewriteStatus
+        self.illustrationsStatus = illustrationsStatus
     }
 }
 

@@ -62,6 +62,13 @@ final class ProtocolTests: XCTestCase {
         )
     }
 
+    func testGetPageImageEncodesStoryIdAndPageIndex() {
+        XCTAssertEqual(
+            ClientMessage.getPageImage(storyId: "abcd1234", pageIndex: 2).encode(),
+            #"{"type":"get_page_image","story_id":"abcd1234","page_index":2}"#
+        )
+    }
+
     func testDecodesTranscriptPartial() throws {
         let event = try decodeServerEvent(#"{"type": "transcript_partial", "text": "a fox", "turn_id": 5}"#)
         guard case .transcriptPartial(let text, let turnId) = event else {
@@ -116,6 +123,20 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(event, .rewritingDone)
     }
 
+    func testDecodesPageImageDoneWithImage() throws {
+        let event = try decodeServerEvent(
+            #"{"type": "page_image_done", "story_id": "abcd1234", "page_index": 1, "has_image": true}"#
+        )
+        XCTAssertEqual(event, .pageImageDone(storyId: "abcd1234", pageIndex: 1, hasImage: true))
+    }
+
+    func testDecodesPageImageDoneWithoutImage() throws {
+        let event = try decodeServerEvent(
+            #"{"type": "page_image_done", "story_id": "abcd1234", "page_index": 1, "has_image": false}"#
+        )
+        XCTAssertEqual(event, .pageImageDone(storyId: "abcd1234", pageIndex: 1, hasImage: false))
+    }
+
     func testDecodesStoryList() throws {
         let event = try decodeServerEvent(
             #"""
@@ -157,6 +178,22 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(detail.rewriteStatus, .done)
     }
 
+    func testDecodesStoryDetailIncludesHasImageAndIllustrationsStatus() throws {
+        let event = try decodeServerEvent(
+            #"""
+            {"type": "story_detail", "id": "pip", "title": "Pip the Fox",
+             "pages": [{"text": "Once upon a time.", "has_image": true}, {"text": "The end.", "has_image": false}],
+             "epilogue": null, "rewrite_status": "done", "illustrations_status": "partial"}
+            """#
+        )
+        guard case .storyDetail(let detail) = event else {
+            return XCTFail("expected storyDetail, got \(event)")
+        }
+        XCTAssertEqual(detail.pages[0].hasImage, true)
+        XCTAssertEqual(detail.pages[1].hasImage, false)
+        XCTAssertEqual(detail.illustrationsStatus, .partial)
+    }
+
     func testDecodesStoryDetailWithNilTitleAndEpilogue() throws {
         // The .pending/.failed shape (see MockStories.stillWriting/
         // .couldNotFinish) -- the background rewrite hasn't produced a
@@ -171,6 +208,17 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(detail.pages, [])
         XCTAssertNil(detail.epilogue)
         XCTAssertEqual(detail.rewriteStatus, .pending)
+    }
+
+    func testDecodesStoryDetailWithNoIllustrationsStatusDefaultsToNil() throws {
+        let event = try decodeServerEvent(
+            #"{"type": "story_detail", "id": "brave-turtle", "title": null, "pages": [{"text": "Once upon a time."}], "epilogue": null, "rewrite_status": "pending"}"#
+        )
+        guard case .storyDetail(let detail) = event else {
+            return XCTFail("expected storyDetail, got \(event)")
+        }
+        XCTAssertNil(detail.illustrationsStatus)
+        XCTAssertEqual(detail.pages[0].hasImage, false)
     }
 
     func testDecodeDefaultsMissingTurnIdToZero() throws {
