@@ -1541,6 +1541,11 @@ git commit -m "feat(ios): add GetPageImage wire types"
 
 This is the one file where the existing binary-frame handling is turn-scoped (see the code below) and needs a small, deliberate exception for page-image responses, which are not tied to any live turn. Read the surrounding code in `consumeServerEvents()` carefully before editing — this function has several other carefully-reasoned invariants nearby that must not be disturbed.
 
+**Update from Task 8's execution:** adding `ServerEvent.pageImageDone` forced Task 8 to touch this file too (Swift's exhaustive `switch` checking left no choice) — it already added a placeholder `case .message(.pageImageDone): continue` to the story-lifecycle switch below (with a comment marking it a placeholder) and already added `.message(.pageImageDone)` to both `fatalError("unreachable")` case lists (the one in this same function, and a second one inside `runTurn()`'s own event switch ~line 953-961, not otherwise mentioned in this task). Concretely, this changes Task 9's own work:
+- **Do not** add a *second* `.message(.pageImageDone)` case to the story-lifecycle switch — Swift would treat it as an unreachable duplicate. Instead, **replace** Task 8's placeholder case body (the bare `continue`) with the real destructuring logic below.
+- **Do not** touch either `fatalError("unreachable")` case list — both already list `.message(.pageImageDone)`, added by Task 8.
+- The `.audio` handling change, the new `PageImageResult` struct, the new properties, and the new `getPageImage()` method are all still needed exactly as below — Task 8 did not touch any of those.
+
 **Interfaces:**
 - Consumes: `ClientMessage.getPageImage`, `ServerEvent.pageImageDone` (Task 8).
 - Produces: `SessionCoordinator.getPageImage(storyId: String, pageIndex: Int) async`; `SessionCoordinator.latestPageImage: PageImageResult?` (a new public struct).
