@@ -1,23 +1,30 @@
 from typing import AsyncIterator
 
+import httpx
 from PIL import Image
 
+from tinytalk import config
 from tinytalk.engines import EngineError
-from tinytalk.illustrations import generate_and_attach
+from tinytalk.illustrations import _release_ollama_memory, generate_and_attach
 from tinytalk.story_store import load_story, save_story, story_id_from_path, update_story_rewrite
 from tinytalk.conversation import Conversation
 
 
 class FakeExtractionLlm:
     """Returns a fixed scene-prompt string for every prompt-extraction
-    call, one per page in order."""
+    call, one per page in order. Optionally appends to a shared
+    `call_order` list (tagged "llm") so a test can assert ordering
+    relative to a FakeImageBackend sharing the same list."""
 
-    def __init__(self, prompts: list[str] | None = None) -> None:
+    def __init__(self, prompts: list[str] | None = None, call_order: list | None = None) -> None:
         self.prompts = prompts
         self.calls: list[list[dict[str, str]]] = []
+        self._call_order = call_order
 
     async def stream_reply(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         self.calls.append(messages)
+        if self._call_order is not None:
+            self._call_order.append("llm")
         if self.prompts is not None:
             index = min(len(self.calls) - 1, len(self.prompts) - 1)
             yield self.prompts[index]
@@ -28,15 +35,20 @@ class FakeExtractionLlm:
 class FakeImageBackend:
     """Records every generate() call; returns a tiny real PIL image
     unless that call index is in `flagged_indices`, in which case it
-    returns None (simulating a safety-checker drop)."""
+    returns None (simulating a safety-checker drop). Optionally appends
+    to a shared `call_order` list (tagged "image") -- see
+    FakeExtractionLlm."""
 
-    def __init__(self, flagged_indices: set[int] | None = None) -> None:
+    def __init__(self, flagged_indices: set[int] | None = None, call_order: list | None = None) -> None:
         self.calls: list[tuple[str, object]] = []
         self.flagged_indices = flagged_indices or set()
+        self._call_order = call_order
 
     def generate(self, prompt, *, reference_image):
         index = len(self.calls)
         self.calls.append((prompt, reference_image))
+        if self._call_order is not None:
+            self._call_order.append("image")
         if index in self.flagged_indices:
             return None
         return Image.new("RGB", (8, 8), color=(255, 0, 0))
@@ -244,3 +256,67 @@ async def test_sets_pending_status_before_generation_completes(tmp_path):
     )
 
     assert statuses_seen == ["pending"]
+
+
+async def test_all_prompt_extraction_happens_before_any_image_generation(tmp_path):
+    # Real-hardware finding (2026-09-14): interleaving one LLM call per
+    # page with that page's image generation keeps Ollama's ~6-7GB
+    # resident (each call refreshes its keep-alive timer) for the ENTIRE
+    # illustration pass, directly competing with Stable Diffusion for the
+    # same 16GB unified memory and causing severe swap thrashing
+    # (measured: per-step generation time jumped from ~18s to ~217s, a
+    # 12x cliff). All scene-prompt extraction must happen in one burst
+    # before any image generation starts, so Ollama's memory can be
+    # released (see _release_ollama_memory) before the compute-heavy
+    # phase begins.
+    pages = [{"text": "Page one."}, {"text": "Page two."}, {"text": "Page three."}]
+    story_id = _saved_story_with_pages(tmp_path, pages)
+    call_order: list = []
+    llm = FakeExtractionLlm(call_order=call_order)
+    backend = FakeImageBackend(call_order=call_order)
+
+    await generate_and_attach(
+        story_id, pages, llm=llm, image_backend=backend, stories_dir=tmp_path
+    )
+
+    assert call_order == ["llm", "llm", "llm", "image", "image", "image"]
+
+
+async def test_release_ollama_memory_posts_keep_alive_zero_for_ollama_backend(monkeypatch):
+    monkeypatch.setattr(config, "LLM_BACKEND", "ollama")
+    monkeypatch.setattr(config, "OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setattr(config, "OLLAMA_MODEL", "qwen3.5:9b")
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={})
+
+    await _release_ollama_memory(transport=httpx.MockTransport(handler))
+
+    assert len(requests) == 1
+    assert requests[0].url == "http://localhost:11434/api/generate"
+    import json
+
+    body = json.loads(requests[0].content)
+    assert body == {"model": "qwen3.5:9b", "keep_alive": 0}
+
+
+async def test_release_ollama_memory_is_a_noop_for_non_ollama_backend(monkeypatch):
+    monkeypatch.setattr(config, "LLM_BACKEND", "groq")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("should never make a request for a non-Ollama backend")
+
+    await _release_ollama_memory(transport=httpx.MockTransport(handler))
+
+
+async def test_release_ollama_memory_failure_is_logged_not_raised(monkeypatch):
+    monkeypatch.setattr(config, "LLM_BACKEND", "ollama")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    # Must not raise -- this is a best-effort optimization, never a
+    # correctness requirement (see its own doc comment).
+    await _release_ollama_memory(transport=httpx.MockTransport(handler))

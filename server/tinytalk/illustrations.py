@@ -10,9 +10,10 @@ import asyncio
 import logging
 from pathlib import Path
 
+import httpx
 from PIL import Image
 
-from . import story_store
+from . import config, story_store
 from .engines import EngineError, LlmEngine
 from .image_gen import ImageGenBackend
 from .story_store import STORIES_DIR
@@ -56,6 +57,35 @@ async def _extract_scene_prompt(llm: LlmEngine, page_text: str) -> str:
     return "".join(parts).strip()
 
 
+async def _release_ollama_memory(*, transport: httpx.BaseTransport | None = None) -> None:
+    """Best-effort: tells Ollama to unload its model immediately rather
+    than waiting out config.OLLAMA_KEEP_ALIVE (30m default). Called once,
+    after all of this pass's prompt-extraction calls finish and before
+    the compute-heavy image-generation phase begins.
+
+    Confirmed on real hardware (2026-09-14): without this, interleaving
+    one LLM call per page with that page's image generation kept
+    Ollama's ~6-7GB resident for the ENTIRE illustration pass (each new
+    call refreshes the keep-alive window before it can expire) --
+    directly competing with Stable Diffusion for the same 16GB unified
+    memory and triggering severe swap thrashing (measured: per-step
+    generation time jumped from ~18s to ~217s, a 12x cliff, partway
+    through a single image). No-op for a non-Ollama LlmEngine (e.g.
+    GroqLlm, a cloud API with no local memory to release). A failure
+    here is only a missed optimization, never a correctness problem --
+    logged, not raised."""
+    if config.LLM_BACKEND != "ollama":
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10.0, transport=transport) as client:
+            await client.post(
+                f"{config.OLLAMA_HOST}/api/generate",
+                json={"model": config.OLLAMA_MODEL, "keep_alive": 0},
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("could not release Ollama's memory before image generation: %s", exc)
+
+
 def _mark_blank(
     story_id: str, pages: list[dict], status: str, stories_dir: Path
 ) -> None:
@@ -90,12 +120,15 @@ async def generate_and_attach(
     gate is guaranteed regardless of outcome here."""
     try:
         _mark_blank(story_id, pages, "pending", stories_dir)
-        reference_image = None
-        image_filenames: list[str | None] = []
-        any_succeeded = False
+
+        # Phase 1: extract every page's scene prompt first, in one quick
+        # burst, rather than interleaved with image generation below --
+        # see _release_ollama_memory's doc comment for why interleaving
+        # them caused severe swap thrashing on real hardware.
+        scene_prompts: list[str | None] = []
         for index, page in enumerate(pages):
             try:
-                scene_prompt = await _extract_scene_prompt(llm, page["text"])
+                scene_prompts.append(await _extract_scene_prompt(llm, page["text"]))
             except asyncio.CancelledError:
                 raise
             except EngineError as exc:
@@ -106,14 +139,28 @@ async def generate_and_attach(
                     index,
                     exc,
                 )
-                image_filenames.append(None)
-                continue
+                scene_prompts.append(None)
             except Exception:  # noqa: BLE001 - one page's LLM hiccup must not sink the pass
                 logger.exception(
                     "unexpected failure extracting scene prompt for story %s page %d",
                     story_id,
                     index,
                 )
+                scene_prompts.append(None)
+
+        await _release_ollama_memory()
+
+        # Phase 2: generate images, strictly in page order (page 0's own
+        # output becomes the IP-Adapter reference for every later page).
+        reference_image = None
+        image_filenames: list[str | None] = []
+        any_succeeded = False
+        for index, scene_prompt in enumerate(scene_prompts):
+            if scene_prompt is None:
+                # That page's prompt extraction already failed in Phase 1
+                # -- no prompt to generate from, same as a None return
+                # from image_backend.generate() below: this page just has
+                # no illustration, not a reason to skip later pages.
                 image_filenames.append(None)
                 continue
             filename = f"{story_id}-page-{index}.png"
