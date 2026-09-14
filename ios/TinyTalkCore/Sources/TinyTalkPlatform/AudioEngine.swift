@@ -451,6 +451,7 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         // that hangs whichever caller is awaiting this play() call
         // (runTurn()'s TTS loop, or the waiting ditty) indefinitely.
         let gate = PlaybackCompletionGate()
+        let timeoutNanos = Self.hangGuardTimeoutNanos(forBufferFrameLength: buffer.frameLength)
         await withCheckedContinuation { continuation in
             // completionCallbackType: .dataPlayedBack -- the plain
             // scheduleBuffer(_:completionHandler:) overload used here
@@ -485,14 +486,14 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             // re-invoking playerNode.play() (since isPlaying still read
             // true), so scheduled buffers just sat there timing out one
             // after another -- observed as many consecutive "did not fire
-            // within 3s" logs with genuinely no sound at all, self-healing
+            // within Ns" logs with genuinely no sound at all, self-healing
             // only once something else (stopWaitingDitty()) called
             // stopPlaybackImmediately() and reset the flag.
             playerNode.play()
             Task {
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                try? await Task.sleep(nanoseconds: timeoutNanos)
                 if gate.tryResume() {
-                    let message = "RealAudioEngine: play() scheduleBuffer completion did not fire within 3s (likely the engine was stopped mid-render by a concurrent reconfiguration) -- giving up on this buffer rather than hanging forever"
+                    let message = "RealAudioEngine: play() scheduleBuffer completion did not fire within \(Self.formatTimeoutSeconds(timeoutNanos))s (likely the engine was stopped mid-render by a concurrent reconfiguration) -- giving up on this buffer rather than hanging forever"
                     print(message)
                     self.onDebugEvent?("[\(DebugTimestamp.now())] \(message)")
                     continuation.resume()
@@ -505,8 +506,9 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     /// playing -- see AudioPlaying.enqueue(_:)'s doc comment and
     /// PlaybackQueueTracker's doc comment for why. Mirrors play(_:)'s
     /// structure almost exactly (same ensureEngineRunning() guard, same
-    /// per-buffer PlaybackCompletionGate + 3-second-timeout race, same
-    /// .dataPlayedBack completion type) -- the only difference is that
+    /// per-buffer PlaybackCompletionGate + duration-scaled hang-guard
+    /// timeout race -- see hangGuardTimeoutNanos(forBufferFrameLength:) --
+    /// same .dataPlayedBack completion type) -- the only difference is that
     /// this does not wrap scheduling in a continuation that waits for
     /// that race to resolve; it fires the schedule and the buffer's own
     /// timeout fallback, then returns.
@@ -527,15 +529,42 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         // why guarding this with `if !playerNode.isPlaying` was actively
         // harmful on real hardware.
         playerNode.play()
+        let timeoutNanos = Self.hangGuardTimeoutNanos(forBufferFrameLength: buffer.frameLength)
         Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            try? await Task.sleep(nanoseconds: timeoutNanos)
             if gate.tryResume() {
-                let message = "RealAudioEngine: enqueue() scheduleBuffer completion did not fire within 3s (likely the engine was stopped mid-render by a concurrent reconfiguration) -- giving up on this buffer rather than hanging forever"
+                let message = "RealAudioEngine: enqueue() scheduleBuffer completion did not fire within \(Self.formatTimeoutSeconds(timeoutNanos))s (likely the engine was stopped mid-render by a concurrent reconfiguration) -- giving up on this buffer rather than hanging forever"
                 print(message)
                 self?.onDebugEvent?("[\(DebugTimestamp.now())] \(message)")
                 self?.playbackQueueTracker.bufferFinished(generation: generation)
             }
         }
+    }
+
+    /// Issue #29: a fixed 3s hang-guard timeout (see this method's git
+    /// history) abandoned any buffer whose OWN real playback genuinely
+    /// takes longer than that -- confirmed on-device (2026-09-14) as
+    /// several consecutive "did not fire within 3s" debug-log lines in a
+    /// single reply, with no backgrounding/reconnect in between, which is
+    /// this issue's own stated confirmation bar. Worse under this file's
+    /// enqueue()/waitForPlaybackToFinish() pipelining (added after #29 was
+    /// filed): enqueue() no longer waits for one buffer before scheduling
+    /// the next, so a single stall-inducing reconfiguration (e.g.
+    /// rebuildCaptureTap()'s engine.stop()) can now strand MANY buffers at
+    /// once instead of just the one mid-render -- a larger blast radius
+    /// for the same underlying bug. Scaling the timeout to the buffer's
+    /// own duration (plus a fixed grace period for the genuine
+    /// engine-stopped-mid-render case this timeout also exists for) fixes
+    /// both without weakening the original hang-guard: the 3s floor keeps
+    /// short/empty buffers covered exactly as before.
+    private static func hangGuardTimeoutNanos(forBufferFrameLength frameLength: AVAudioFrameCount) -> UInt64 {
+        let bufferDurationSeconds = Double(frameLength) / Self.wireSampleRate
+        let grace = 2.0
+        return UInt64(max(3.0, bufferDurationSeconds + grace) * 1_000_000_000)
+    }
+
+    private static func formatTimeoutSeconds(_ nanos: UInt64) -> String {
+        String(format: "%.1f", Double(nanos) / 1_000_000_000)
     }
 
     /// Suspends until every buffer enqueued via enqueue(_:) so far has
