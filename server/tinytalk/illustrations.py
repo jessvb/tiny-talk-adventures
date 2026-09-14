@@ -128,7 +128,11 @@ async def generate_and_attach(
         scene_prompts: list[str | None] = []
         for index, page in enumerate(pages):
             try:
-                scene_prompts.append(await _extract_scene_prompt(llm, page["text"]))
+                scene_prompt = await _extract_scene_prompt(llm, page["text"])
+                logger.info(
+                    "story %s page %d scene prompt: %r", story_id, index, scene_prompt
+                )
+                scene_prompts.append(scene_prompt)
             except asyncio.CancelledError:
                 raise
             except EngineError as exc:
