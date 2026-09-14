@@ -33,6 +33,14 @@ dependencies = [
     "accelerate",
     "torch>=2.0",
     "pillow",
+    # Required by pipeline.load_lora_weights() -- diffusers' default LoRA
+    # loading path raises "PEFT backend is required for this method"
+    # without it. Missed originally because no real Stable Diffusion
+    # weights had ever been downloaded/exercised in this dev environment
+    # until real on-device testing (2026-09-14) hit this for the first
+    # time -- same root cause as the IP-Adapter crash the final review
+    # caught, a different real code path nothing had ever run.
+    "peft",
 ]
 
 [project.optional-dependencies]
