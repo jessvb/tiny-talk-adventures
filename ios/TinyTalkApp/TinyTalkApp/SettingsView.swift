@@ -487,6 +487,18 @@ struct VoicePickerSheet: View {
                     }
                 }
             }
+            // Root cause of the barely-visible-text report: TTA.Palette.ink
+            // is a fixed dark warm color, designed for this app's own fixed
+            // light "paper" backgrounds (used explicitly everywhere else in
+            // Settings) -- NOT for List's default background, which follows
+            // the system's light/dark appearance. In dark mode that's dark
+            // ink text on a dark system background. Rather than just
+            // picking a lighter fixed text color (which would then be
+            // low-contrast in LIGHT system mode instead), this gives the
+            // List the same explicit paper background the rest of the app
+            // already uses regardless of system appearance.
+            .scrollContentBackground(.hidden)
+            .background(TTA.Palette.outerPaper)
             .navigationTitle("Storyteller voice")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -512,5 +524,6 @@ struct VoicePickerSheet: View {
                 }
             }
         }
+        .listRowBackground(TTA.Palette.paper)
     }
 }

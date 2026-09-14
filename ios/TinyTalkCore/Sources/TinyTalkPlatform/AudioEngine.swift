@@ -514,6 +514,20 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     /// timeout fallback, then returns.
     public func enqueue(_ pcm: Data) async {
         guard let buffer = pcmDataToBuffer(pcm) else { return }
+        // Diagnostic only, no behavior change -- added 2026-09-14 to
+        // distinguish two live hypotheses for the enqueue() hang-guard
+        // timeout firing in bursts near a confirmed
+        // AVAudioEngineConfigurationChange (issue #29's continuation):
+        // is engine.isRunning itself still false at this point (meaning
+        // ensureEngineRunning()'s retry loop is doing real work), or is
+        // the engine reporting running fine while playerNode still isn't
+        // actually delivering completions (the "wedged node" case this
+        // file's rebuildCaptureTap() doc comment already documents once,
+        // for a different call path)? Logged only on the failure path
+        // below, not unconditionally, to avoid drowning the 50-entry
+        // debug log in per-buffer noise on the common success path.
+        let engineWasRunningAtEntry = engine.isRunning
+        let playerWasPlayingAtEntry = playerNode.isPlaying
         guard await ensureEngineRunning() else {
             print("RealAudioEngine: engine never started -- dropping this enqueue() call rather than hanging forever")
             return
@@ -533,7 +547,9 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: timeoutNanos)
             if gate.tryResume() {
-                let message = "RealAudioEngine: enqueue() scheduleBuffer completion did not fire within \(Self.formatTimeoutSeconds(timeoutNanos))s (likely the engine was stopped mid-render by a concurrent reconfiguration) -- giving up on this buffer rather than hanging forever"
+                let engineRunningNow = self?.engine.isRunning ?? false
+                let playerPlayingNow = self?.playerNode.isPlaying ?? false
+                let message = "RealAudioEngine: enqueue() scheduleBuffer completion did not fire within \(Self.formatTimeoutSeconds(timeoutNanos))s (likely the engine was stopped mid-render by a concurrent reconfiguration) -- giving up on this buffer rather than hanging forever [diag: engine.isRunning entry=\(engineWasRunningAtEntry) now=\(engineRunningNow), playerNode.isPlaying entry=\(playerWasPlayingAtEntry) now=\(playerPlayingNow)]"
                 print(message)
                 self?.onDebugEvent?("[\(DebugTimestamp.now())] \(message)")
                 self?.playbackQueueTracker.bufferFinished(generation: generation)
