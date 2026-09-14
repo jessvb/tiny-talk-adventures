@@ -1,5 +1,5 @@
 from tinytalk import config
-from tinytalk.image_gen import NEGATIVE_PROMPT, StableDiffusionBackend
+from tinytalk.image_gen import NEGATIVE_PROMPT, STYLE_TRIGGER, StableDiffusionBackend
 
 
 def test_backend_does_not_load_the_model_at_construction():
@@ -96,6 +96,22 @@ def test_generate_unloads_ip_adapter_when_switching_back_to_reference_free():
     assert kinds.count("unload_ip_adapter") == 1
     assert kinds.index("load_ip_adapter") < kinds.index("unload_ip_adapter")
     assert backend._ip_adapter_loaded is False
+
+
+def test_generate_appends_the_lora_style_trigger_to_the_prompt():
+    """The LoRA's own model card documents this phrase as required to
+    activate its trained style -- load_lora_weights() alone loads the
+    weights but doesn't make the model use them. Confirmed on real
+    hardware (2026-09-14): without this, output looked photorealistic
+    rather than storybook-style."""
+    backend = StableDiffusionBackend()
+    pipeline = FakePipeline()
+    backend._build_pipeline = lambda: pipeline
+
+    backend.generate("a fox in a forest", reference_image=None)
+
+    call_kwargs = pipeline.calls[0][1]
+    assert call_kwargs["prompt"] == f"a fox in a forest, {STYLE_TRIGGER}"
 
 
 def test_generate_passes_the_configured_inference_step_count():

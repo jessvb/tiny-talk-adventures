@@ -38,6 +38,17 @@ NEGATIVE_PROMPT = (
     "anatomy, photorealistic"
 )
 
+# config.IMAGE_GEN_LORA's own model card (huggingface.co/artificialguybr/
+# storybookredmond-1-5-version-storybook-kids-lora-style-for-sd-1-5)
+# documents this exact phrase as the trigger that activates its trained
+# style -- every one of its example prompts includes it verbatim. Without
+# it, load_lora_weights() still loads the LoRA's weights, but nothing in
+# the prompt asks the model to actually use them, so generation falls back
+# toward base SD1.5's own photographic bias (confirmed on real hardware,
+# 2026-09-14: images looked "realistic" rather than storybook-style before
+# this was added).
+STYLE_TRIGGER = "Kids Book, KidsRedmAF"
+
 
 class ImageGenBackend(Protocol):
     def generate(
@@ -144,7 +155,7 @@ class StableDiffusionBackend:
             self.load()
         self._ensure_ip_adapter_state(needed=reference_image is not None)
         kwargs: dict = {
-            "prompt": prompt,
+            "prompt": f"{prompt}, {STYLE_TRIGGER}",
             "negative_prompt": NEGATIVE_PROMPT,
             "num_inference_steps": config.IMAGE_GEN_NUM_INFERENCE_STEPS,
         }
