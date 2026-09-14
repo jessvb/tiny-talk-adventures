@@ -31,5 +31,6 @@ let package = Package(
                 .copy("Resources/FastViTT8F16.mlmodelc"),
             ]
         ),
+        .testTarget(name: "TinyTalkPlatformTests", dependencies: ["TinyTalkPlatform"]),
     ]
 )

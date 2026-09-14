@@ -29,6 +29,13 @@ public enum ClientMessage: Sendable, Equatable {
     /// handle_new_story(). No turn_id: mirrors protocol.py's NewStory,
     /// which isn't itself the start of a turn.
     case newStory
+    /// Hands one or more stories completed away from home (Groq-backed
+    /// demo mode, no persistent server session) to the real server once
+    /// reconnected -- see PendingDemoStore/AppModel.connect(). Uses
+    /// JSONSerialization in encode() below, not hand-built interpolation
+    /// like every other case here: this is the one payload carrying
+    /// arbitrary user-generated transcript/reply text.
+    case syncDemoStories(stories: [PendingDemoStoryPayload])
     /// Request the saved-story list for the Library screen -- see
     /// server/tinytalk/protocol.py's ListStories. No turn_id: browsing
     /// saved stories is unrelated to live turn-taking.
@@ -61,6 +68,23 @@ public enum ClientMessage: Sendable, Equatable {
             return #"{"type":"object_seen","label":"\#(Self.jsonEscaped(label))"}"#
         case .newStory:
             return #"{"type":"new_story"}"#
+        case .syncDemoStories(let stories):
+            let storiesJSON: [[String: Any]] = stories.map { story in
+                [
+                    "id": story.id,
+                    "created_at": story.createdAt,
+                    "turns": story.turns.map {
+                        ["speaker": $0.speaker, "text": $0.text, "interrupted": $0.interrupted]
+                    },
+                    "shared_facts": story.sharedFacts,
+                ]
+            }
+            let payload: [String: Any] = ["type": "sync_demo_stories", "stories": storiesJSON]
+            guard let data = try? JSONSerialization.data(withJSONObject: payload),
+                  let json = String(data: data, encoding: .utf8) else {
+                return #"{"type":"sync_demo_stories","stories":[]}"#
+            }
+            return json
         case .listStories:
             return #"{"type":"list_stories"}"#
         case .getStory(let storyId):

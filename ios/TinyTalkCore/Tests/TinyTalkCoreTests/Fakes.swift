@@ -1,4 +1,5 @@
 import Foundation
+import XCTest
 @testable import TinyTalkCore
 
 final class FakeAudio: AudioPlaying, @unchecked Sendable {
@@ -7,6 +8,12 @@ final class FakeAudio: AudioPlaying, @unchecked Sendable {
     private var _played: [Data] = []
     private var _playWasCancelled = false
     private var _playDelayNanos: UInt64 = 0
+    private var _enqueued: [Data] = []
+    private var _enqueueWasCancelled = false
+    private var _enqueueDelayNanos: UInt64 = 0
+    private var _outstandingEnqueued = 0
+    private var _autoFinishEnqueuedBuffers = true
+    private var waiter: CheckedContinuation<Void, Never>?
     /// Lock-protected (not a bare var) so a test can safely flip this
     /// mid-run -- e.g. to let one chunk be genuinely slow while later
     /// chunks resolve instantly, isolating "did a buffered event reach
@@ -16,6 +23,26 @@ final class FakeAudio: AudioPlaying, @unchecked Sendable {
         get { lock.withLock { _playDelayNanos } }
         set { lock.withLock { _playDelayNanos = newValue } }
     }
+    /// Delays enqueue(_:) *registering* its buffer -- models the real
+    /// RealAudioEngine.enqueue()'s own ensureEngineRunning() await
+    /// point, which a real interrupt could race against before the
+    /// buffer is ever scheduled. Distinct from playback-completion
+    /// timing (see autoFinishEnqueuedBuffers/finishOldestEnqueuedBuffer()
+    /// below) -- the real enqueue()/waitForPlaybackToFinish() split
+    /// decouples these two axes, so this fake must too.
+    var enqueueDelayNanos: UInt64 {
+        get { lock.withLock { _enqueueDelayNanos } }
+        set { lock.withLock { _enqueueDelayNanos = newValue } }
+    }
+    /// When true (the default), enqueue(_:) marks its own buffer
+    /// finished immediately after registering it, so tests that don't
+    /// care about precise completion timing (the vast majority) don't
+    /// need to change. Tests that DO care set this false and call
+    /// finishOldestEnqueuedBuffer() themselves.
+    var autoFinishEnqueuedBuffers: Bool {
+        get { lock.withLock { _autoFinishEnqueuedBuffers } }
+        set { lock.withLock { _autoFinishEnqueuedBuffers = newValue } }
+    }
 
     var stopped: Bool { lock.withLock { _stopped } }
     var played: [Data] { lock.withLock { _played } }
@@ -24,9 +51,23 @@ final class FakeAudio: AudioPlaying, @unchecked Sendable {
     /// distinguishes "the caller was told to stop" from "the in-flight
     /// work was actually cancelled" -- see SessionCoordinator's doc comment.
     var playWasCancelled: Bool { lock.withLock { _playWasCancelled } }
+    /// Buffers passed to enqueue(_:) so far, in order.
+    var enqueued: [Data] { lock.withLock { _enqueued } }
+    /// True if an enqueue(_:) call observed real Task cancellation (via
+    /// enqueueDelayNanos's Task.sleep throwing) before it ever managed
+    /// to register its buffer -- mirrors playWasCancelled's purpose for
+    /// the enqueue path.
+    var enqueueWasCancelled: Bool { lock.withLock { _enqueueWasCancelled } }
 
     func stopPlaybackImmediately() {
-        lock.withLock { _stopped = true }
+        let toResume: CheckedContinuation<Void, Never>? = lock.withLock {
+            _stopped = true
+            _outstandingEnqueued = 0
+            let w = waiter
+            waiter = nil
+            return w
+        }
+        toResume?.resume()
     }
 
     func play(_ pcm: Data) async {
@@ -40,6 +81,60 @@ final class FakeAudio: AudioPlaying, @unchecked Sendable {
             }
         }
         lock.withLock { _played.append(pcm) }
+    }
+
+    func enqueue(_ pcm: Data) async {
+        let enqueueDelayNanos = enqueueDelayNanos
+        if enqueueDelayNanos > 0 {
+            do {
+                try await Task.sleep(nanoseconds: enqueueDelayNanos)
+            } catch {
+                lock.withLock { _enqueueWasCancelled = true }
+                return // never registered -- matches a real enqueue() whose ensureEngineRunning() await got cancelled before scheduleBuffer ever ran
+            }
+        }
+        let shouldAutoFinish: Bool = lock.withLock {
+            _enqueued.append(pcm)
+            _outstandingEnqueued += 1
+            return _autoFinishEnqueuedBuffers
+        }
+        if shouldAutoFinish {
+            finishOldestEnqueuedBuffer()
+        }
+    }
+
+    /// Test control: marks the oldest outstanding enqueue(_:) call as
+    /// finished, resuming waitForPlaybackToFinish() if this was the last
+    /// one outstanding. A self-contained simulation of
+    /// PlaybackQueueTracker's contract (not a reuse of that type --
+    /// TinyTalkCoreTests must not depend on TinyTalkPlatform, see this
+    /// plan's Global Constraints).
+    func finishOldestEnqueuedBuffer() {
+        let toResume: CheckedContinuation<Void, Never>? = lock.withLock {
+            guard _outstandingEnqueued > 0 else { return nil }
+            _outstandingEnqueued -= 1
+            if _outstandingEnqueued == 0, let waiter {
+                self.waiter = nil
+                return waiter
+            }
+            return nil
+        }
+        toResume?.resume()
+    }
+
+    func waitForPlaybackToFinish() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let shouldResumeNow: Bool = lock.withLock {
+                if _outstandingEnqueued <= 0 {
+                    return true
+                }
+                waiter = continuation
+                return false
+            }
+            if shouldResumeNow {
+                continuation.resume()
+            }
+        }
     }
 }
 
@@ -191,4 +286,25 @@ extension NSLock {
         defer { unlock() }
         return body()
     }
+}
+
+final class StubURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var handler: ((URLRequest) -> (Int, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let handler = Self.handler else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        let (status, data) = handler(request)
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
