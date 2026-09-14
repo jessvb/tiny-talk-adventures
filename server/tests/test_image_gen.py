@@ -1,3 +1,4 @@
+from tinytalk import config
 from tinytalk.image_gen import NEGATIVE_PROMPT, StableDiffusionBackend
 
 
@@ -95,6 +96,22 @@ def test_generate_unloads_ip_adapter_when_switching_back_to_reference_free():
     assert kinds.count("unload_ip_adapter") == 1
     assert kinds.index("load_ip_adapter") < kinds.index("unload_ip_adapter")
     assert backend._ip_adapter_loaded is False
+
+
+def test_generate_passes_the_configured_inference_step_count():
+    """Regression test: SD 1.5's own pipeline default (50 steps) measured
+    ~15-30s/iteration on real M1 hardware even without memory pressure --
+    ~15 minutes for a single image before any swapping even started.
+    generate() must explicitly pass config.IMAGE_GEN_NUM_INFERENCE_STEPS
+    rather than relying on the pipeline's own much higher default."""
+    backend = StableDiffusionBackend()
+    pipeline = FakePipeline()
+    backend._build_pipeline = lambda: pipeline
+
+    backend.generate("a fox in a forest", reference_image=None)
+
+    call_kwargs = pipeline.calls[0][1]
+    assert call_kwargs["num_inference_steps"] == config.IMAGE_GEN_NUM_INFERENCE_STEPS
 
 
 def test_load_does_not_load_an_ip_adapter():

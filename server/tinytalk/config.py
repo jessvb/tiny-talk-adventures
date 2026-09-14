@@ -182,6 +182,17 @@ IMAGE_GEN_IP_ADAPTER_WEIGHT = os.environ.get(
 )
 IMAGE_GEN_IP_ADAPTER_SCALE = float(os.environ.get("TINYTALK_IMAGE_GEN_IP_ADAPTER_SCALE", "0.5"))
 
+# SD 1.5's own pipeline default is 50 -- confirmed on real M1 hardware
+# (2026-09-14) to take ~15-30s/iteration even without memory pressure,
+# so 50 steps alone was ~15 minutes per image before any swapping even
+# started. 25 is a well-established "good enough for illustration work,
+# not photorealism" step count for SD 1.5's default PNDM scheduler,
+# roughly halving generation time with no code-visible quality
+# regression expected for this use case.
+IMAGE_GEN_NUM_INFERENCE_STEPS = int(
+    os.environ.get("TINYTALK_IMAGE_GEN_NUM_INFERENCE_STEPS", "25")
+)
+
 SYSTEM_PROMPT = (
     "You are a warm, interesting storyteller telling a story out loud with a young, "
     "intelligent child, aged about three to six. You and the child are making the "

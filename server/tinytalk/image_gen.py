@@ -143,7 +143,11 @@ class StableDiffusionBackend:
         if self._pipeline is None:
             self.load()
         self._ensure_ip_adapter_state(needed=reference_image is not None)
-        kwargs: dict = {"prompt": prompt, "negative_prompt": NEGATIVE_PROMPT}
+        kwargs: dict = {
+            "prompt": prompt,
+            "negative_prompt": NEGATIVE_PROMPT,
+            "num_inference_steps": config.IMAGE_GEN_NUM_INFERENCE_STEPS,
+        }
         if reference_image is not None:
             kwargs["ip_adapter_image"] = reference_image
         # illustrations.py wraps this call in its own try/except and
