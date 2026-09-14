@@ -135,6 +135,16 @@ class ConcludeStory:
 
 
 @dataclass(frozen=True)
+class SyncDemoStories:
+    """The phone hands over stories completed away from home (see
+    docs/superpowers/specs/2026-09-09-away-from-home-demo-mode-design.md)
+    once it reconnects to the home server. No turn_id -- this isn't part
+    of live turn-taking, same reasoning as ListStories/GetStory."""
+
+    stories: tuple[dict, ...]
+
+
+@dataclass(frozen=True)
 class UpdateSettings:
     """Parent-adjustable story-length settings from the Settings screen --
     persisted client-side, sent once after connecting and again whenever
@@ -157,6 +167,7 @@ ClientMessage = (
     | SynthesizePage
     | GetPageImage
     | ConcludeStory
+    | SyncDemoStories
     | UpdateSettings
 )
 
@@ -171,6 +182,7 @@ _CLIENT_MESSAGE_TYPES: dict[str, type] = {
     "synthesize_page": SynthesizePage,
     "get_page_image": GetPageImage,
     "conclude_story": ConcludeStory,
+    "sync_demo_stories": SyncDemoStories,
     "update_settings": UpdateSettings,
 }
 _TYPES_REQUIRING_TURN_ID = (SpeechStart, Interrupt, ConcludeStory)
@@ -226,6 +238,11 @@ def decode_client_message(raw: str) -> ClientMessage:
         if not isinstance(page_index, int):
             raise ProtocolError(f"get_page_image requires an integer page_index: {raw!r}")
         return GetPageImage(story_id=story_id.strip(), page_index=page_index)
+    if message_type is SyncDemoStories:
+        stories = payload.get("stories")
+        if not isinstance(stories, list) or not all(isinstance(s, dict) for s in stories):
+            raise ProtocolError(f"sync_demo_stories requires a list of story objects: {raw!r}")
+        return SyncDemoStories(stories=tuple(stories))
     if message_type is UpdateSettings:
         target_turns = payload.get("target_turns")
         page_count = payload.get("page_count")

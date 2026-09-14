@@ -207,4 +207,39 @@ def read_page_image(
         logger.error(
             "failed to read page image for story %s page %d: %s", story_id, page_index, exc
         )
+
+
+def save_synced_story(payload: dict, *, stories_dir: Path = STORIES_DIR) -> Path | None:
+    """Persists a story JSON payload the phone completed away from home
+    (see SessionRunner.handle_sync_demo_stories). A fresh, server-generated
+    id is always used for both the stored "id" field and the filename --
+    the phone's own claimed id is discarded, never trusted for filesystem
+    path construction (an arbitrary client-supplied string reaching a
+    path.write_text() call is exactly how a path-traversal bug happens).
+    rewrite_status is forced to "pending" regardless of what the phone
+    sent, so a synced story goes through the exact same rewrite pipeline
+    a live one does."""
+    created_at = payload.get("created_at")
+    if not isinstance(created_at, str) or not created_at:
+        logger.error("refusing to sync a story with a missing created_at: %r", payload)
+        return None
+    story_id = uuid.uuid4().hex[:8]
+    safe_timestamp = "".join(ch for ch in created_at if ch.isalnum())
+    filename = f"{safe_timestamp}-{story_id}.json"
+    stored = {
+        "id": story_id,
+        "created_at": created_at,
+        "turns": payload.get("turns", []),
+        "title": None,
+        "pages": None,
+        "epilogue": None,
+        "rewrite_status": "pending",
+    }
+    try:
+        stories_dir.mkdir(parents=True, exist_ok=True)
+        path = stories_dir / filename
+        path.write_text(json.dumps(stored, indent=2))
+        return path
+    except OSError as exc:
+        logger.error("failed to save synced story: %s", exc)
         return None

@@ -37,6 +37,49 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(ClientMessage.newStory.encode(), #"{"type":"new_story"}"#)
     }
 
+    func testSyncDemoStoriesRoundTripsThroughValidJSON() throws {
+        // This case carries arbitrary user-generated text (unlike every
+        // other case above, which encodes a fixed identifier or no data
+        // at all), so it's encoded via JSONSerialization instead of this
+        // file's usual hand-built string interpolation -- confirm the
+        // result actually is valid, well-shaped JSON rather than just
+        // eyeballing a fixed literal like the tests above do.
+        let story = PendingDemoStoryPayload(
+            id: "story-1",
+            createdAt: "2026-09-09T12:00:00Z",
+            turns: [
+                PendingDemoStoryTurn(speaker: "child", text: #"a "brave" fox\adventure"#, interrupted: false),
+                PendingDemoStoryTurn(speaker: "elsie", text: "Once upon a time...", interrupted: true),
+            ],
+            sharedFacts: [["fox", "Foxes have whiskers on their legs too."]]
+        )
+        let encoded = ClientMessage.syncDemoStories(stories: [story]).encode()
+
+        let data = try XCTUnwrap(encoded.data(using: .utf8))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        XCTAssertEqual(json["type"] as? String, "sync_demo_stories")
+        let storiesJSON = try XCTUnwrap(json["stories"] as? [[String: Any]])
+        XCTAssertEqual(storiesJSON.count, 1)
+        XCTAssertEqual(storiesJSON[0]["id"] as? String, "story-1")
+        XCTAssertEqual(storiesJSON[0]["created_at"] as? String, "2026-09-09T12:00:00Z")
+        let turnsJSON = try XCTUnwrap(storiesJSON[0]["turns"] as? [[String: Any]])
+        XCTAssertEqual(turnsJSON.count, 2)
+        XCTAssertEqual(turnsJSON[0]["speaker"] as? String, "child")
+        XCTAssertEqual(turnsJSON[0]["text"] as? String, #"a "brave" fox\adventure"#)
+        XCTAssertEqual(turnsJSON[0]["interrupted"] as? Bool, false)
+        let sharedFactsJSON = try XCTUnwrap(storiesJSON[0]["shared_facts"] as? [[String]])
+        XCTAssertEqual(sharedFactsJSON, [["fox", "Foxes have whiskers on their legs too."]])
+    }
+
+    func testSyncDemoStoriesEncodesEmptyStoriesArray() throws {
+        let encoded = ClientMessage.syncDemoStories(stories: []).encode()
+        let data = try XCTUnwrap(encoded.data(using: .utf8))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(json["type"] as? String, "sync_demo_stories")
+        XCTAssertEqual(try XCTUnwrap(json["stories"] as? [[String: Any]]).count, 0)
+    }
+
     func testListStoriesEncodesExactType() {
         XCTAssertEqual(ClientMessage.listStories.encode(), #"{"type":"list_stories"}"#)
     }

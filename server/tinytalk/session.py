@@ -23,7 +23,7 @@ from typing import Protocol
 from . import config, safety, storybook, story_store
 from .animal_facts import AnimalFactTracker
 from .audio import TTS_SAMPLE_RATE, split_sentences
-from .conversation import Conversation
+from .conversation import Conversation, Turn
 from .engines import EngineError, LlmEngine, SttEngine, TtsEngine
 from .image_gen import ImageGenBackend
 from .object_recognition import ObjectTracker
@@ -38,6 +38,7 @@ from .protocol import (
     ProtocolError,
     SpeechEnd,
     SpeechStart,
+    SyncDemoStories,
     SynthesizePage,
     UpdateSettings,
     decode_client_message,
@@ -212,6 +213,8 @@ class SessionRunner:
                 await self.handle_synthesize_page(story_id, page_index)
             case GetPageImage(story_id=story_id, page_index=page_index):
                 await self.handle_get_page_image(story_id, page_index)
+            case SyncDemoStories(stories=stories):
+                await self.handle_sync_demo_stories(stories)
             case UpdateSettings(target_turns=target_turns, page_count=page_count):
                 await self.handle_update_settings(target_turns, page_count)
 
@@ -401,6 +404,39 @@ class SessionRunner:
             await self._transport.send_text(
                 encode_page_image_done(story_id, page_index, has_image=data is not None)
             )
+
+    async def handle_sync_demo_stories(self, stories: tuple[dict, ...]) -> None:
+        """Persists each story the phone completed away from home, then
+        kicks off the same background rewrite pipeline a live story
+        triggers -- see story_store.save_synced_story() and
+        _run_rewrite(). Runs independent of self._machine's state
+        (unlike the live-turn actions above): a synced batch has no
+        relationship to whatever live story is or isn't in flight."""
+        for payload in stories:
+            saved_path = story_store.save_synced_story(payload)
+            if saved_path is None:
+                continue
+            story_id = story_store.story_id_from_path(saved_path)
+            try:
+                turns = [
+                    Turn(
+                        speaker=turn["speaker"],
+                        text=turn["text"],
+                        interrupted=turn.get("interrupted", False),
+                    )
+                    for turn in payload.get("turns", [])
+                ]
+            except (KeyError, TypeError) as exc:
+                logger.error(
+                    "skipping rewrite for synced story %s: malformed turns (%s)", story_id, exc
+                )
+                continue
+            shared_facts = [
+                (pair[0], pair[1])
+                for pair in payload.get("shared_facts", [])
+                if isinstance(pair, list) and len(pair) == 2
+            ]
+            asyncio.create_task(self._run_synced_rewrite(story_id, turns, shared_facts))
 
     async def handle_audio(self, pcm: bytes) -> None:
         # Audio arriving outside LISTENING is stale — a frame in flight when
@@ -932,6 +968,25 @@ class SessionRunner:
         finally:
             self._transition(Event.REWRITE_DONE)
             await self._send_text_unbuffered(encode_rewriting_done())
+
+    async def _run_synced_rewrite(
+        self, story_id: str, turns: list, shared_facts: list[tuple[str, str]]
+    ) -> None:
+        """Runs the storybook rewrite for a story synced from
+        away-from-home mode -- deliberately does NOT touch self._machine
+        or send rewriting_started/rewriting_done: unlike a live story's
+        conclusion (_run_rewrite), a synced batch has no relationship to
+        this session's live REWRITING gate or to whatever connection is
+        currently attached, and must not perturb either."""
+        try:
+            await storybook.build_and_attach(
+                story_id, turns, shared_facts, llm=self._llm,
+                page_count=config.STORYBOOK_PAGE_COUNT,
+            )
+        except Exception:  # noqa: BLE001 - a background rewrite must survive any single bad story
+            logger.exception(
+                "unexpected failure running synced-story storybook rewrite for %s", story_id
+            )
 
     async def _fail_turn(self, message: str, turn_id: int) -> None:
         # Restore state before sending: if the transport is dead (closed

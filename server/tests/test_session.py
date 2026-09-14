@@ -1860,3 +1860,101 @@ async def test_handle_get_story_includes_has_image_and_illustrations_status(tmp_
         {"text": "Page one.", "has_image": True},
         {"text": "Page two.", "has_image": False},
     ]
+
+
+async def test_handle_sync_demo_stories_saves_and_schedules_rewrite(tmp_path, monkeypatch):
+    from tinytalk import story_store
+
+    monkeypatch.setattr(
+        story_store, "save_synced_story", lambda payload, **kw: tmp_path / f"20260909T120000-{payload['id']}.json"
+    )
+    # save_synced_story is monkeypatched to return a path without writing a
+    # real file, matching this file's existing _fake_save_story pattern --
+    # story_id_from_path only needs the path's name, not real content.
+    (tmp_path).mkdir(exist_ok=True)
+
+    build_calls = []
+
+    async def fake_build_and_attach(story_id, turns, shared_facts, **kwargs):
+        build_calls.append((story_id, turns, shared_facts))
+
+    monkeypatch.setattr("tinytalk.session.storybook.build_and_attach", fake_build_and_attach)
+
+    transport = FakeTransport()
+    session = make_session(transport)
+
+    stories = (
+        {
+            "id": "abc12345",
+            "created_at": "2026-09-09T12:00:00+00:00",
+            "turns": [
+                {"speaker": "child", "text": "tell me about a fox", "interrupted": False},
+                {"speaker": "agent", "text": "Once there was a fox.", "interrupted": False},
+            ],
+            "shared_facts": [["fox", "foxes are clever"]],
+        },
+    )
+    await session.handle_text(json.dumps({"type": "sync_demo_stories", "stories": list(stories)}))
+    await asyncio.sleep(0.01)  # let the fire-and-forget rewrite task run
+
+    assert len(build_calls) == 1
+    story_id, turns, shared_facts = build_calls[0]
+    assert story_id == "abc12345"
+    assert turns[0].speaker == "child"
+    assert turns[0].text == "tell me about a fox"
+    assert shared_facts == [("fox", "foxes are clever")]
+
+
+async def test_handle_sync_demo_stories_skips_a_story_that_fails_to_save(monkeypatch):
+    from tinytalk import story_store
+
+    monkeypatch.setattr(story_store, "save_synced_story", lambda payload, **kw: None)
+    build_calls = []
+
+    async def fake_build_and_attach(*args, **kwargs):
+        build_calls.append(args)
+
+    monkeypatch.setattr("tinytalk.session.storybook.build_and_attach", fake_build_and_attach)
+
+    transport = FakeTransport()
+    session = make_session(transport)
+    await session.handle_text(json.dumps({
+        "type": "sync_demo_stories",
+        "stories": [{"id": "x", "created_at": "2026-09-09T12:00:00+00:00", "turns": []}],
+    }))
+    await asyncio.sleep(0.01)
+
+    assert build_calls == []
+
+
+async def test_handle_sync_demo_stories_does_not_touch_the_rewriting_gate(tmp_path, monkeypatch):
+    """Regression test: synced stories must NOT send rewriting_done or
+    touch self._machine, so they can't interfere with a concurrent live
+    rewrite. This used to happen before _run_synced_rewrite was introduced."""
+    from tinytalk import story_store
+
+    monkeypatch.setattr(
+        story_store, "save_synced_story", lambda payload, **kw: tmp_path / f"20260909T120000-{payload.get('created_at', '').replace(':', '')}.json"
+    )
+    (tmp_path).mkdir(exist_ok=True)
+
+    async def fake_build_and_attach(*args, **kwargs):
+        await asyncio.sleep(0.02)  # Simulate a real rewrite taking time
+
+    monkeypatch.setattr("tinytalk.session.storybook.build_and_attach", fake_build_and_attach)
+
+    transport = FakeTransport()
+    session = make_session(transport)
+
+    stories = ({
+        "id": "should_be_ignored",
+        "created_at": "2026-09-09T12:00:00+00:00",
+        "turns": [{"speaker": "child", "text": "test", "interrupted": False}],
+        "shared_facts": [],
+    },)
+
+    await session.handle_text(json.dumps({"type": "sync_demo_stories", "stories": list(stories)}))
+    await asyncio.sleep(0.05)  # Wait for the synced rewrite to complete
+
+    # Verify no rewriting_done was sent (which would only happen if _run_rewrite was called)
+    assert "rewriting_done" not in transport.types()

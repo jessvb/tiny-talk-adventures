@@ -17,12 +17,18 @@
 ///
 /// Because `runTurn()` is `turnTask`'s actual body, cancelling `turnTask`
 /// on interrupt triggers real Swift structured-concurrency cooperative
-/// cancellation of an in-flight `await audio.play()` call -- confirmed
-/// with a test asserting the in-flight call observes cancellation and does
-/// not complete after the interrupt. `stopPlaybackImmediately()` is still
-/// called synchronously first, before any of that cancellation machinery
-/// runs, so the child stops hearing the agent instantly regardless of how
-/// long structured cancellation takes to propagate.
+/// cancellation of whatever runTurn() is currently awaiting. Real-turn
+/// audio calls `await audio.enqueue(_:)`, which schedules a buffer and
+/// returns without waiting for it to actually play -- it's that
+/// `enqueue(_:)` call, not per-chunk playback, that's the in-flight await
+/// cancelled here -- confirmed with a test asserting the in-flight
+/// `enqueue(_:)` call observes cancellation and does not complete after
+/// the interrupt. (Genuinely waiting for real playback completion happens
+/// only once per turn, at turnEnd -- see readyToShowTheEnd's doc comment.)
+/// `stopPlaybackImmediately()` is still called synchronously first, before
+/// any of that cancellation machinery runs, so the child stops hearing the
+/// agent instantly regardless of how long structured cancellation takes to
+/// propagate.
 import Foundation
 
 public actor SessionCoordinator {
@@ -186,14 +192,18 @@ public actor SessionCoordinator {
     /// REWRITE_STARTED transition and turn_end send happen before
     /// save_story()/encode_rewriting_started()). But "turn_end sent by
     /// the server" is not the same as "this client has finished PLAYING
-    /// that turn's audio": RealAudioEngine.play() genuinely awaits each
-    /// chunk's real-world playback completion (via its scheduleBuffer
-    /// completion handler), inside runTurn() -- a task consumeServerEvents()
-    /// does not wait for. consumeServerEvents() reads rewriting_started
+    /// that turn's audio": each `.audio` event inside runTurn() only
+    /// calls `await audio.enqueue(_:)`, which schedules a buffer and
+    /// returns immediately without waiting for it to actually play. The
+    /// one genuine wait for real playback completion happens once per
+    /// turn, in the `.message(.turnEnd(_))` case, via `await
+    /// audio.waitForPlaybackToFinish()` immediately before
+    /// noteTurnPlaybackFinished() -- a suspension consumeServerEvents()
+    /// does not go through. consumeServerEvents() reads rewriting_started
     /// off the wire (and would set isRewriting) essentially immediately
     /// after yielding that turn's turnEnd into turnContinuation, with no
-    /// suspension point forcing it to wait for runTurn() to actually
-    /// finish awaiting that audio. In practice this means
+    /// suspension point forcing it to wait for runTurn()'s own
+    /// waitForPlaybackToFinish() to resolve. In practice this means
     /// rewritingStarted routinely arrives WHILE the last sentence is
     /// still audibly playing, not after -- navigating to The End screen
     /// on isRewriting alone would cut the story off mid-sentence.
@@ -395,6 +405,14 @@ public actor SessionCoordinator {
     /// can just try the camera again.
     public func sendObjectSeen(label: String) async {
         try? await connection.send(.objectSeen(label: label))
+    }
+
+    /// Hands completed away-from-home stories to whatever connection is
+    /// current -- a no-op (best effort, like sendObjectSeen) if the send
+    /// fails; AppModel only clears PendingDemoStore after this returns
+    /// without throwing.
+    public func syncDemoStories(_ stories: [PendingDemoStoryPayload]) async throws {
+        try await connection.send(.syncDemoStories(stories: stories))
     }
 
     /// Sends the parent's current story-length preference to the server --
@@ -1048,7 +1066,17 @@ public actor SessionCoordinator {
                     // the wait, this is a harmless no-op (already false).
                     await setMuted(false)
                 }
-                await audio.play(pcm)
+                // Enqueues without waiting for real playback completion --
+                // multiple .audio events now queue back-to-back on the
+                // player node instead of each one fully blocking the next.
+                // The old per-play()-call timing diagnostic (measuring
+                // overshoot against a single buffer's own duration) no
+                // longer means the same thing once calls don't block each
+                // other -- see the turnEnd case below for its replacement,
+                // which measures the one point that still genuinely waits.
+                // See PlaybackQueueTracker's doc comment (AudioEngine.swift)
+                // and docs/superpowers/specs/2026-09-12-pipelined-tts-playback-design.md.
+                await audio.enqueue(pcm)
             case .message(.turnEnd(_)):
                 // Covers the empty-reply case: no .audio event ever
                 // arrives, so this is the only place left to stop a
@@ -1059,12 +1087,19 @@ public actor SessionCoordinator {
                 await setMuted(false)
                 _ = try? machine.handle(.turnEnd)
                 turnContinuation = nil
-                // Every audio chunk this turn received has, by this
-                // point, genuinely finished playing (each was awaited in
-                // the .audio case above before this loop could reach
-                // turnEnd) -- see readyToShowTheEnd's doc comment for why
-                // this specific point, not rewritingStarted's arrival, is
-                // the real "finished being spoken" signal.
+                // .audio events this turn only enqueue()'d their buffers
+                // (see the .audio case above) -- this is now the one
+                // place that actually waits for genuine playback
+                // completion, preserving readyToShowTheEnd's existing
+                // "audio has truly finished, not just been scheduled"
+                // guarantee (see that property's own doc comment for the
+                // past real bug -- The End appearing mid-sentence -- this
+                // prevents). Resolves immediately for an empty-reply turn,
+                // since no .audio event means nothing was ever enqueued.
+                let waitStarted = DispatchTime.now()
+                await audio.waitForPlaybackToFinish()
+                let waitElapsedSeconds = Double(DispatchTime.now().uptimeNanoseconds - waitStarted.uptimeNanoseconds) / 1_000_000_000
+                logDebug("waitForPlaybackToFinish() took \(String(format: "%.2f", waitElapsedSeconds))s at turnEnd")
                 noteTurnPlaybackFinished()
                 return
             case .message(.error(let text, _)):

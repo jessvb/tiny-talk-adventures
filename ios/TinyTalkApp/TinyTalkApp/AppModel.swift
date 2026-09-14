@@ -38,6 +38,15 @@ struct StoryTurn: Identifiable, Equatable {
 @MainActor
 final class AppModel: ObservableObject {
     @Published var serverAddress: String
+    @Published var awayFromHomeEnabled: Bool
+    /// Overrides AVSpeechTts's own Matilda-then-en-US default (see
+    /// resolveVoice()'s doc comment) -- a household wants to experiment
+    /// with alternatives. nil means "use that default," not "no voice."
+    /// Persisted the same way serverAddress is; read fresh at the start
+    /// of every connectAwayFromHome() (see that method), same as
+    /// awayFromHomeEnabled -- there is no live-update path since
+    /// on-device TTS has no analog to updateSettings() over the wire.
+    @Published var selectedVoiceIdentifier: String?
     /// Parent-adjustable story length -- see docs/superpowers/specs/
     /// 2026-09-09-story-length-settings-design.md. Persisted the same
     /// way serverAddress is; sent to the server on every connect() and
@@ -92,6 +101,7 @@ final class AppModel: ObservableObject {
     private var coordinator: SessionCoordinator?
     private var audioEngine: RealAudioEngine?
     private let objectRecognizer = VisionObjectRecognizer()
+    private let pendingDemoStore = PendingDemoStore()
     private var runLoop: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
     /// Which turn_id's transcript/reply has already been appended to
@@ -174,12 +184,53 @@ final class AppModel: ObservableObject {
 
     init() {
         serverAddress = UserDefaults.standard.string(forKey: "serverAddress") ?? "ws://192.168.1.1:8765"
+        awayFromHomeEnabled = UserDefaults.standard.bool(forKey: "awayFromHomeEnabled")
+        selectedVoiceIdentifier = UserDefaults.standard.string(forKey: "selectedVoiceIdentifier")
         let storedTurnCount = UserDefaults.standard.integer(forKey: "storyTurnCount")
         storyTurnCount = storedTurnCount == 0 ? 7 : storedTurnCount
         let storedPageCount = UserDefaults.standard.integer(forKey: "storybookPageCount")
         storybookPageCount = storedPageCount == 0 ? 5 : storedPageCount
         let hasOnboarded = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
         screen = hasOnboarded ? .landing : .onboarding
+    }
+
+    /// The Settings toggle calls this (not $awayFromHomeEnabled directly)
+    /// so the choice survives an app relaunch, matching serverAddress's
+    /// own persistence. Also disconnects if a connection is already live:
+    /// the connection type is only ever chosen once, at connect time (see
+    /// connectResumingIfPending()) -- nothing re-evaluates it while
+    /// already connected. Without this, flipping the toggle mid-session
+    /// (reachable from StoryView's own menu) silently kept talking to the
+    /// OLD backend while every "connected" status text (which reads this
+    /// flag, not which connection is actually live) claimed otherwise --
+    /// caught on-device: toggling away-from-home off produced no server
+    /// logs, no saved story, and the same on-device TTS audio as before.
+    /// A story's conversation state has no meaning across a backend
+    /// switch anyway (Groq and the home server are unrelated brains), so
+    /// disconnecting and forcing a fresh connect on the next "Create a
+    /// Story" is the correct behavior, not just an acceptable side effect
+    /// -- and disconnecting mid-story is already a supported path (see
+    /// disconnectUserInitiated(), which the "Home" menu item already
+    /// calls from the same screens this can fire from).
+    func setAwayFromHomeEnabled(_ enabled: Bool) {
+        let changingWhileConnected = enabled != awayFromHomeEnabled && isConnected
+        awayFromHomeEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "awayFromHomeEnabled")
+        if changingWhileConnected {
+            disconnect()
+        }
+    }
+
+    /// Settings' voice picker calls this. Unlike setAwayFromHomeEnabled(),
+    /// does not disconnect an in-progress session -- the current
+    /// connection's AVSpeechTts already captured whichever voice was
+    /// selected at connect time (see connectAwayFromHome()) and there is
+    /// no misleading status text at stake the way there is for the
+    /// away-from-home toggle, so this takes effect on the next story
+    /// only, matching storyLengthCard's own "next story" copy.
+    func setSelectedVoiceIdentifier(_ identifier: String?) {
+        selectedVoiceIdentifier = identifier
+        UserDefaults.standard.set(identifier, forKey: "selectedVoiceIdentifier")
     }
 
     /// What Onboarding's primary button calls -- requests mic permission up
@@ -306,11 +357,105 @@ final class AppModel: ObservableObject {
         }
 
         isConnected = true
+        let pending = pendingDemoStore.loadAll()
+        if !pending.isEmpty {
+            do {
+                try await coordinator.syncDemoStories(pending)
+                pendingDemoStore.clear()
+            } catch {
+                // Best effort, same reasoning as sendObjectSeen -- left
+                // for the next successful reconnect to retry; nothing
+                // is lost, since PendingDemoStore was not cleared.
+                print("AppModel: failed to sync demo stories: \(error)")
+            }
+        }
         // The server's per-session settings default to its own config
         // constants until told otherwise -- send the parent's current
         // preference now so even the very first story of this connection
         // uses it, not just the second one onward.
         Task { await coordinator.updateSettings(targetTurns: storyTurnCount, pageCount: storybookPageCount) }
+        startPollingState()
+    }
+
+    /// Away-from-home counterpart to connect() -- builds a DemoConnection
+    /// against Groq instead of a WebSocketServerConnection against the
+    /// Mac. See the design spec's disclosed simplification: unlike the
+    /// real server, there is no persistent session to resume if the app
+    /// is backgrounded mid-reply -- that reply is simply lost, not
+    /// replayed.
+    func connectAwayFromHome() async {
+        guard let groqKey = KeychainStore.get("groqApiKey"), !groqKey.isEmpty else {
+            lastErrorMessage = "no Groq API key saved -- add one in Settings, under Away From Home."
+            return
+        }
+        guard await RealAudioEngine.requestMicrophonePermission() else {
+            lastErrorMessage = "microphone access denied. Check Settings > Privacy > Microphone > TinyTalkApp."
+            return
+        }
+
+        let animalFactsKey = KeychainStore.get("animalFactsApiKey")
+        let ttsClient = AVSpeechTts(voiceIdentifier: selectedVoiceIdentifier)
+        // Same on-screen debug log as connection.onDebugEvent below --
+        // see AVSpeechTts.onDebugEvent's own doc comment for why this
+        // exists (diagnosing a resolved-wrong-voice report).
+        ttsClient.onDebugEvent = { [weak self] line in
+            Task { @MainActor in self?.appendAudioDebugEvent(line) }
+        }
+        let connection = DemoConnection(
+            chatClient: GroqChatClient(apiKey: groqKey),
+            sttClient: GroqWhisperClient(apiKey: groqKey),
+            ttsClient: ttsClient,
+            animalFactTracker: AnimalFactTracker(fetcher: AnimalFactsAPIClient(apiKey: animalFactsKey)),
+            onStoryCompleted: { [weak self] payload in
+                self?.pendingDemoStore.save(payload)
+            }
+        )
+        // Merge DemoConnection's own diagnostic lines into the same
+        // on-screen debug log as RealAudioEngine's -- see connect()'s
+        // audio.onDebugEvent wiring above for the same pattern. Hops onto
+        // the main actor since appendAudioDebugEvent mutates @Published
+        // state; the hook itself can fire from a background Task, not
+        // necessarily the main thread.
+        connection.onDebugEvent = { [weak self] line in
+            Task { @MainActor in self?.appendAudioDebugEvent(line) }
+        }
+
+        guard let audio = try? RealAudioEngine() else {
+            lastErrorMessage = "failed to configure audio session"
+            return
+        }
+        audioEngine = audio
+        audio.onDebugEvent = { [weak self] line in
+            Task { @MainActor in self?.appendAudioDebugEvent(line) }
+        }
+
+        guard let vadModelPath = Bundle.main.path(forResource: "silero_vad", ofType: "onnx"),
+              let vad = try? SileroVoiceActivityDetector(modelPath: vadModelPath) else {
+            lastErrorMessage = "failed to load VAD model"
+            return
+        }
+
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad, waitingDittyAudio: WaitingDitty.audio)
+        self.coordinator = coordinator
+        runLoop = Task { await coordinator.start() }
+
+        let (micStream, micContinuation) = AsyncStream<Data>.makeStream()
+        micStreamContinuation = micContinuation
+        micConsumerTask = Task { [weak self] in
+            for await pcm in micStream {
+                await self?.coordinator?.captureAudio(pcm)
+            }
+        }
+
+        do {
+            try await audio.startCapturing { pcm in micContinuation.yield(pcm) }
+        } catch {
+            lastErrorMessage = "could not start audio capture: \(error.localizedDescription). Check Settings > Privacy > Microphone."
+            disconnect()
+            return
+        }
+
+        isConnected = true
         startPollingState()
     }
 
@@ -381,7 +526,11 @@ final class AppModel: ObservableObject {
     func connectResumingIfPending() async {
         let resumingTurnId = pendingResumeTurnId
         pendingResumeTurnId = nil
-        await connect(resumingTurnId: resumingTurnId)
+        if awayFromHomeEnabled {
+            await connectAwayFromHome()
+        } else {
+            await connect(resumingTurnId: resumingTurnId)
+        }
     }
 
     /// What the "Finish this story" menu item calls -- see

@@ -27,6 +27,14 @@ def test_blocked_words_are_unsafe(text):
     assert is_safe(text) is False
 
 
+def test_killing_is_unsafe():
+    # Parity guard: Safety.swift's denylist gained "killing" in commit
+    # c580f6e to satisfy testExtractFactsDropsAnUnsafeField's slogan text
+    # "known for a killing spree". Keep the Python source in sync so both
+    # ports agree on the same input.
+    assert is_safe("The wolf was known for a killing spree.") is False
+
+
 @pytest.mark.parametrize(
     "text",
     [

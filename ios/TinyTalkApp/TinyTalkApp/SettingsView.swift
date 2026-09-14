@@ -1,4 +1,7 @@
+import AVFoundation
 import SwiftUI
+import TinyTalkCore
+import TinyTalkPlatform
 
 /// Grown-up settings screen (design 1a). The design's "Elsie's voice speed" /
 /// "Real animal facts" / "Camera inspiration" rows are omitted here -- none
@@ -15,6 +18,22 @@ struct SettingsView: View {
     /// watching the coordinator's debugLog live, not something a curious
     /// child tapping around Settings should stumble into.
     @State private var showDebugLogSheet = false
+    /// Revealed by the same long-press as showDebugLogSheet -- see that
+    /// property's doc comment. Not persisted: resets to hidden each time
+    /// Settings is reopened, same as the debug sheet requires
+    /// re-discovering the gesture.
+    @State private var showAwayFromHomeCard = false
+    @State private var groqApiKey: String = KeychainStore.get("groqApiKey") ?? ""
+    @State private var animalFactsApiKey: String = KeychainStore.get("animalFactsApiKey") ?? ""
+    /// Voice picker opens as its own sheet (same pattern as
+    /// showDebugLogSheet below), not an inline Picker(.pickerStyle(.menu))
+    /// -- confirmed on-device (2026-09-14) that .menu's UIMenu rendering
+    /// glitches and stops scrolling past roughly its first ~13 items.
+    /// AVSpeechTts.availableEnglishVoices() commonly returns 30-50+
+    /// entries (every English region x quality tier is a separate
+    /// speechVoices() entry) -- well past what UIMenu handles reliably;
+    /// a List-based sheet has no such limit.
+    @State private var showVoicePickerSheet = false
 
     var body: some View {
         ZStack {
@@ -27,6 +46,7 @@ struct SettingsView: View {
                         serverCard
                         storyLengthCard
                         underTheHoodCard
+                        awayFromHomeCard
                         storybookPreviewCard
                         replayButton
                     }
@@ -36,6 +56,9 @@ struct SettingsView: View {
         }
         .sheet(isPresented: $showDebugLogSheet) {
             DebugLogSheet(model: model)
+        }
+        .sheet(isPresented: $showVoicePickerSheet) {
+            VoicePickerSheet(model: model)
         }
     }
 
@@ -90,7 +113,11 @@ struct SettingsView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
             }
 
-            Text("Your Mac on the home WiFi. Speech, story and voice all run there — nothing is sent to the internet.")
+            Text(
+                model.awayFromHomeEnabled
+                    ? "Away from home: Elsie's brain is in Groq's cloud right now, not your Mac."
+                    : "Your Mac on the home WiFi. Speech, story and voice all run there — nothing is sent to the internet."
+            )
                 .font(TTA.Typography.body(13.5))
                 .foregroundColor(TTA.Palette.inkSoft)
 
@@ -197,6 +224,7 @@ struct SettingsView: View {
                 // not just its count. No visual affordance on purpose.
                 .onLongPressGesture(minimumDuration: 1.0) {
                     showDebugLogSheet = true
+                    showAwayFromHomeCard = true
                 }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -213,6 +241,102 @@ struct SettingsView: View {
         .padding(16)
         .background(TTA.Palette.cream)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var awayFromHomeCard: some View {
+        if showAwayFromHomeCard {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("AWAY FROM HOME")
+                    .font(TTA.Typography.display(12))
+                    .tracking(1.5)
+                    .foregroundColor(TTA.Palette.inkSoft)
+
+                Text("For demos only, away from the home WiFi: speech and story go through Groq's cloud AI instead of your Mac. Needs a free Groq API key.")
+                    .font(TTA.Typography.body(12.5))
+                    .foregroundColor(TTA.Palette.inkSoft)
+
+                SecureField("Groq API key", text: $groqApiKey)
+                    .font(.system(.body, design: .monospaced))
+                    .padding(11)
+                    .background(TTA.Palette.paper)
+                    .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .onChange(of: groqApiKey) { newValue in
+                        if newValue.isEmpty {
+                            KeychainStore.delete("groqApiKey")
+                        } else {
+                            KeychainStore.set(newValue, forKey: "groqApiKey")
+                        }
+                    }
+
+                SecureField("API Ninjas key (optional -- animal facts)", text: $animalFactsApiKey)
+                    .font(.system(.body, design: .monospaced))
+                    .padding(11)
+                    .background(TTA.Palette.paper)
+                    .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .onChange(of: animalFactsApiKey) { newValue in
+                        if newValue.isEmpty {
+                            KeychainStore.delete("animalFactsApiKey")
+                        } else {
+                            KeychainStore.set(newValue, forKey: "animalFactsApiKey")
+                        }
+                    }
+
+                Toggle(
+                    "Away-from-home mode",
+                    isOn: Binding(
+                        get: { model.awayFromHomeEnabled },
+                        set: { model.setAwayFromHomeEnabled($0) }
+                    )
+                )
+                .foregroundColor(TTA.Palette.inkSoft)
+                .disabled(groqApiKey.isEmpty)
+                .tint(TTA.Palette.wood)
+
+                if model.awayFromHomeEnabled {
+                    Text("On: Elsie's brain runs in Groq's cloud right now, not your Mac.")
+                        .font(TTA.Typography.body(11.5))
+                        .foregroundColor(TTA.Palette.alert)
+                }
+
+                voicePickerRow
+
+                Text("Changes apply to your next story, not the one you're in now.")
+                    .font(TTA.Typography.body(12.5))
+                    .foregroundColor(TTA.Palette.inkSoft)
+            }
+            .padding(16)
+            .background(TTA.Palette.cream)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+    }
+
+    /// AVSpeechTts.resolveVoice() already picks Matilda by default (see
+    /// that method's doc comment) -- this just lets a household try
+    /// alternatives. Opens VoicePickerSheet rather than an inline Picker
+    /// -- see showVoicePickerSheet's own doc comment for why.
+    private var voicePickerRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("STORYTELLER VOICE")
+                .font(TTA.Typography.display(12))
+                .tracking(1.5)
+                .foregroundColor(TTA.Palette.inkSoft)
+
+            Button {
+                showVoicePickerSheet = true
+            } label: {
+                HStack {
+                    Text(VoicePickerSheet.label(forIdentifier: model.selectedVoiceIdentifier))
+                        .foregroundColor(TTA.Palette.ink)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .foregroundColor(TTA.Palette.inkSoft)
+                }
+                .padding(11)
+                .background(TTA.Palette.paper)
+                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+            }
+        }
     }
 
     /// Developer preview of the Library/Reading/The End screens against
@@ -318,5 +442,88 @@ struct DebugLogSheet: View {
                 }
             }
         }
+    }
+}
+
+/// A tappable List, not Picker(.pickerStyle(.menu)) -- see
+/// SettingsView.showVoicePickerSheet's doc comment for why: UIMenu
+/// (what .menu renders as) glitches and stops scrolling past roughly its
+/// first ~13 items, confirmed on-device against
+/// AVSpeechTts.availableEnglishVoices()'s typical 30-50+ entries. A List
+/// has no such limit -- same reasoning DebugLogSheet already established
+/// for this screen's other sheet.
+struct VoicePickerSheet: View {
+    @ObservedObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    /// Shared with voicePickerRow's button label so the row and the
+    /// sheet's own checkmark always describe the same voice the same
+    /// way. Voice's own quality tier is already baked into
+    /// AVSpeechSynthesisVoice.name for Enhanced/Premium voices on this
+    /// OS (confirmed on-device 2026-09-14 -- see AVSpeechTts.swift's
+    /// resolveVoice() doc comment), so this shows voice.name as-is
+    /// rather than appending its own quality suffix and risking a
+    /// duplicate like "Matilda (Premium) (Premium)".
+    static func label(forIdentifier identifier: String?) -> String {
+        guard let identifier,
+              let voice = AVSpeechTts.availableEnglishVoices().first(where: { $0.identifier == identifier }) else {
+            return "Default (Matilda, if downloaded)"
+        }
+        return "\(voice.name) (\(voice.language))"
+    }
+
+    var body: some View {
+        NavigationView {
+            List {
+                voiceRow(label: "Default (Matilda, if downloaded)", isSelected: model.selectedVoiceIdentifier == nil) {
+                    model.setSelectedVoiceIdentifier(nil)
+                }
+                ForEach(AVSpeechTts.availableEnglishVoices(), id: \.identifier) { voice in
+                    voiceRow(
+                        label: "\(voice.name) (\(voice.language))",
+                        isSelected: model.selectedVoiceIdentifier == voice.identifier
+                    ) {
+                        model.setSelectedVoiceIdentifier(voice.identifier)
+                    }
+                }
+            }
+            // Root cause of the barely-visible-text report: TTA.Palette.ink
+            // is a fixed dark warm color, designed for this app's own fixed
+            // light "paper" backgrounds (used explicitly everywhere else in
+            // Settings) -- NOT for List's default background, which follows
+            // the system's light/dark appearance. In dark mode that's dark
+            // ink text on a dark system background. Rather than just
+            // picking a lighter fixed text color (which would then be
+            // low-contrast in LIGHT system mode instead), this gives the
+            // List the same explicit paper background the rest of the app
+            // already uses regardless of system appearance.
+            .scrollContentBackground(.hidden)
+            .background(TTA.Palette.outerPaper)
+            .navigationTitle("Storyteller voice")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func voiceRow(label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            action()
+            dismiss()
+        } label: {
+            HStack {
+                Text(label)
+                    .foregroundColor(TTA.Palette.ink)
+                Spacer()
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .foregroundColor(TTA.Palette.wood)
+                }
+            }
+        }
+        .listRowBackground(TTA.Palette.paper)
     }
 }

@@ -72,6 +72,7 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     /// formatter matters here specifically (this fires from a notification
     /// callback and a scheduleBuffer completion, not from a fixed thread).
     public var onDebugEvent: (@Sendable (String) -> Void)?
+    private let playbackQueueTracker = PlaybackQueueTracker()
 
     public init() throws {
         let session = AVAudioSession.sharedInstance()
@@ -409,6 +410,13 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
 
     public func stopPlaybackImmediately() {
         playerNode.stop()
+        // A stopped/cancelled buffer's own scheduleBuffer completion
+        // callback is not guaranteed to fire -- see play()'s own doc
+        // comments on why this file already distrusts that assumption
+        // elsewhere. Without this, a future turn's
+        // waitForPlaybackToFinish() could hang forever waiting for a
+        // buffer this stop just discarded.
+        playbackQueueTracker.reset()
     }
 
     public func play(_ pcm: Data) async {
@@ -443,6 +451,7 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         // that hangs whichever caller is awaiting this play() call
         // (runTurn()'s TTS loop, or the waiting ditty) indefinitely.
         let gate = PlaybackCompletionGate()
+        let timeoutNanos = Self.hangGuardTimeoutNanos(forBufferFrameLength: buffer.frameLength)
         await withCheckedContinuation { continuation in
             // completionCallbackType: .dataPlayedBack -- the plain
             // scheduleBuffer(_:completionHandler:) overload used here
@@ -477,20 +486,107 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             // re-invoking playerNode.play() (since isPlaying still read
             // true), so scheduled buffers just sat there timing out one
             // after another -- observed as many consecutive "did not fire
-            // within 3s" logs with genuinely no sound at all, self-healing
+            // within Ns" logs with genuinely no sound at all, self-healing
             // only once something else (stopWaitingDitty()) called
             // stopPlaybackImmediately() and reset the flag.
             playerNode.play()
             Task {
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                try? await Task.sleep(nanoseconds: timeoutNanos)
                 if gate.tryResume() {
-                    let message = "RealAudioEngine: play() scheduleBuffer completion did not fire within 3s (likely the engine was stopped mid-render by a concurrent reconfiguration) -- giving up on this buffer rather than hanging forever"
+                    let message = "RealAudioEngine: play() scheduleBuffer completion did not fire within \(Self.formatTimeoutSeconds(timeoutNanos))s (likely the engine was stopped mid-render by a concurrent reconfiguration) -- giving up on this buffer rather than hanging forever"
                     print(message)
                     self.onDebugEvent?("[\(DebugTimestamp.now())] \(message)")
                     continuation.resume()
                 }
             }
         }
+    }
+
+    /// Schedules a buffer without waiting for it to actually finish
+    /// playing -- see AudioPlaying.enqueue(_:)'s doc comment and
+    /// PlaybackQueueTracker's doc comment for why. Mirrors play(_:)'s
+    /// structure almost exactly (same ensureEngineRunning() guard, same
+    /// per-buffer PlaybackCompletionGate + duration-scaled hang-guard
+    /// timeout race -- see hangGuardTimeoutNanos(forBufferFrameLength:) --
+    /// same .dataPlayedBack completion type) -- the only difference is that
+    /// this does not wrap scheduling in a continuation that waits for
+    /// that race to resolve; it fires the schedule and the buffer's own
+    /// timeout fallback, then returns.
+    public func enqueue(_ pcm: Data) async {
+        guard let buffer = pcmDataToBuffer(pcm) else { return }
+        // Diagnostic only, no behavior change -- added 2026-09-14 to
+        // distinguish two live hypotheses for the enqueue() hang-guard
+        // timeout firing in bursts near a confirmed
+        // AVAudioEngineConfigurationChange (issue #29's continuation):
+        // is engine.isRunning itself still false at this point (meaning
+        // ensureEngineRunning()'s retry loop is doing real work), or is
+        // the engine reporting running fine while playerNode still isn't
+        // actually delivering completions (the "wedged node" case this
+        // file's rebuildCaptureTap() doc comment already documents once,
+        // for a different call path)? Logged only on the failure path
+        // below, not unconditionally, to avoid drowning the 50-entry
+        // debug log in per-buffer noise on the common success path.
+        let engineWasRunningAtEntry = engine.isRunning
+        let playerWasPlayingAtEntry = playerNode.isPlaying
+        guard await ensureEngineRunning() else {
+            print("RealAudioEngine: engine never started -- dropping this enqueue() call rather than hanging forever")
+            return
+        }
+        let generation = playbackQueueTracker.bufferEnqueued()
+        let gate = PlaybackCompletionGate()
+        playerNode.scheduleBuffer(buffer, at: nil, options: [], completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            if gate.tryResume() {
+                self?.playbackQueueTracker.bufferFinished(generation: generation)
+            }
+        }
+        // Deliberately unconditional -- see play()'s own doc comment on
+        // why guarding this with `if !playerNode.isPlaying` was actively
+        // harmful on real hardware.
+        playerNode.play()
+        let timeoutNanos = Self.hangGuardTimeoutNanos(forBufferFrameLength: buffer.frameLength)
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: timeoutNanos)
+            if gate.tryResume() {
+                let engineRunningNow = self?.engine.isRunning ?? false
+                let playerPlayingNow = self?.playerNode.isPlaying ?? false
+                let message = "RealAudioEngine: enqueue() scheduleBuffer completion did not fire within \(Self.formatTimeoutSeconds(timeoutNanos))s (likely the engine was stopped mid-render by a concurrent reconfiguration) -- giving up on this buffer rather than hanging forever [diag: engine.isRunning entry=\(engineWasRunningAtEntry) now=\(engineRunningNow), playerNode.isPlaying entry=\(playerWasPlayingAtEntry) now=\(playerPlayingNow)]"
+                print(message)
+                self?.onDebugEvent?("[\(DebugTimestamp.now())] \(message)")
+                self?.playbackQueueTracker.bufferFinished(generation: generation)
+            }
+        }
+    }
+
+    /// Issue #29: a fixed 3s hang-guard timeout (see this method's git
+    /// history) abandoned any buffer whose OWN real playback genuinely
+    /// takes longer than that -- confirmed on-device (2026-09-14) as
+    /// several consecutive "did not fire within 3s" debug-log lines in a
+    /// single reply, with no backgrounding/reconnect in between, which is
+    /// this issue's own stated confirmation bar. Worse under this file's
+    /// enqueue()/waitForPlaybackToFinish() pipelining (added after #29 was
+    /// filed): enqueue() no longer waits for one buffer before scheduling
+    /// the next, so a single stall-inducing reconfiguration (e.g.
+    /// rebuildCaptureTap()'s engine.stop()) can now strand MANY buffers at
+    /// once instead of just the one mid-render -- a larger blast radius
+    /// for the same underlying bug. Scaling the timeout to the buffer's
+    /// own duration (plus a fixed grace period for the genuine
+    /// engine-stopped-mid-render case this timeout also exists for) fixes
+    /// both without weakening the original hang-guard: the 3s floor keeps
+    /// short/empty buffers covered exactly as before.
+    private static func hangGuardTimeoutNanos(forBufferFrameLength frameLength: AVAudioFrameCount) -> UInt64 {
+        let bufferDurationSeconds = Double(frameLength) / Self.wireSampleRate
+        let grace = 2.0
+        return UInt64(max(3.0, bufferDurationSeconds + grace) * 1_000_000_000)
+    }
+
+    private static func formatTimeoutSeconds(_ nanos: UInt64) -> String {
+        String(format: "%.1f", Double(nanos) / 1_000_000_000)
+    }
+
+    /// Suspends until every buffer enqueued via enqueue(_:) so far has
+    /// genuinely finished playing.
+    public func waitForPlaybackToFinish() async {
+        await playbackQueueTracker.waitForIdle()
     }
 
     /// Retries engine.start() a handful of times with a short delay between
