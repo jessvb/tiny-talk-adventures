@@ -91,9 +91,20 @@ class StableDiffusionBackend:
             # module's docstring and the Global Constraints section of
             # this plan. The default built-in safety checker is required.
         ).to("mps")
-        # Recommended by Hugging Face's own MPS guide for any machine
-        # with less than 64GB unified memory -- this M1 (16GB) qualifies.
-        pipeline.enable_attention_slicing()
+        # Deliberately NOT calling enable_attention_slicing() -- tried
+        # first (per generic HF guidance for <64GB machines), but
+        # confirmed on real hardware to break load_ip_adapter() outright:
+        # slicing swaps every attention processor to SlicedAttnProcessor
+        # (constructor requires a slice_size argument), and
+        # load_ip_adapter()'s own conversion logic re-instantiates each
+        # existing self-attention processor's class with NO arguments --
+        # crashing with "SlicedAttnProcessor.__init__() missing 1
+        # required positional argument: 'slice_size'". Also unnecessary
+        # here: this pipeline's torch>=2.0 already gives every processor
+        # scaled_dot_product_attention (AttnProcessor2_0) by default,
+        # which diffusers' own enable_attention_slicing() docs call
+        # "already very memory efficient" -- and warn that combining the
+        # two "can lead to serious slow downs."
         pipeline.load_lora_weights(config.IMAGE_GEN_LORA)
         return pipeline
 
