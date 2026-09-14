@@ -116,13 +116,14 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
                 objectTracker = ObjectTracker()
             }
             await animalFactTracker.reset()
-        case .syncDemoStories, .listStories, .getStory, .concludeStory, .updateSettings:
+        case .syncDemoStories, .listStories, .getStory, .concludeStory, .updateSettings, .getPageImage:
             // None of these are ever legitimately sent to a DemoConnection:
             // syncDemoStories is only issued by AppModel.connect()'s real
             // (LAN) path once already reconnected to the actual server (see
             // SessionCoordinator.syncDemoStories); listStories/getStory/
-            // concludeStory/updateSettings all concern the real server's
-            // saved-story library and settings, which a Groq-backed demo
+            // concludeStory/updateSettings/getPageImage all concern the real
+            // server's saved-story library and settings (getPageImage's
+            // Stable Diffusion pipeline included), which a Groq-backed demo
             // session has no equivalent of. No-op here rather than
             // unreachable/fatalError so a future caller mistake fails
             // silently (matching every other best-effort send in this file)

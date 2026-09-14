@@ -139,6 +139,48 @@ public actor SessionCoordinator {
     public private(set) var isRewriting = false
     public private(set) var latestStoryList: [SavedStorySummary]?
     public private(set) var latestStoryDetail: SavedStoryDetail?
+    /// Every page-image request's result received so far, keyed
+    /// "storyId#pageIndex" (matching AppModel.pageImages' own key format
+    /// exactly, so its poll loop can merge this wholesale -- see
+    /// AppModel.swift's startPollingState()). Accumulating, not a
+    /// single-slot "latest" value: SwiftUI's TabView(.page) style fires
+    /// .onAppear for more than one page during a swipe transition, so
+    /// ReadingView routinely has two+ getPageImage() calls in flight for
+    /// DIFFERENT pages at once. An earlier single-slot design
+    /// (latestPageImage: PageImageResult?) silently lost whichever
+    /// request's response arrived first once a second one overwrote it
+    /// before AppModel's poll loop got a chance to read it -- that page's
+    /// art then never showed, and never retried, since ReadingView's own
+    /// dedupe had already marked it "requested". Never pruned entries for
+    /// a story the child has moved on from -- harmless (AppModel/
+    /// ReadingView only ever read keys for the currently-open story), and
+    /// simpler than reasoning about when it would be safe to evict one.
+    public private(set) var pageImages: [String: Data] = [:]
+    /// Every getPageImage() request sent that hasn't yet been resolved by
+    /// a matching page_image_done marker, in the order sent -- see
+    /// getPageImage() and consumeServerEvents()'s .message(.pageImageDone)
+    /// handling below. A FIFO queue (not a single optional) for the same
+    /// reason pageImages is a dictionary: more than one request can be
+    /// genuinely in flight at once. FIFO ordering is safe here because
+    /// the server's connection-handling loop awaits each incoming
+    /// message's handler to completion before reading the next one (see
+    /// session.py's handle_text/handle_connection), so responses to
+    /// get_page_image requests arrive in the exact order the requests
+    /// were sent -- not merely usually, but guaranteed by the server's own
+    /// single-threaded-per-connection handling.
+    private var pendingPageImageRequests: [(storyId: String, pageIndex: Int)] = []
+    /// The most recently arrived .audio frame while ANY page-image
+    /// request is pending -- see the .audio handling in
+    /// consumeServerEvents() below. A single slot (not one per pending
+    /// request) is safe given the FIFO guarantee above: the server sends
+    /// at most one binary frame per get_page_image request, immediately
+    /// followed by that request's own page_image_done marker, before ever
+    /// starting the next one -- so at most one such frame is ever
+    /// "unclaimed" at a time. Cleared the instant its matching marker
+    /// consumes it (whether or not that marker actually carried an
+    /// image), so a later marker can never reuse stale bytes that
+    /// belonged to an earlier request.
+    private var pendingPageImageBytes: Data?
     /// True once BOTH signals for "the story just concluded, AND the
     /// concluding turn's audio has genuinely finished playing" have been
     /// observed. A UI must wait for this (not just isRewriting) before
@@ -539,6 +581,19 @@ public actor SessionCoordinator {
         turnContinuation?.finish()
         turnContinuation = nil
         turnTask?.cancel()
+        // A lost connection means no page_image_done marker for ANY
+        // currently-pending request will ever arrive -- see
+        // pendingPageImageRequests' doc comment. This matters even though
+        // .closed itself ends consumeServerEvents() for good, because this
+        // method is also reached from the SEND side (a control-frame send
+        // failing in handleSpeechStart()/handleSpeechEnd()/interrupt()),
+        // which leaves consumeServerEvents() running -- without this, a
+        // stuck pendingPageImageRequests queue would permanently divert
+        // every later .audio frame away from playback instead of to a live
+        // turn. A disconnect invalidates EVERYTHING in flight, not just the
+        // oldest request, so the whole queue is cleared, not just one entry.
+        pendingPageImageRequests.removeAll()
+        pendingPageImageBytes = nil
         // Captured BEFORE machine.handle(.disconnected) below overwrites
         // machine.state -- see resumableTurnIdAtDisconnect's doc comment for
         // why this has to happen exactly here. Same criteria
@@ -610,10 +665,48 @@ public actor SessionCoordinator {
                 return
             }
 
-            if case .audio = event {
+            if case .audio(let data) = event {
+                if !pendingPageImageRequests.isEmpty {
+                    // Assumes the server sends a requested page image as
+                    // exactly one binary frame -- if that ever changes to
+                    // multiple chunks, this would need to accumulate them
+                    // instead of overwriting. Safe to stash in this single
+                    // slot even with multiple requests in flight: see
+                    // pendingPageImageBytes' own doc comment for the FIFO
+                    // guarantee that makes this correct.
+                    pendingPageImageBytes = data
+                    continue
+                }
                 guard isCurrentTurnAudio else { continue }
                 turnContinuation?.yield(event)
                 continue
+            }
+
+            if case .message(.error) = event, !pendingPageImageRequests.isEmpty {
+                // A get_page_image failure (missing story, out-of-range
+                // page_index) is reported as a generic error frame and
+                // session.py's handle_get_page_image never sends a
+                // page_image_done marker in that case -- see
+                // pendingPageImageRequests' doc comment. The wire protocol
+                // gives no way to correlate a specific error back to any
+                // one specific pending page-image request (the server's
+                // error path uses whatever turn_id happens to be current,
+                // not anything tied to the request, and with more than one
+                // request in flight there's no way to tell which one this
+                // error was even for), so ANY error while a request is
+                // pending is treated as a safe-to-clear signal for the
+                // WHOLE queue. Worst case this clears still-legitimately-
+                // in-flight requests early -- those pages' images just
+                // never show up (no crash, no silence) -- which is far
+                // better than leaving pendingPageImageRequests stuck
+                // forever, which would permanently divert every later
+                // .audio frame away from playback (see the branch just
+                // above). Deliberately does NOT `continue`: the error frame
+                // itself still needs to fall through to the normal
+                // turn-scoped error handling below (lastErrorMessage /
+                // turnContinuation) unchanged.
+                pendingPageImageRequests.removeAll()
+                pendingPageImageBytes = nil
             }
 
             // Story-lifecycle events carry no turn_id -- they're not
@@ -639,6 +732,33 @@ public actor SessionCoordinator {
             case .message(.storyDetail(let detail)):
                 latestStoryDetail = detail
                 continue
+            case .message(.pageImageDone(let storyId, let pageIndex, let hasImage)):
+                // No turn_id, same as the other story-lifecycle events
+                // above -- see pendingPageImageRequests' doc comment for
+                // why the .audio case above stashes the preceding binary
+                // frame in pendingPageImageBytes rather than yielding it
+                // into turnContinuation. Searches for the matching entry
+                // (by storyId AND pageIndex) rather than blindly popping
+                // the front -- it should typically BE at the front given
+                // FIFO ordering, but searching stays robust rather than
+                // assuming it, and leaves the queue untouched if nothing
+                // matches (mirroring the old single-slot code's behavior
+                // for a mismatched marker -- see
+                // testPageImageDoneWithMismatchedIdsLeavesPendingRequestIntact).
+                if let index = pendingPageImageRequests.firstIndex(where: {
+                    $0.storyId == storyId && $0.pageIndex == pageIndex
+                }) {
+                    pendingPageImageRequests.remove(at: index)
+                    if hasImage, let bytes = pendingPageImageBytes {
+                        pageImages["\(storyId)#\(pageIndex)"] = bytes
+                    }
+                    // Cleared unconditionally once consumed by ITS matching
+                    // marker, whether or not this marker carried an image --
+                    // these bytes must never be reused for a later,
+                    // different request's marker.
+                    pendingPageImageBytes = nil
+                }
+                continue
             default:
                 break
             }
@@ -653,7 +773,8 @@ public actor SessionCoordinator {
                 eventTurnId = turnId
             case .audio, .closed,
                  .message(.rewritingStarted), .message(.rewritingDone),
-                 .message(.storyList), .message(.storyDetail):
+                 .message(.storyList), .message(.storyDetail),
+                 .message(.pageImageDone):
                 fatalError("unreachable: handled above")
             }
 
@@ -861,6 +982,32 @@ public actor SessionCoordinator {
         try? await connection.send(.getStory(storyId: storyId))
     }
 
+    /// See protocol.py's GetPageImage. Fire-and-forget; the response
+    /// updates pageImages. Safe to call again for a different page while
+    /// an earlier request is still in flight -- see
+    /// pendingPageImageRequests' doc comment for why this queues rather
+    /// than overwrites.
+    public func getPageImage(storyId: String, pageIndex: Int) async {
+        let request = (storyId: storyId, pageIndex: pageIndex)
+        pendingPageImageRequests.append(request)
+        do {
+            try await connection.send(.getPageImage(storyId: storyId, pageIndex: pageIndex))
+        } catch {
+            // This specific request never reached the server, so nothing
+            // will ever arrive to resolve it -- remove exactly this entry
+            // (not the whole queue; other requests already in flight are
+            // unaffected) rather than leaving it stuck with a `try?`,
+            // which would permanently divert a later .audio frame away
+            // from playback (see pendingPageImageRequests' doc comment and
+            // the .audio branch in consumeServerEvents()).
+            if let index = pendingPageImageRequests.firstIndex(where: {
+                $0.storyId == request.storyId && $0.pageIndex == request.pageIndex
+            }) {
+                pendingPageImageRequests.remove(at: index)
+            }
+        }
+    }
+
     /// Starts the waiting-ditty loop for a turn resume() already set up --
     /// split out for ordering reasons only, see resume()'s doc comment.
     /// Guards on still being .waitingForReply since, by the time the
@@ -980,7 +1127,8 @@ public actor SessionCoordinator {
                 await setMuted(false)
                 return
             case .message(.rewritingStarted), .message(.rewritingDone),
-                 .message(.storyList), .message(.storyDetail):
+                 .message(.storyList), .message(.storyDetail),
+                 .message(.pageImageDone):
                 fatalError("unreachable: consumeServerEvents() never forwards story-lifecycle events into turnContinuation")
             }
         }

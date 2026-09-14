@@ -72,6 +72,13 @@ final class AppModel: ObservableObject {
     /// whichever screen navigates to them (a Library card tap, or a
     /// Settings preview button).
     @Published var selectedStory: SavedStoryDetail?
+    /// Fetched page images for the currently-open story, keyed by
+    /// "storyId#pageIndex" -- see requestPageImage() and
+    /// startPollingState()'s pageImage handling below. Never cleared
+    /// mid-session; a stale entry for a story the child has moved on
+    /// from is harmless (ReadingView only ever reads the key for its
+    /// own selectedStory).
+    @Published private(set) var pageImages: [String: Data] = [:]
     /// Mirrors the coordinator's isRewriting -- a UI (TheEndView) polls
     /// this to show/hide a "still being created" state.
     @Published var isRewriting = false
@@ -561,6 +568,19 @@ final class AppModel: ObservableObject {
         Task { await coordinatorToUpdate?.setMuted(newValue) }
     }
 
+    /// What ReadingView calls (once per visible page) to fetch that page's
+    /// illustration -- see pageImages' doc comment. Guarded against
+    /// re-requesting a key already present so a page staying on screen
+    /// across poll ticks/re-renders doesn't spam the server with duplicate
+    /// getPageImage() calls for the same image.
+    func requestPageImage(storyId: String, pageIndex: Int) {
+        let key = "\(storyId)#\(pageIndex)"
+        guard pageImages[key] == nil else { return }
+        Task { [weak self] in
+            await self?.coordinator?.getPageImage(storyId: storyId, pageIndex: pageIndex)
+        }
+    }
+
     /// What Settings' story-length steppers call on every change -- see
     /// storyTurnCount's doc comment. Persists immediately regardless of
     /// connection state; sends to the server immediately only if already
@@ -762,6 +782,7 @@ final class AppModel: ObservableObject {
                 let readyToShowTheEnd = await coordinator.readyToShowTheEnd
                 let storyList = await coordinator.latestStoryList
                 let storyDetail = await coordinator.latestStoryDetail
+                let coordinatorPageImages = await coordinator.pageImages
                 // Read regardless of `closed` (cheap, and reading it only
                 // inside the `guard closed` branch below would still be
                 // correct -- kept alongside the other coordinator reads
@@ -859,6 +880,18 @@ final class AppModel: ObservableObject {
                         self.selectedStory = storyDetail
                     } else if let storyDetail, self.screen == .theEnd, storyDetail.id == self.selectedStory?.id {
                         self.selectedStory = storyDetail
+                    }
+
+                    // Union merge: every key the coordinator has accumulated
+                    // that isn't already here gets copied over. Reading the
+                    // coordinator's own accumulating dictionary (rather than
+                    // a single "latest" value) is what makes this safe when
+                    // more than one page-image request is in flight at
+                    // once -- see SessionCoordinator.pageImages' doc
+                    // comment for why a single-slot design used to lose
+                    // whichever request's response arrived first.
+                    for (key, data) in coordinatorPageImages where self.pageImages[key] == nil {
+                        self.pageImages[key] = data
                     }
 
                     // The rewrite just finished (isRewriting's true->false

@@ -53,6 +53,9 @@ public enum ClientMessage: Sendable, Equatable {
     /// see protocol.py's UpdateSettings. Sent once after connecting and
     /// again whenever changed while connected.
     case updateSettings(targetTurns: Int, pageCount: Int)
+    /// Request the generated illustration for one page of a saved story
+    /// -- see protocol.py's GetPageImage.
+    case getPageImage(storyId: String, pageIndex: Int)
 
     public func encode() -> String {
         // Field order and separators are fixed here (no JSONEncoder) so the
@@ -93,6 +96,8 @@ public enum ClientMessage: Sendable, Equatable {
             return #"{"type":"conclude_story","turn_id":\#(turnId)}"#
         case .updateSettings(let targetTurns, let pageCount):
             return #"{"type":"update_settings","target_turns":\#(targetTurns),"page_count":\#(pageCount)}"#
+        case .getPageImage(let storyId, let pageIndex):
+            return #"{"type":"get_page_image","story_id":"\#(Self.jsonEscaped(storyId))","page_index":\#(pageIndex)}"#
         }
     }
 
@@ -134,6 +139,11 @@ public enum ServerEvent: Sendable, Equatable {
     case rewritingDone
     case storyList([SavedStorySummary])
     case storyDetail(SavedStoryDetail)
+    /// One page's illustration bytes were just sent as a binary frame
+    /// (when hasImage is true) -- see protocol.py's
+    /// encode_page_image_done(). hasImage false means that page has no
+    /// illustration; no binary frame was sent for this request.
+    case pageImageDone(storyId: String, pageIndex: Int, hasImage: Bool)
 }
 
 public enum ProtocolError: Error, Equatable {
@@ -172,6 +182,12 @@ public func decodeServerEvent(_ raw: String) throws -> ServerEvent {
             throw ProtocolError.malformed("story_detail missing id: \(raw)")
         }
         return .storyDetail(decodeStoryDetail(json, id: id))
+    case "page_image_done":
+        return .pageImageDone(
+            storyId: json["story_id"] as? String ?? "",
+            pageIndex: json["page_index"] as? Int ?? 0,
+            hasImage: json["has_image"] as? Bool ?? false
+        )
     default:
         throw ProtocolError.malformed("unknown server message type: \(type)")
     }
@@ -198,13 +214,18 @@ private func decodeStorySummary(_ json: [String: Any]) -> SavedStorySummary {
 /// decodeStorySummary above.
 private func decodeStoryDetail(_ json: [String: Any], id: String) -> SavedStoryDetail {
     let rawPages = json["pages"] as? [[String: Any]] ?? []
-    let pages = rawPages.map { StoryPage(text: $0["text"] as? String ?? "") }
+    let pages = rawPages.map {
+        StoryPage(text: $0["text"] as? String ?? "", hasImage: $0["has_image"] as? Bool ?? false)
+    }
+    let illustrationsStatus = (json["illustrations_status"] as? String)
+        .flatMap { IllustrationsStatus(rawValue: $0) }
     return SavedStoryDetail(
         id: id,
         title: json["title"] as? String,
         pages: pages,
         epilogue: json["epilogue"] as? String,
-        rewriteStatus: RewriteStatus(rawValue: json["rewrite_status"] as? String ?? "") ?? .pending
+        rewriteStatus: RewriteStatus(rawValue: json["rewrite_status"] as? String ?? "") ?? .pending,
+        illustrationsStatus: illustrationsStatus
     )
 }
 
