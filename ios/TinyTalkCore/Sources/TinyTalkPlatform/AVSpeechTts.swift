@@ -150,6 +150,23 @@ public final class AVSpeechTts: NSObject, SpeechSynthesizing, @unchecked Sendabl
         return AVSpeechSynthesisVoice(language: "en-US")
     }
 
+    /// English-language system voices, sorted by name, for a Settings
+    /// voice picker (a household wants to experiment with alternatives to
+    /// the default Matilda pick). Filtered to English only --
+    /// speechVoices() returns 100+ voices across every language iOS
+    /// ships, and this is a storyteller voice for an English-speaking
+    /// household. Returns whatever speechVoices() reports regardless of
+    /// actual download state (there is no public API to check that --
+    /// see resolveVoice()'s own doc comment on the same limitation); an
+    /// undownloaded Enhanced/Premium voice still works, just synthesized
+    /// at lower on-the-fly quality, so this degrades gracefully rather
+    /// than needing to filter anything out.
+    public static func availableEnglishVoices() -> [AVSpeechSynthesisVoice] {
+        AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language.hasPrefix("en") }
+            .sorted { $0.name < $1.name }
+    }
+
     private static func convert(_ buffer: AVAudioPCMBuffer, with converter: AVAudioConverter, to targetFormat: AVAudioFormat) -> Data? {
         let ratio = targetFormat.sampleRate / buffer.format.sampleRate
         let outFrameCapacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16

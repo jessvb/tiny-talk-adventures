@@ -1,5 +1,7 @@
+import AVFoundation
 import SwiftUI
 import TinyTalkCore
+import TinyTalkPlatform
 
 /// Grown-up settings screen (design 1a). The design's "Elsie's voice speed" /
 /// "Real animal facts" / "Camera inspiration" rows are omitted here -- none
@@ -284,10 +286,48 @@ struct SettingsView: View {
                         .font(TTA.Typography.body(11.5))
                         .foregroundColor(TTA.Palette.alert)
                 }
+
+                voicePickerRow
+
+                Text("Changes apply to your next story, not the one you're in now.")
+                    .font(TTA.Typography.body(12.5))
+                    .foregroundColor(TTA.Palette.inkSoft)
             }
             .padding(16)
             .background(TTA.Palette.cream)
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+    }
+
+    /// AVSpeechTts.resolveVoice() already picks Matilda by default (see
+    /// that method's doc comment) -- this just lets a household try
+    /// alternatives. Voice's own quality tier is already baked into
+    /// AVSpeechSynthesisVoice.name for Enhanced/Premium voices on this
+    /// OS (confirmed on-device 2026-09-14 -- see AVSpeechTts.swift's
+    /// resolveVoice() doc comment), so the label below shows voice.name
+    /// as-is rather than appending its own quality suffix and risking
+    /// a duplicate like "Matilda (Premium) (Premium)".
+    private var voicePickerRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("STORYTELLER VOICE")
+                .font(TTA.Typography.display(12))
+                .tracking(1.5)
+                .foregroundColor(TTA.Palette.inkSoft)
+
+            Picker(
+                "Storyteller voice",
+                selection: Binding(
+                    get: { model.selectedVoiceIdentifier },
+                    set: { model.setSelectedVoiceIdentifier($0) }
+                )
+            ) {
+                Text("Default (Matilda, if downloaded)").tag(String?.none)
+                ForEach(AVSpeechTts.availableEnglishVoices(), id: \.identifier) { voice in
+                    Text("\(voice.name) (\(voice.language))").tag(String?.some(voice.identifier))
+                }
+            }
+            .pickerStyle(.menu)
+            .tint(TTA.Palette.wood)
         }
     }
 

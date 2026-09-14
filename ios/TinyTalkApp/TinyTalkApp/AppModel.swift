@@ -39,6 +39,14 @@ struct StoryTurn: Identifiable, Equatable {
 final class AppModel: ObservableObject {
     @Published var serverAddress: String
     @Published var awayFromHomeEnabled: Bool
+    /// Overrides AVSpeechTts's own Matilda-then-en-US default (see
+    /// resolveVoice()'s doc comment) -- a household wants to experiment
+    /// with alternatives. nil means "use that default," not "no voice."
+    /// Persisted the same way serverAddress is; read fresh at the start
+    /// of every connectAwayFromHome() (see that method), same as
+    /// awayFromHomeEnabled -- there is no live-update path since
+    /// on-device TTS has no analog to updateSettings() over the wire.
+    @Published var selectedVoiceIdentifier: String?
     /// Parent-adjustable story length -- see docs/superpowers/specs/
     /// 2026-09-09-story-length-settings-design.md. Persisted the same
     /// way serverAddress is; sent to the server on every connect() and
@@ -170,6 +178,7 @@ final class AppModel: ObservableObject {
     init() {
         serverAddress = UserDefaults.standard.string(forKey: "serverAddress") ?? "ws://192.168.1.1:8765"
         awayFromHomeEnabled = UserDefaults.standard.bool(forKey: "awayFromHomeEnabled")
+        selectedVoiceIdentifier = UserDefaults.standard.string(forKey: "selectedVoiceIdentifier")
         let storedTurnCount = UserDefaults.standard.integer(forKey: "storyTurnCount")
         storyTurnCount = storedTurnCount == 0 ? 7 : storedTurnCount
         let storedPageCount = UserDefaults.standard.integer(forKey: "storybookPageCount")
@@ -203,6 +212,18 @@ final class AppModel: ObservableObject {
         if changingWhileConnected {
             disconnect()
         }
+    }
+
+    /// Settings' voice picker calls this. Unlike setAwayFromHomeEnabled(),
+    /// does not disconnect an in-progress session -- the current
+    /// connection's AVSpeechTts already captured whichever voice was
+    /// selected at connect time (see connectAwayFromHome()) and there is
+    /// no misleading status text at stake the way there is for the
+    /// away-from-home toggle, so this takes effect on the next story
+    /// only, matching storyLengthCard's own "next story" copy.
+    func setSelectedVoiceIdentifier(_ identifier: String?) {
+        selectedVoiceIdentifier = identifier
+        UserDefaults.standard.set(identifier, forKey: "selectedVoiceIdentifier")
     }
 
     /// What Onboarding's primary button calls -- requests mic permission up
@@ -366,7 +387,7 @@ final class AppModel: ObservableObject {
         }
 
         let animalFactsKey = KeychainStore.get("animalFactsApiKey")
-        let ttsClient = AVSpeechTts()
+        let ttsClient = AVSpeechTts(voiceIdentifier: selectedVoiceIdentifier)
         // Same on-screen debug log as connection.onDebugEvent below --
         // see AVSpeechTts.onDebugEvent's own doc comment for why this
         // exists (diagnosing a resolved-wrong-voice report).

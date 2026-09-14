@@ -25,4 +25,19 @@ final class AVSpeechTtsTests: XCTestCase {
         }
         XCTAssertTrue(chunks.allSatisfy { $0.isEmpty == false } || chunks.isEmpty)
     }
+
+    func testAvailableEnglishVoicesAreAllEnglishWithNoDuplicatesAndSortedByName() {
+        let voices = AVSpeechTts.availableEnglishVoices()
+        // Every macOS/iOS SDK ships at least one English system voice --
+        // an empty result here would mean the filter itself is broken,
+        // not that the test machine happens to have none installed.
+        XCTAssertFalse(voices.isEmpty)
+        for voice in voices {
+            XCTAssertTrue(voice.language.hasPrefix("en"), "\(voice.name) has language \(voice.language)")
+        }
+        let identifiers = voices.map { $0.identifier }
+        XCTAssertEqual(identifiers.count, Set(identifiers).count, "expected no duplicate voices")
+        let names = voices.map { $0.name }
+        XCTAssertEqual(names, names.sorted(), "expected voices sorted by name")
+    }
 }
