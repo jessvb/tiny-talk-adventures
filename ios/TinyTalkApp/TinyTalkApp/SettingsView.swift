@@ -25,6 +25,15 @@ struct SettingsView: View {
     @State private var showAwayFromHomeCard = false
     @State private var groqApiKey: String = KeychainStore.get("groqApiKey") ?? ""
     @State private var animalFactsApiKey: String = KeychainStore.get("animalFactsApiKey") ?? ""
+    /// Voice picker opens as its own sheet (same pattern as
+    /// showDebugLogSheet below), not an inline Picker(.pickerStyle(.menu))
+    /// -- confirmed on-device (2026-09-14) that .menu's UIMenu rendering
+    /// glitches and stops scrolling past roughly its first ~13 items.
+    /// AVSpeechTts.availableEnglishVoices() commonly returns 30-50+
+    /// entries (every English region x quality tier is a separate
+    /// speechVoices() entry) -- well past what UIMenu handles reliably;
+    /// a List-based sheet has no such limit.
+    @State private var showVoicePickerSheet = false
 
     var body: some View {
         ZStack {
@@ -47,6 +56,9 @@ struct SettingsView: View {
         }
         .sheet(isPresented: $showDebugLogSheet) {
             DebugLogSheet(model: model)
+        }
+        .sheet(isPresented: $showVoicePickerSheet) {
+            VoicePickerSheet(model: model)
         }
     }
 
@@ -301,12 +313,8 @@ struct SettingsView: View {
 
     /// AVSpeechTts.resolveVoice() already picks Matilda by default (see
     /// that method's doc comment) -- this just lets a household try
-    /// alternatives. Voice's own quality tier is already baked into
-    /// AVSpeechSynthesisVoice.name for Enhanced/Premium voices on this
-    /// OS (confirmed on-device 2026-09-14 -- see AVSpeechTts.swift's
-    /// resolveVoice() doc comment), so the label below shows voice.name
-    /// as-is rather than appending its own quality suffix and risking
-    /// a duplicate like "Matilda (Premium) (Premium)".
+    /// alternatives. Opens VoicePickerSheet rather than an inline Picker
+    /// -- see showVoicePickerSheet's own doc comment for why.
     private var voicePickerRow: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("STORYTELLER VOICE")
@@ -314,20 +322,20 @@ struct SettingsView: View {
                 .tracking(1.5)
                 .foregroundColor(TTA.Palette.inkSoft)
 
-            Picker(
-                "Storyteller voice",
-                selection: Binding(
-                    get: { model.selectedVoiceIdentifier },
-                    set: { model.setSelectedVoiceIdentifier($0) }
-                )
-            ) {
-                Text("Default (Matilda, if downloaded)").tag(String?.none)
-                ForEach(AVSpeechTts.availableEnglishVoices(), id: \.identifier) { voice in
-                    Text("\(voice.name) (\(voice.language))").tag(String?.some(voice.identifier))
+            Button {
+                showVoicePickerSheet = true
+            } label: {
+                HStack {
+                    Text(VoicePickerSheet.label(forIdentifier: model.selectedVoiceIdentifier))
+                        .foregroundColor(TTA.Palette.ink)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .foregroundColor(TTA.Palette.inkSoft)
                 }
+                .padding(11)
+                .background(TTA.Palette.paper)
+                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
             }
-            .pickerStyle(.menu)
-            .tint(TTA.Palette.wood)
         }
     }
 
@@ -431,6 +439,76 @@ struct DebugLogSheet: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+/// A tappable List, not Picker(.pickerStyle(.menu)) -- see
+/// SettingsView.showVoicePickerSheet's doc comment for why: UIMenu
+/// (what .menu renders as) glitches and stops scrolling past roughly its
+/// first ~13 items, confirmed on-device against
+/// AVSpeechTts.availableEnglishVoices()'s typical 30-50+ entries. A List
+/// has no such limit -- same reasoning DebugLogSheet already established
+/// for this screen's other sheet.
+struct VoicePickerSheet: View {
+    @ObservedObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    /// Shared with voicePickerRow's button label so the row and the
+    /// sheet's own checkmark always describe the same voice the same
+    /// way. Voice's own quality tier is already baked into
+    /// AVSpeechSynthesisVoice.name for Enhanced/Premium voices on this
+    /// OS (confirmed on-device 2026-09-14 -- see AVSpeechTts.swift's
+    /// resolveVoice() doc comment), so this shows voice.name as-is
+    /// rather than appending its own quality suffix and risking a
+    /// duplicate like "Matilda (Premium) (Premium)".
+    static func label(forIdentifier identifier: String?) -> String {
+        guard let identifier,
+              let voice = AVSpeechTts.availableEnglishVoices().first(where: { $0.identifier == identifier }) else {
+            return "Default (Matilda, if downloaded)"
+        }
+        return "\(voice.name) (\(voice.language))"
+    }
+
+    var body: some View {
+        NavigationView {
+            List {
+                voiceRow(label: "Default (Matilda, if downloaded)", isSelected: model.selectedVoiceIdentifier == nil) {
+                    model.setSelectedVoiceIdentifier(nil)
+                }
+                ForEach(AVSpeechTts.availableEnglishVoices(), id: \.identifier) { voice in
+                    voiceRow(
+                        label: "\(voice.name) (\(voice.language))",
+                        isSelected: model.selectedVoiceIdentifier == voice.identifier
+                    ) {
+                        model.setSelectedVoiceIdentifier(voice.identifier)
+                    }
+                }
+            }
+            .navigationTitle("Storyteller voice")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func voiceRow(label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            action()
+            dismiss()
+        } label: {
+            HStack {
+                Text(label)
+                    .foregroundColor(TTA.Palette.ink)
+                Spacer()
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .foregroundColor(TTA.Palette.wood)
                 }
             }
         }
