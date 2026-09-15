@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// Home screen (design 1a). "Read Stories" always renders the design's own
-/// empty-library state (disabled button + caption) -- there is no saved-
-/// story list to show yet; see AppModel/story_store.py's doc comments.
-/// Revisit once the storybook-persistence sub-project adds a real read API.
+/// Home screen (design 1a). "Read Stories" is a real button once
+/// model.libraryStories is non-empty (see AppModel.connect()'s
+/// listStories() trigger) -- otherwise shows the same disabled-look empty
+/// state as before.
 struct LandingView: View {
     @ObservedObject var model: AppModel
 
@@ -49,18 +49,32 @@ struct LandingView: View {
                     }
                     .buttonStyle(.ttaPrimary)
 
-                    VStack(spacing: 9) {
-                        Label("Read Stories", systemImage: "book.closed.fill")
-                            .font(TTA.Typography.display(22))
-                            .foregroundColor(TTA.Palette.cream.opacity(0.55))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 18)
-                            .background(TTA.Palette.cream.opacity(0.14))
-                            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                    if model.libraryStories.isEmpty {
+                        VStack(spacing: 9) {
+                            Label("Read Stories", systemImage: "book.closed.fill")
+                                .font(TTA.Typography.display(22))
+                                .foregroundColor(TTA.Palette.cream.opacity(0.55))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 18)
+                                .background(TTA.Palette.cream.opacity(0.14))
+                                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
 
-                        Text("No stories yet — make one with me first!")
-                            .font(TTA.Typography.story(13.5, italic: true))
-                            .foregroundColor(TTA.Palette.paper)
+                            Text("No stories yet — make one with me first!")
+                                .font(TTA.Typography.story(13.5, italic: true))
+                                .foregroundColor(TTA.Palette.paper)
+                        }
+                    } else {
+                        Button {
+                            model.screen = .library
+                        } label: {
+                            Label("Read Stories", systemImage: "book.closed.fill")
+                                .font(TTA.Typography.display(22))
+                                .foregroundColor(TTA.Palette.cream)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 18)
+                                .background(TTA.Palette.cream.opacity(0.14))
+                                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                        }
                     }
                 }
                 .padding(.horizontal, 26)

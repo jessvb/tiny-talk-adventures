@@ -377,6 +377,11 @@ final class AppModel: ObservableObject {
         // preference now so even the very first story of this connection
         // uses it, not just the second one onward.
         Task { await coordinator.updateSettings(targetTurns: storyTurnCount, pageCount: storybookPageCount) }
+        // So Landing's "Read Stories" button (LandingView.swift) is
+        // accurate from a cold launch, not just after a background/
+        // foreground cycle or a concluded story -- a story saved in a
+        // PREVIOUS session shouldn't require either of those first.
+        Task { await coordinator.listStories() }
         startPollingState()
     }
 
