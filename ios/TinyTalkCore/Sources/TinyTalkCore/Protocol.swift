@@ -56,6 +56,11 @@ public enum ClientMessage: Sendable, Equatable {
     /// Request the generated illustration for one page of a saved story
     /// -- see protocol.py's GetPageImage.
     case getPageImage(storyId: String, pageIndex: Int)
+    /// Request on-demand TTS audio for one saved-story page -- see
+    /// protocol.py's SynthesizePage. Streams multiple binary audio chunks
+    /// (unlike getPageImage's single frame), terminated by a
+    /// page_audio_done marker -- see ServerEvent.pageAudioDone.
+    case synthesizePage(storyId: String, pageIndex: Int)
 
     public func encode() -> String {
         // Field order and separators are fixed here (no JSONEncoder) so the
@@ -98,6 +103,8 @@ public enum ClientMessage: Sendable, Equatable {
             return #"{"type":"update_settings","target_turns":\#(targetTurns),"page_count":\#(pageCount)}"#
         case .getPageImage(let storyId, let pageIndex):
             return #"{"type":"get_page_image","story_id":"\#(Self.jsonEscaped(storyId))","page_index":\#(pageIndex)}"#
+        case .synthesizePage(let storyId, let pageIndex):
+            return #"{"type":"synthesize_page","story_id":"\#(Self.jsonEscaped(storyId))","page_index":\#(pageIndex)}"#
         }
     }
 
@@ -144,6 +151,12 @@ public enum ServerEvent: Sendable, Equatable {
     /// encode_page_image_done(). hasImage false means that page has no
     /// illustration; no binary frame was sent for this request.
     case pageImageDone(storyId: String, pageIndex: Int, hasImage: Bool)
+    /// All of this page's audio chunks have been sent as binary frames --
+    /// see protocol.py's encode_page_audio_done(). Unlike pageImageDone,
+    /// carries no hasImage-equivalent flag: synthesize_page always
+    /// produces audio for non-empty page text (no safety-check discard
+    /// path exists for TTS the way there is for illustrations).
+    case pageAudioDone(storyId: String, pageIndex: Int)
 }
 
 public enum ProtocolError: Error, Equatable {
@@ -187,6 +200,11 @@ public func decodeServerEvent(_ raw: String) throws -> ServerEvent {
             storyId: json["story_id"] as? String ?? "",
             pageIndex: json["page_index"] as? Int ?? 0,
             hasImage: json["has_image"] as? Bool ?? false
+        )
+    case "page_audio_done":
+        return .pageAudioDone(
+            storyId: json["story_id"] as? String ?? "",
+            pageIndex: json["page_index"] as? Int ?? 0
         )
     default:
         throw ProtocolError.malformed("unknown server message type: \(type)")

@@ -112,6 +112,13 @@ final class ProtocolTests: XCTestCase {
         )
     }
 
+    func testSynthesizePageEncodesStoryIdAndPageIndex() {
+        XCTAssertEqual(
+            ClientMessage.synthesizePage(storyId: "abcd1234", pageIndex: 2).encode(),
+            #"{"type":"synthesize_page","story_id":"abcd1234","page_index":2}"#
+        )
+    }
+
     func testDecodesTranscriptPartial() throws {
         let event = try decodeServerEvent(#"{"type": "transcript_partial", "text": "a fox", "turn_id": 5}"#)
         guard case .transcriptPartial(let text, let turnId) = event else {
@@ -178,6 +185,13 @@ final class ProtocolTests: XCTestCase {
             #"{"type": "page_image_done", "story_id": "abcd1234", "page_index": 1, "has_image": false}"#
         )
         XCTAssertEqual(event, .pageImageDone(storyId: "abcd1234", pageIndex: 1, hasImage: false))
+    }
+
+    func testDecodesPageAudioDone() throws {
+        let event = try decodeServerEvent(
+            #"{"type": "page_audio_done", "story_id": "abcd1234", "page_index": 1}"#
+        )
+        XCTAssertEqual(event, .pageAudioDone(storyId: "abcd1234", pageIndex: 1))
     }
 
     func testDecodesStoryList() throws {

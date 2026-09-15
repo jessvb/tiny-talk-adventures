@@ -774,7 +774,7 @@ public actor SessionCoordinator {
             case .audio, .closed,
                  .message(.rewritingStarted), .message(.rewritingDone),
                  .message(.storyList), .message(.storyDetail),
-                 .message(.pageImageDone):
+                 .message(.pageImageDone), .message(.pageAudioDone):
                 fatalError("unreachable: handled above")
             }
 
@@ -1128,7 +1128,7 @@ public actor SessionCoordinator {
                 return
             case .message(.rewritingStarted), .message(.rewritingDone),
                  .message(.storyList), .message(.storyDetail),
-                 .message(.pageImageDone):
+                 .message(.pageImageDone), .message(.pageAudioDone):
                 fatalError("unreachable: consumeServerEvents() never forwards story-lifecycle events into turnContinuation")
             }
         }
