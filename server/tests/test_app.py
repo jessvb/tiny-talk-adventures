@@ -8,7 +8,7 @@ from conftest import FakeLlm, FakeStt, FakeTts
 from tinytalk import config
 from tinytalk.audio import MIC_SAMPLE_RATE
 from tinytalk import app as app_module
-from tinytalk.app import WebSocketTransport, build_llm, handle_connection
+from tinytalk.app import NullTransport, WebSocketTransport, build_llm, build_session, handle_connection
 from tinytalk.engines import EngineError
 from tinytalk.llm_groq import GroqLlm
 from tinytalk.llm_ollama import OllamaLlm
@@ -516,3 +516,15 @@ async def test_stt_falling_behind_realtime_is_logged_loudly(caplog):
     assert any("behind realtime" in message for message in warnings), (
         f"a growing STT backlog was never reported; got {warnings}"
     )
+
+
+def test_build_session_forwards_image_backend():
+    class FakeBackend:
+        def generate(self, prompt, *, reference_image):
+            return None
+
+    backend = FakeBackend()
+    session = build_session(
+        NullTransport(), stt=FakeStt(), llm=FakeLlm(), tts=FakeTts(), image_backend=backend
+    )
+    assert session._image_backend is backend

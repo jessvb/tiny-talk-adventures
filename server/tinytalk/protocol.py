@@ -110,6 +110,20 @@ class SynthesizePage:
 
 
 @dataclass(frozen=True)
+class GetPageImage:
+    """Request the generated illustration for one page of a saved story
+    (the Reading screen's page art). Image bytes stream through the same
+    binary-frame pathway as SynthesizePage's audio, followed by a
+    page_image_done marker whose has_image field tells the client
+    whether a binary frame was actually sent -- a page with no
+    illustration (not yet generated, or dropped by the safety check)
+    sends the marker only, no binary frame."""
+
+    story_id: str
+    page_index: int
+
+
+@dataclass(frozen=True)
 class ConcludeStory:
     """The child (or parent) asked to finish the current story right now
     (the design's "Finish this story" menu item). Carries a turn_id like
@@ -151,6 +165,7 @@ ClientMessage = (
     | ListStories
     | GetStory
     | SynthesizePage
+    | GetPageImage
     | ConcludeStory
     | SyncDemoStories
     | UpdateSettings
@@ -165,6 +180,7 @@ _CLIENT_MESSAGE_TYPES: dict[str, type] = {
     "list_stories": ListStories,
     "get_story": GetStory,
     "synthesize_page": SynthesizePage,
+    "get_page_image": GetPageImage,
     "conclude_story": ConcludeStory,
     "sync_demo_stories": SyncDemoStories,
     "update_settings": UpdateSettings,
@@ -212,6 +228,16 @@ def decode_client_message(raw: str) -> ClientMessage:
         if not isinstance(page_index, int):
             raise ProtocolError(f"synthesize_page requires an integer page_index: {raw!r}")
         return SynthesizePage(story_id=story_id.strip(), page_index=page_index)
+    if message_type is GetPageImage:
+        story_id = payload.get("story_id")
+        page_index = payload.get("page_index")
+        if not isinstance(story_id, str) or not story_id.strip():
+            raise ProtocolError(
+                f"get_page_image requires a non-empty string story_id: {raw!r}"
+            )
+        if not isinstance(page_index, int):
+            raise ProtocolError(f"get_page_image requires an integer page_index: {raw!r}")
+        return GetPageImage(story_id=story_id.strip(), page_index=page_index)
     if message_type is SyncDemoStories:
         stories = payload.get("stories")
         if not isinstance(stories, list) or not all(isinstance(s, dict) for s in stories):
@@ -267,6 +293,17 @@ def encode_story_detail(story: dict) -> str:
 def encode_page_audio_done(story_id: str, page_index: int) -> str:
     return json.dumps(
         {"type": "page_audio_done", "story_id": story_id, "page_index": page_index}
+    )
+
+
+def encode_page_image_done(story_id: str, page_index: int, has_image: bool) -> str:
+    return json.dumps(
+        {
+            "type": "page_image_done",
+            "story_id": story_id,
+            "page_index": page_index,
+            "has_image": has_image,
+        }
     )
 
 

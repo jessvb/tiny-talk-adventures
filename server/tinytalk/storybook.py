@@ -13,9 +13,10 @@ import asyncio
 import json
 import logging
 
-from . import config, safety, story_store
+from . import config, illustrations, safety, story_store
 from .conversation import Turn
 from .engines import EngineError, LlmEngine
+from .image_gen import ImageGenBackend
 from .story_store import STORIES_DIR
 from pathlib import Path
 
@@ -144,6 +145,7 @@ async def build_and_attach(
     llm: LlmEngine,
     page_count: int = 5,
     stories_dir: Path = STORIES_DIR,
+    image_backend: ImageGenBackend | None = None,
 ) -> None:
     """Runs the rewrite and patches the result into the already-saved
     story -- or marks it "failed", logged, never raised. Called as a
@@ -280,6 +282,27 @@ async def build_and_attach(
         logger.info(
             "storybook rewrite done for story %s: %d pages", story_id, len(pages)
         )
+        if image_backend is not None:
+            # Wrapped in its own try/except, separate from this function's
+            # outer one below -- illustrations.py's own generate_and_attach()
+            # already catches everything except CancelledError internally,
+            # so this is structurally redundant today, but it means this
+            # rewrite's just-saved pages/rewrite_status are never at the
+            # mercy of a different module's error-handling staying total.
+            # Without this, any future illustrations.py regression that let
+            # an exception escape would fall through to the outer except
+            # below and call _mark_failed() here, destroying the
+            # already-successful text rewrite this call sits after.
+            try:
+                await illustrations.generate_and_attach(
+                    story_id, pages, llm=llm, image_backend=image_backend, stories_dir=stories_dir,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - an illustration-pass failure must never undo a successful rewrite
+                logger.exception(
+                    "unexpected failure running illustration pass for story %s", story_id
+                )
     except asyncio.CancelledError:
         raise
     except EngineError as exc:

@@ -18,6 +18,7 @@ from websockets.exceptions import ConnectionClosed
 from . import config
 from .audio import MIC_SAMPLE_RATE
 from .engines import EngineError, LlmEngine, SttEngine, TtsEngine
+from .image_gen import ImageGenBackend, StableDiffusionBackend
 from .llm_groq import GroqLlm
 from .llm_ollama import OllamaLlm
 from .protocol import encode_error
@@ -126,9 +127,10 @@ class NullTransport:
 
 
 def build_session(
-    transport: Transport, *, stt: SttEngine, llm: LlmEngine, tts: TtsEngine
+    transport: Transport, *, stt: SttEngine, llm: LlmEngine, tts: TtsEngine,
+    image_backend: ImageGenBackend | None = None,
 ) -> SessionRunner:
-    return SessionRunner(transport=transport, stt=stt, llm=llm, tts=tts)
+    return SessionRunner(transport=transport, stt=stt, llm=llm, tts=tts, image_backend=image_backend)
 
 
 def build_llm() -> LlmEngine:
@@ -365,13 +367,14 @@ async def serve() -> None:
     stt = KyutaiStt()
     llm = build_llm()
     tts = KokoroTts()
+    image_backend = StableDiffusionBackend()
     # One SessionRunner for the server's whole lifetime, not one per
     # connection -- see session.py's module docstring. This is what lets a
     # reply survive the phone app being backgrounded and reconnecting:
     # rebind_transport()/replay_last_turn() move it onto each new
     # connection in turn, rather than a fresh, memory-less session starting
     # over every time.
-    session = build_session(NullTransport(), stt=stt, llm=llm, tts=tts)
+    session = build_session(NullTransport(), stt=stt, llm=llm, tts=tts, image_backend=image_backend)
 
     # Tracks connection handler tasks currently in flight, so shutdown can
     # wait for them to finish naturally instead of tearing an actively-

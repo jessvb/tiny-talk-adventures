@@ -1,6 +1,7 @@
 import AVFoundation
 import SwiftUI
 import TinyTalkCore
+import UIKit
 
 /// Paginated storybook reader (design 1a's "Reading"). Reached via a
 /// Library card tap or Settings' preview buttons.
@@ -18,6 +19,20 @@ struct ReadingView: View {
 
     @State private var pageIndex = 0
     private let synthesizer = AVSpeechSynthesizer()
+
+    // Tracks page-image keys ("storyId#pageIndex") already requested from
+    // this ReadingView instance. AppModel.requestPageImage()'s own guard
+    // only skips a key whose image has already ARRIVED -- it does nothing
+    // to stop a second request for a key that's still in flight. TabView's
+    // .page style can fire a page's onAppear more than once during a
+    // swipe transition (appear/disappear/reappear as the user drags past
+    // it), so without this, that could fire duplicate getPageImage() calls
+    // for the same still-pending page. This is a purely local, per-view
+    // dedupe -- it doesn't touch AppModel/SessionCoordinator's own
+    // pending-request bookkeeping (see Task 9's known low-risk edge case
+    // there), it just stops ReadingView itself from being the source of
+    // duplicate in-flight requests.
+    @State private var requestedImageKeys: Set<String> = []
 
     var body: some View {
         if let detail = model.selectedStory, !detail.pages.isEmpty {
@@ -47,20 +62,33 @@ struct ReadingView: View {
             }
         }
         .onDisappear { synthesizer.stopSpeaking(at: .immediate) }
+        .onAppear {
+            // Without this, each page's illustration was only requested
+            // the first time TabView(.page) actually materialized that
+            // page's view -- fine for page 1, but every later page paid
+            // a full round-trip's worth of visible pop-in the moment the
+            // reader swiped to it, even though the server had finished
+            // generating (and this device may already be holding) every
+            // page's image well before the story was ever opened. Firing
+            // all requests up front means most pages are already cached
+            // by the time the reader swipes to them.
+            for (index, page) in detail.pages.enumerated() {
+                requestImageIfNeeded(storyId: detail.id, index: index, hasImage: page.hasImage)
+            }
+        }
+    }
+
+    private func requestImageIfNeeded(storyId: String, index: Int, hasImage: Bool) {
+        guard hasImage else { return }
+        let key = "\(storyId)#\(index)"
+        guard !requestedImageKeys.contains(key) else { return }
+        requestedImageKeys.insert(key)
+        model.requestPageImage(storyId: storyId, pageIndex: index)
     }
 
     private func pageView(_ page: StoryPage, index: Int) -> some View {
         VStack(spacing: 0) {
-            Rectangle()
-                .fill(TTA.Palette.paper)
-                .overlay(
-                    Text("page art")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(TTA.Palette.inkSoft)
-                        .padding(8)
-                        .background(TTA.Palette.cream.opacity(0.85))
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                )
+            pageArt(for: page, storyId: model.selectedStory?.id, index: index)
                 .frame(height: 260)
 
             VStack(alignment: .leading, spacing: 10) {
@@ -77,6 +105,43 @@ struct ReadingView: View {
             .background(TTA.Palette.paper)
         }
         .background(TTA.Palette.paper)
+    }
+
+    @ViewBuilder
+    private func pageArt(for page: StoryPage, storyId: String?, index: Int) -> some View {
+        if let storyId, page.hasImage,
+           let data = model.pageImages["\(storyId)#\(index)"],
+           let uiImage = UIImage(data: data) {
+            Image(uiImage: uiImage)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .clipped()
+        } else if page.hasImage {
+            // The server did generate this page's illustration -- it just
+            // hasn't arrived on this device yet (content(for:)'s onAppear
+            // already requested it). Distinct from the no-image case below:
+            // this one really is coming.
+            Rectangle()
+                .fill(TTA.Palette.paper)
+                .overlay(
+                    VStack(spacing: 8) {
+                        ProgressView()
+                            .tint(TTA.Palette.inkSoft)
+                        Text("Elsie is still drawing this page…")
+                            .font(TTA.Typography.body(12.5, weight: .semibold))
+                            .foregroundColor(TTA.Palette.inkSoft)
+                    }
+                )
+                .onAppear {
+                    guard let storyId else { return }
+                    requestImageIfNeeded(storyId: storyId, index: index, hasImage: true)
+                }
+        } else {
+            // No illustration for this page (safety check or generation
+            // failure -- see illustrations.py) and none is coming, so no
+            // "drawing" language here.
+            Rectangle().fill(TTA.Palette.paper)
+        }
     }
 
     private func topBar(title: String, pages: [StoryPage]) -> some View {

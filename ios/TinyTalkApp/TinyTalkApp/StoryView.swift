@@ -63,7 +63,21 @@ struct StoryView: View {
 
     // MARK: - Header
 
+    // While the storybook rewrite (text + page art) is in progress, the
+    // server ignores all speech/finish-story input until it's done -- see
+    // session.py's REWRITING gate. Previously this was a few seconds of
+    // text-only rewrite and went unnoticed; page art extended it to
+    // multiple minutes (measured on-device: ~3.5min), during which
+    // model.state settles back to .idle with nothing to show for it,
+    // leaving this screen looking frozen. Reusing "waitingForReply"'s
+    // existing shimmer/label here needs no new visual language -- it
+    // already means "something is happening, please wait."
+    private var effectiveAvatarState: SessionState {
+        model.isRewriting ? .waitingForReply : model.state
+    }
+
     private var stateLabel: String {
+        if model.isRewriting { return "Elsie is finishing your storybook…" }
         if model.isMicMuted { return "Mic is off" }
         switch model.state {
         case .idle: return "Ready when you are"
@@ -223,7 +237,7 @@ struct StoryView: View {
             .buttonStyle(BottomIconButtonStyle(fill: TTA.Palette.teal, edge: TTA.Palette.tealShadow))
 
             VStack(spacing: 5) {
-                ElsieAvatar(state: model.state, isMuted: model.isMicMuted, diameter: 68)
+                ElsieAvatar(state: effectiveAvatarState, isMuted: model.isMicMuted, diameter: 68)
                 Text(stateLabel)
                     .font(TTA.Typography.display(12))
                     .foregroundColor(model.isMicMuted ? TTA.Palette.alert : TTA.Palette.teal)
