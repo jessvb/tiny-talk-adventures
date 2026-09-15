@@ -589,6 +589,25 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// What ReadingView's 🔊 button calls -- mirrors requestPageImage()'s
+    /// wrapping of the actor call, but with no dedup guard: unlike an
+    /// image (fetched once, cached), each tap should always actually play
+    /// audio again, even for a page already heard.
+    func requestPageAudio(storyId: String, pageIndex: Int) {
+        Task { [weak self] in
+            await self?.coordinator?.synthesizePage(storyId: storyId, pageIndex: pageIndex)
+        }
+    }
+
+    /// What ReadingView calls on page change/disappear to stop whatever
+    /// page audio is currently playing or pending -- see
+    /// SessionCoordinator.stopPageAudio()'s doc comment.
+    func stopPageAudio() {
+        Task { [weak self] in
+            await self?.coordinator?.stopPageAudio()
+        }
+    }
+
     /// What LibraryView calls when the child taps a `.done` story card --
     /// mirrors the automatic fetch startPollingState() already does when a
     /// story concludes (see pendingStoryDetailFetchId's doc comment): show

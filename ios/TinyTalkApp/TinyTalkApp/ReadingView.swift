@@ -1,24 +1,15 @@
-import AVFoundation
 import SwiftUI
 import TinyTalkCore
 import UIKit
 
 /// Paginated storybook reader (design 1a's "Reading"). Reached via a
-/// Library card tap or Settings' preview buttons.
-///
-/// The 🔊 replay button uses the system's built-in AVSpeechSynthesizer
-/// voice, not the real Kokoro TTS pipeline (server/tinytalk/tts_kokoro.py)
-/// -- SynthesizePage's live wire round trip needs the storybook-
-/// persistence branch merged first. Using the device's own voice keeps
-/// this a real, working feature today rather than a fake button that does
-/// nothing, matching this project's "no fabricated toggles" convention --
-/// swap the body of replayCurrentPage() for a SynthesizePage round trip
-/// once that lands.
+/// Library card tap. The 🔊 replay button uses the real synthesize_page
+/// wire round trip (AppModel.requestPageAudio()/stopPageAudio()) -- see
+/// SessionCoordinator.swift's pendingPageAudioRequest.
 struct ReadingView: View {
     @ObservedObject var model: AppModel
 
     @State private var pageIndex = 0
-    private let synthesizer = AVSpeechSynthesizer()
 
     // Tracks page-image keys ("storyId#pageIndex") already requested from
     // this ReadingView instance. AppModel.requestPageImage()'s own guard
@@ -61,7 +52,10 @@ struct ReadingView: View {
                 bottomBar(pageCount: detail.pages.count)
             }
         }
-        .onDisappear { synthesizer.stopSpeaking(at: .immediate) }
+        .onDisappear { model.stopPageAudio() }
+        .onChange(of: pageIndex) { _ in
+            model.stopPageAudio()
+        }
         .onAppear {
             // Without this, each page's illustration was only requested
             // the first time TabView(.page) actually materialized that
@@ -170,8 +164,8 @@ struct ReadingView: View {
             Spacer()
 
             Button {
-                guard pages.indices.contains(pageIndex) else { return }
-                replayCurrentPage(text: pages[pageIndex].text)
+                guard let storyId = model.selectedStory?.id, pages.indices.contains(pageIndex) else { return }
+                replayCurrentPage(storyId: storyId, pageIndex: pageIndex, text: pages[pageIndex].text)
             } label: {
                 Text("🔊")
                     .font(.system(size: 15))
@@ -205,11 +199,9 @@ struct ReadingView: View {
         .padding(.bottom, 26)
     }
 
-    private func replayCurrentPage(text: String) {
+    private func replayCurrentPage(storyId: String, pageIndex: Int, text: String) {
         guard !text.isEmpty else { return }
-        synthesizer.stopSpeaking(at: .immediate)
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.92
-        synthesizer.speak(utterance)
+        model.stopPageAudio()
+        model.requestPageAudio(storyId: storyId, pageIndex: pageIndex)
     }
 }
