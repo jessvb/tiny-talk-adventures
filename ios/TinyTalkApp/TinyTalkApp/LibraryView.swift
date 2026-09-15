@@ -1,10 +1,8 @@
 import SwiftUI
 import TinyTalkCore
 
-/// Grid of saved stories (design 1a's "Library"). Reached today via
-/// Settings' preview buttons and via TheEndView's "Read it now" -- real
-/// data (story_store.list_stories()) isn't wired up yet, see
-/// TheEndView.swift's doc comment.
+/// Grid of saved stories (design 1a's "Library"). Populated from the real
+/// server via AppModel.refreshLibrary()/openStory() -- see AppModel.swift.
 struct LibraryView: View {
     @ObservedObject var model: AppModel
 
@@ -20,16 +18,31 @@ struct LibraryView: View {
 
             VStack(spacing: 0) {
                 header
-                ScrollView {
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible())], spacing: 22) {
-                        ForEach(Array(model.libraryStories.enumerated()), id: \.element.id) { index, summary in
-                            card(for: summary, colorIndex: index)
-                        }
+                if model.libraryStories.isEmpty {
+                    Spacer()
+                    VStack(spacing: 8) {
+                        Text("No stories yet — make one with me first!")
+                            .font(TTA.Typography.story(15, italic: true))
+                            .foregroundColor(TTA.Palette.inkSoft)
                         newStoryTile
+                            .frame(width: 160)
                     }
-                    .padding(20)
+                    Spacer()
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible())], spacing: 22) {
+                            ForEach(Array(model.libraryStories.enumerated()), id: \.element.id) { index, summary in
+                                card(for: summary, colorIndex: index)
+                            }
+                            newStoryTile
+                        }
+                        .padding(20)
+                    }
                 }
             }
+        }
+        .onAppear {
+            model.refreshLibrary()
         }
     }
 
@@ -59,9 +72,8 @@ struct LibraryView: View {
         let isTappable = summary.rewriteStatus == .done
 
         return Button {
-            guard isTappable, let detail = MockStories.detail(forId: summary.id) else { return }
-            model.selectedStory = detail
-            model.screen = .reading
+            guard isTappable else { return }
+            model.openStory(summary)
         } label: {
             VStack(alignment: .leading, spacing: 8) {
                 ZStack(alignment: .bottomLeading) {

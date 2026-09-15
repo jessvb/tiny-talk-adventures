@@ -64,9 +64,9 @@ final class AppModel: ObservableObject {
     @Published var isMicMuted = false
     @Published var objectRecognitionHint: String?
     @Published var turns: [StoryTurn] = []
-    /// Saved-story fixtures for the Library screen -- populated by
-    /// Settings' preview buttons or TheEndView's "Read it now" until the
-    /// real list_stories() wire call is wired up (see MockStories.swift).
+    /// The Library screen's real saved-story list -- populated from the
+    /// server's real list_stories() response via startPollingState()'s
+    /// poll loop (see AppModel.swift's poll loop and refreshLibrary()).
     @Published var libraryStories: [SavedStorySummary] = []
     /// The story currently shown by TheEndView/ReadingView -- populated by
     /// whichever screen navigates to them (a Library card tap, or a
