@@ -1,11 +1,10 @@
 import Foundation
 
-/// One page of a saved story's rewritten storybook prose -- text only, no
-/// illustration or photo tie-in (explicitly out of scope, see
-/// docs/superpowers/specs/2026-09-08-storybook-persistence-design.md).
-/// Field name matches the server's future `story_detail` wire message
-/// (`pages: [{"text": ...}]`) so decoding real server JSON later is a
-/// straight mapping, not a rewrite.
+/// One page of a saved story's rewritten storybook prose, plus whether a
+/// generated illustration exists for it (see storybook page art,
+/// docs/superpowers/specs/2026-09-11-storybook-page-art-design.md). Field
+/// names match the server's real `story_detail` wire message
+/// (`pages: [{"text": ..., "has_image": ...}]`).
 public struct StoryPage: Equatable, Sendable {
     public let text: String
     public let hasImage: Bool
