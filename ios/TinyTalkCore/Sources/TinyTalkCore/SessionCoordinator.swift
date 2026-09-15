@@ -181,6 +181,18 @@ public actor SessionCoordinator {
     /// image), so a later marker can never reuse stale bytes that
     /// belonged to an earlier request.
     private var pendingPageImageBytes: Data?
+    /// The single in-flight synthesizePage() request, if any -- see
+    /// getPageImage()'s pendingPageImageRequests for why THAT one is a
+    /// queue. This one is a single optional, not a queue: ReadingView's
+    /// manual tap-per-page 🔊 model (no prefetch-all-pages, unlike images)
+    /// means at most one page-audio request is ever genuinely in flight at
+    /// once. Checked before the turn-scoped isCurrentTurnAudio gate in
+    /// consumeServerEvents(), same placement as pendingPageImageRequests,
+    /// so incoming page audio isn't silently dropped or misrouted as
+    /// live-turn audio. Cleared by stopPageAudio(), by an unrelated error
+    /// (mirrors the image case), by handleConnectionLost(), and by
+    /// matching page_audio_done marker.
+    private var pendingPageAudioRequest: (storyId: String, pageIndex: Int)?
     /// True once BOTH signals for "the story just concluded, AND the
     /// concluding turn's audio has genuinely finished playing" have been
     /// observed. A UI must wait for this (not just isRewriting) before
@@ -594,6 +606,10 @@ public actor SessionCoordinator {
         // oldest request, so the whole queue is cleared, not just one entry.
         pendingPageImageRequests.removeAll()
         pendingPageImageBytes = nil
+        // A lost connection means no page_audio_done marker (or further
+        // chunks) for any pending synthesizePage() request will ever
+        // arrive either -- same reasoning as the image case just above.
+        pendingPageAudioRequest = nil
         // Captured BEFORE machine.handle(.disconnected) below overwrites
         // machine.state -- see resumableTurnIdAtDisconnect's doc comment for
         // why this has to happen exactly here. Same criteria
@@ -677,36 +693,40 @@ public actor SessionCoordinator {
                     pendingPageImageBytes = data
                     continue
                 }
+                if pendingPageAudioRequest != nil {
+                    // Unlike images, streamed straight to playback rather
+                    // than stashed -- see pendingPageAudioRequest's doc
+                    // comment. Safe to check after the image-queue branch
+                    // above: the server processes one message at a time to
+                    // completion (see pendingPageImageRequests' doc
+                    // comment), so any earlier-sent getPageImage requests
+                    // fully resolve before a later-sent synthesizePage's
+                    // bytes ever start arriving -- these two branches never
+                    // actually race for the same frame.
+                    await audio.enqueue(data)
+                    continue
+                }
                 guard isCurrentTurnAudio else { continue }
                 turnContinuation?.yield(event)
                 continue
             }
 
-            if case .message(.error) = event, !pendingPageImageRequests.isEmpty {
-                // A get_page_image failure (missing story, out-of-range
-                // page_index) is reported as a generic error frame and
-                // session.py's handle_get_page_image never sends a
-                // page_image_done marker in that case -- see
-                // pendingPageImageRequests' doc comment. The wire protocol
-                // gives no way to correlate a specific error back to any
-                // one specific pending page-image request (the server's
-                // error path uses whatever turn_id happens to be current,
-                // not anything tied to the request, and with more than one
-                // request in flight there's no way to tell which one this
-                // error was even for), so ANY error while a request is
-                // pending is treated as a safe-to-clear signal for the
-                // WHOLE queue. Worst case this clears still-legitimately-
-                // in-flight requests early -- those pages' images just
-                // never show up (no crash, no silence) -- which is far
-                // better than leaving pendingPageImageRequests stuck
-                // forever, which would permanently divert every later
-                // .audio frame away from playback (see the branch just
-                // above). Deliberately does NOT `continue`: the error frame
-                // itself still needs to fall through to the normal
-                // turn-scoped error handling below (lastErrorMessage /
-                // turnContinuation) unchanged.
+            if case .message(.error) = event, !pendingPageImageRequests.isEmpty || pendingPageAudioRequest != nil {
+                // A get_page_image or synthesize_page failure is reported
+                // as a generic error frame with no way to correlate it back
+                // to a specific pending request -- see
+                // pendingPageImageRequests' doc comment. ANY error while
+                // either kind of request is pending is treated as a
+                // safe-to-clear signal for both: worst case a page's image
+                // or audio just never shows up/plays, which is far better
+                // than leaving either stuck forever, permanently diverting
+                // every later .audio frame away from live-turn playback.
+                // Deliberately does NOT `continue`: the error frame itself
+                // still needs to fall through to normal turn-scoped error
+                // handling below, unchanged.
                 pendingPageImageRequests.removeAll()
                 pendingPageImageBytes = nil
+                pendingPageAudioRequest = nil
             }
 
             // Story-lifecycle events carry no turn_id -- they're not
@@ -757,6 +777,19 @@ public actor SessionCoordinator {
                     // these bytes must never be reused for a later,
                     // different request's marker.
                     pendingPageImageBytes = nil
+                }
+                continue
+            case .message(.pageAudioDone(let storyId, let pageIndex)):
+                // No turn_id, same as the other story-lifecycle events
+                // above. Unlike pageImageDone, there is no bytes buffer to
+                // consume here -- every chunk already reached playback
+                // directly in the .audio branch above. This just clears
+                // the pending marker once the matching request's audio is
+                // fully sent, so a later unrelated error (see above) no
+                // longer needs to guard against clearing a request that's
+                // already finished.
+                if pendingPageAudioRequest?.storyId == storyId, pendingPageAudioRequest?.pageIndex == pageIndex {
+                    pendingPageAudioRequest = nil
                 }
                 continue
             default:
@@ -1006,6 +1039,39 @@ public actor SessionCoordinator {
                 pendingPageImageRequests.remove(at: index)
             }
         }
+    }
+
+    /// See protocol.py's SynthesizePage. Fire-and-forget; each chunk is
+    /// enqueued to playback as it arrives (see consumeServerEvents()'s
+    /// .audio handling) -- unlike getPageImage, there is no result to poll,
+    /// since this plays audio rather than producing data a UI reads back.
+    public func synthesizePage(storyId: String, pageIndex: Int) async {
+        pendingPageAudioRequest = (storyId: storyId, pageIndex: pageIndex)
+        do {
+            try await connection.send(.synthesizePage(storyId: storyId, pageIndex: pageIndex))
+        } catch {
+            // Mirrors getPageImage()'s send-failure cleanup: this request
+            // never reached the server, so nothing will ever arrive to
+            // resolve it -- clear it now rather than leaving it stuck,
+            // which would permanently divert later live-turn audio into
+            // playback-as-page-audio (see the .audio branch below).
+            if pendingPageAudioRequest?.storyId == storyId, pendingPageAudioRequest?.pageIndex == pageIndex {
+                pendingPageAudioRequest = nil
+            }
+        }
+    }
+
+    /// What ReadingView calls when the child swipes to a new page or
+    /// leaves Reading while a page's audio is still playing/pending --
+    /// mirrors AVSpeechSynthesizer.stopSpeaking(at: .immediate)'s old
+    /// role. Must clear pendingPageAudioRequest, not just stop playback:
+    /// otherwise a chunk still in flight from the just-abandoned request
+    /// would reach consumeServerEvents()'s .audio branch, see the (now
+    /// stale) pending request, and start playing again moments after the
+    /// child already left the page.
+    public func stopPageAudio() async {
+        pendingPageAudioRequest = nil
+        audio.stopPlaybackImmediately()
     }
 
     /// Starts the waiting-ditty loop for a turn resume() already set up --

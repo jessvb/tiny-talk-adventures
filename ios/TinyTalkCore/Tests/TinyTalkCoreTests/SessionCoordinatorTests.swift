@@ -606,6 +606,186 @@ final class SessionCoordinatorTests: XCTestCase {
         runLoop.cancel()
     }
 
+    /// Unlike getPageImage (one binary frame, buffered until its marker
+    /// arrives), synthesize_page streams MULTIPLE chunks -- each one must
+    /// reach playback as it arrives, not be buffered into one blob.
+    func testSynthesizePageStreamsEachChunkToPlaybackAsItArrives() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        await coordinator.synthesizePage(storyId: "pip", pageIndex: 1)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        XCTAssertEqual(connection.sentMessages, [.synthesizePage(storyId: "pip", pageIndex: 1)])
+
+        connection.emit(.audio(Data([1, 1, 1])))
+        connection.emit(.audio(Data([2, 2, 2])))
+        connection.emit(.audio(Data([3, 3, 3])))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        // All three chunks reached playback before the done marker even
+        // arrived -- confirms streaming, not buffer-then-play-on-done.
+        XCTAssertEqual(audio.enqueued, [Data([1, 1, 1]), Data([2, 2, 2]), Data([3, 3, 3])])
+
+        connection.emit(.message(.pageAudioDone(storyId: "pip", pageIndex: 1)))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        runLoop.cancel()
+    }
+
+    /// Regression guard mirroring testLiveTurnAudioStillPlaysWithNoPageImageRequestPending:
+    /// with no page-audio request pending, live TTS audio arriving mid-turn
+    /// must still reach FakeAudio exactly as before this task's change.
+    func testLiveTurnAudioStillPlaysWithNoPageAudioRequestPending() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        connection.emit(.message(.responseText("hi", turnId: 1)))
+        connection.emit(.audio(Data([4, 5, 6])))
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(audio.enqueued, [Data([4, 5, 6])])
+
+        runLoop.cancel()
+    }
+
+    /// stopPageAudio() must both stop local playback AND clear the pending
+    /// request -- otherwise a late-arriving chunk for the just-abandoned
+    /// request would still reach playback (the .audio routing below checks
+    /// pendingPageAudioRequest, not whether the UI still wants to hear it).
+    func testStopPageAudioStopsPlaybackAndDropsLateArrivingChunks() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        await coordinator.synthesizePage(storyId: "pip", pageIndex: 1)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.audio(Data([1, 1, 1])))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        await coordinator.stopPageAudio()
+        XCTAssertTrue(audio.stopped)
+
+        // A late chunk for the abandoned request must not reach playback --
+        // it's no longer "pending", so it falls through to the turn-scoped
+        // gate and is dropped (no live turn is active here either).
+        connection.emit(.audio(Data([2, 2, 2])))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        XCTAssertEqual(audio.enqueued, [Data([1, 1, 1])], "no chunk after stopPageAudio() should reach playback")
+
+        runLoop.cancel()
+    }
+
+    /// Mirrors testUnrelatedErrorClearsStuckPendingPageImageRequestSoLiveAudioStillPlays
+    /// for the audio case: an unrelated error must not leave
+    /// pendingPageAudioRequest stuck forever silently diverting live-turn
+    /// audio into playback-as-page-audio.
+    func testUnrelatedErrorClearsStuckPendingPageAudioRequestSoLiveAudioStillPlays() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        await coordinator.synthesizePage(storyId: "pip", pageIndex: 1)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        // No page_audio_done ever arrives -- simulate a server failure.
+        connection.emit(.message(.error("story not found", turnId: 0)))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.message(.responseText("hi", turnId: 1)))
+        connection.emit(.audio(Data([7, 8, 9])))
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(audio.enqueued, [Data([7, 8, 9])], "an unrelated error must clear a stuck pending page-audio request")
+
+        runLoop.cancel()
+    }
+
+    /// Mirrors testGetPageImageClearsPendingStateIfSendFails for the audio case.
+    func testSynthesizePageClearsPendingStateIfSendFails() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        connection.sendMessageError = FakeSendError()
+        await coordinator.synthesizePage(storyId: "pip", pageIndex: 1)
+        connection.sendMessageError = nil
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.message(.responseText("hi", turnId: 1)))
+        connection.emit(.audio(Data([7, 8, 9])))
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(audio.enqueued, [Data([7, 8, 9])], "a failed synthesizePage() send must not permanently divert later live audio")
+
+        runLoop.cancel()
+    }
+
+    /// Mirrors testConnectionLostViaSendFailureClearsStuckPendingPageImageRequestSoLiveAudioStillPlays
+    /// for the audio case: handleConnectionLost() (reached from the SEND
+    /// side, e.g. a control-frame send failing in handleSpeechStart(), not
+    /// from synthesizePage()'s own send-failure catch in Step 8) must also
+    /// clear pendingPageAudioRequest, not just leave it stuck.
+    func testConnectionLostViaSendFailureClearsStuckPendingPageAudioRequestSoLiveAudioStillPlays() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        await coordinator.synthesizePage(storyId: "pip", pageIndex: 1)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        // No page_audio_done marker ever arrives for this request.
+
+        // Force handleConnectionLost() via the send-failure path (not
+        // .closed, which would end consumeServerEvents() for good and make
+        // this test unable to observe anything afterwards).
+        connection.sendMessageError = FakeSendError()
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.sendMessageError = nil
+
+        // A brand new turn's live audio must still play.
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.message(.responseText("hi", turnId: 2)))
+        connection.emit(.audio(Data([7, 8, 9])))
+        connection.emit(.message(.turnEnd(turnId: 2)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(audio.enqueued, [Data([7, 8, 9])], "handleConnectionLost() must clear a stuck pending page-audio request, not just leave it discarded")
+
+        runLoop.cancel()
+    }
+
     func testIsRewritingTracksRewritingStartedAndDone() async {
         let connection = FakeConnection()
         let audio = FakeAudio()
