@@ -54,7 +54,27 @@ final class AppModel: ObservableObject {
     /// below). Applies to the NEXT story only -- never retroactively.
     @Published var storyTurnCount: Int
     @Published var storybookPageCount: Int
-    @Published var screen: AppScreen
+    /// The mic must only actively listen on .creating -- see issue #31.
+    /// `screen` is set directly from ~15 call sites across every View file
+    /// (Settings' preview buttons, Library/Reading navigation, The End's
+    /// auto-nav, etc.), and only goHome() happened to disconnect (which
+    /// incidentally muted too). Centralizing the mute/unmute here, rather
+    /// than adding a call at each of those sites, matches AppScreen's own
+    /// doc comment about why navigation lives on AppModel instead of a
+    /// NavigationStack -- and guarantees nothing can introduce a new
+    /// `screen = ...` site that forgets it. Safe to call unconditionally:
+    /// isMuted is already a transient flag the coordinator itself flips
+    /// automatically across turn boundaries (see toggleMute()'s doc
+    /// comment), not a durable user preference, and a nil coordinator
+    /// (not yet connected) no-ops via the optional.
+    @Published var screen: AppScreen {
+        didSet {
+            guard screen != oldValue else { return }
+            let shouldBeMuted = screen != .creating
+            let coordinatorToMute = coordinator
+            Task { await coordinatorToMute?.setMuted(shouldBeMuted) }
+        }
+    }
     @Published var state: SessionState = .idle
     @Published var lastTranscript: String = ""
     @Published var lastReply: String = ""
