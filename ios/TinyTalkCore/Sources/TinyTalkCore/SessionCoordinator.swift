@@ -193,6 +193,22 @@ public actor SessionCoordinator {
     /// (mirrors the image case), by handleConnectionLost(), and by
     /// matching page_audio_done marker.
     private var pendingPageAudioRequest: (storyId: String, pageIndex: Int)?
+    /// Count of still-outstanding page_audio_done markers from requests
+    /// this coordinator has already abandoned via stopPageAudio() (with a
+    /// request genuinely still in flight at the time) but whose remaining
+    /// audio the server is still draining -- see stopPageAudio()'s doc
+    /// comment. The server processes one client message to completion
+    /// before starting the next (see pendingPageImageRequests' doc
+    /// comment for the identical guarantee, relied on there for the image
+    /// case), so while this is > 0, EVERY arriving .audio frame is
+    /// guaranteed to be a leftover chunk from an abandoned generation,
+    /// never real audio for whatever NEW request pendingPageAudioRequest
+    /// now names -- discarding unconditionally here is what stops a rapid
+    /// re-tap from playing the tail of the previous page over the start
+    /// of the new one. A counter, not a boolean, because a second rapid
+    /// re-tap before the first abandoned request's marker arrives must
+    /// not lose track of needing to discard for BOTH.
+    private var pendingPageAudioDoneMarkersToDiscard = 0
     /// True once BOTH signals for "the story just concluded, AND the
     /// concluding turn's audio has genuinely finished playing" have been
     /// observed. A UI must wait for this (not just isRewriting) before
@@ -609,7 +625,12 @@ public actor SessionCoordinator {
         // A lost connection means no page_audio_done marker (or further
         // chunks) for any pending synthesizePage() request will ever
         // arrive either -- same reasoning as the image case just above.
+        // That applies equally to the markers still owed by already-
+        // abandoned requests, so the discard counter resets too:
+        // otherwise it would survive into the next connection and eat
+        // that connection's first real page-audio chunks.
         pendingPageAudioRequest = nil
+        pendingPageAudioDoneMarkersToDiscard = 0
         // Captured BEFORE machine.handle(.disconnected) below overwrites
         // machine.state -- see resumableTurnIdAtDisconnect's doc comment for
         // why this has to happen exactly here. Same criteria
@@ -693,6 +714,17 @@ public actor SessionCoordinator {
                     pendingPageImageBytes = data
                     continue
                 }
+                if pendingPageAudioDoneMarkersToDiscard > 0 {
+                    // A frame that's guaranteed to be a leftover chunk
+                    // from an already-abandoned synthesizePage() request
+                    // -- see pendingPageAudioDoneMarkersToDiscard's doc
+                    // comment. Must be checked before the
+                    // pendingPageAudioRequest branch below: once a NEW
+                    // request has been sent, pendingPageAudioRequest is
+                    // already non-nil again for that new request, but
+                    // these bytes still belong to the old one.
+                    continue
+                }
                 if pendingPageAudioRequest != nil {
                     // Unlike images, streamed straight to playback rather
                     // than stashed -- see pendingPageAudioRequest's doc
@@ -711,7 +743,9 @@ public actor SessionCoordinator {
                 continue
             }
 
-            if case .message(.error) = event, !pendingPageImageRequests.isEmpty || pendingPageAudioRequest != nil {
+            if case .message(.error) = event,
+               !pendingPageImageRequests.isEmpty || pendingPageAudioRequest != nil
+                || pendingPageAudioDoneMarkersToDiscard > 0 {
                 // A get_page_image or synthesize_page failure is reported
                 // as a generic error frame with no way to correlate it back
                 // to a specific pending request -- see
@@ -721,12 +755,24 @@ public actor SessionCoordinator {
                 // or audio just never shows up/plays, which is far better
                 // than leaving either stuck forever, permanently diverting
                 // every later .audio frame away from live-turn playback.
+                // The same applies, and matters even more, to markers owed
+                // by ALREADY-ABANDONED requests: server-side,
+                // handle_synthesize_page() answers a bad story_id/
+                // page_index with an error frame and NO page_audio_done
+                // (see session.py's _page_or_error), so an abandoned
+                // request that fails that way never sends the marker its
+                // discard count is waiting for. Without this clause that
+                // count would stay above zero forever and the .audio
+                // branch above would silently swallow EVERY later frame,
+                // live-turn story audio included -- the app would simply
+                // go deaf for the rest of the connection.
                 // Deliberately does NOT `continue`: the error frame itself
                 // still needs to fall through to normal turn-scoped error
                 // handling below, unchanged.
                 pendingPageImageRequests.removeAll()
                 pendingPageImageBytes = nil
                 pendingPageAudioRequest = nil
+                pendingPageAudioDoneMarkersToDiscard = 0
             }
 
             // Story-lifecycle events carry no turn_id -- they're not
@@ -780,6 +826,19 @@ public actor SessionCoordinator {
                 }
                 continue
             case .message(.pageAudioDone(let storyId, let pageIndex)):
+                // If any abandoned generation's marker is still owed, this
+                // MUST be one of those (never the current
+                // pendingPageAudioRequest's own marker) -- the server's
+                // strict per-connection ordering guarantees an older
+                // request's marker always arrives before a newer one's,
+                // see pendingPageAudioDoneMarkersToDiscard's doc comment.
+                // Consume it as a discard, don't try to match it against
+                // pendingPageAudioRequest (which names the NEW request,
+                // not the one this marker belongs to).
+                if pendingPageAudioDoneMarkersToDiscard > 0 {
+                    pendingPageAudioDoneMarkersToDiscard -= 1
+                    continue
+                }
                 // No turn_id, same as the other story-lifecycle events
                 // above. Unlike pageImageDone, there is no bytes buffer to
                 // consume here -- every chunk already reached playback
@@ -1068,8 +1127,18 @@ public actor SessionCoordinator {
     /// otherwise a chunk still in flight from the just-abandoned request
     /// would reach consumeServerEvents()'s .audio branch, see the (now
     /// stale) pending request, and start playing again moments after the
-    /// child already left the page.
+    /// child already left the page. There is no wire-level cancellation
+    /// for synthesize_page, so the server keeps streaming the abandoned
+    /// request's remaining chunks regardless -- which is what
+    /// pendingPageAudioDoneMarkersToDiscard exists to swallow, see its
+    /// doc comment.
     public func stopPageAudio() async {
+        if pendingPageAudioRequest != nil {
+            // This request's own page_audio_done marker (and any
+            // remaining chunks before it) will still arrive -- see
+            // pendingPageAudioDoneMarkersToDiscard's doc comment.
+            pendingPageAudioDoneMarkersToDiscard += 1
+        }
         pendingPageAudioRequest = nil
         audio.stopPlaybackImmediately()
     }

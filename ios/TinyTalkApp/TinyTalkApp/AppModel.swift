@@ -177,6 +177,27 @@ final class AppModel: ObservableObject {
     /// story already shown once doesn't re-trigger navigation on a later,
     /// unrelated reconnect.
     private var lastAcknowledgedConcludedStoryId: String?
+    /// True once this AppModel instance has processed at least one
+    /// listStories() response. Guards the very first response of a
+    /// session from being misread as "a story just concluded" by the
+    /// block below -- lastAcknowledgedConcludedStoryId starts nil on
+    /// every fresh AppModel/coordinator, so without this, connect()'s own
+    /// listStories() trigger (added to keep Landing's button accurate)
+    /// made the FIRST-EVER story list response of a session
+    /// indistinguishable from a genuine conclusion, hijacking navigation
+    /// to The End for an old, unrelated story mid-live-session. Never
+    /// reset by disconnect() -- a background/foreground cycle within the
+    /// same app process must NOT re-trigger this baseline-seeding path,
+    /// since that path (handleAppForegrounded's own listStories() call)
+    /// is exactly the one that's supposed to detect a real conclusion
+    /// that happened while backgrounded.
+    private var hasEstablishedLibraryBaseline = false
+    /// The last value of coordinator.lastErrorMessage this poll loop
+    /// observed (including nil) -- see its use in startPollingState()'s
+    /// error handling. Lets that code detect the EDGE where a new error
+    /// first appears, rather than reacting to "an error exists" as if it
+    /// were a fresh event on every single poll tick.
+    private var lastObservedCoordinatorErrorMessage: String?
     /// isRewriting from the PREVIOUS poll tick -- lets the poll loop
     /// detect the true->false edge (rewriting_done just arrived) rather
     /// than re-fetching on every tick while it happens to be false.
@@ -589,13 +610,24 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// What ReadingView's 🔊 button calls -- mirrors requestPageImage()'s
-    /// wrapping of the actor call, but with no dedup guard: unlike an
-    /// image (fetched once, cached), each tap should always actually play
-    /// audio again, even for a page already heard.
-    func requestPageAudio(storyId: String, pageIndex: Int) {
+    /// What ReadingView's 🔊 button calls -- combines stopPageAudio() and
+    /// the synthesizePage() request into ONE ordered Task, rather than
+    /// launching two independent unstructured Tasks with no guaranteed
+    /// ordering between them (which is what a bare stopPageAudio() +
+    /// requestPageAudio() call pair would do). The two calls must happen
+    /// in this exact order on the same actor: stop's cleanup (clearing
+    /// pendingPageAudioRequest and incrementing the discard counter for
+    /// any still-in-flight leftover audio) must land before the new
+    /// request is sent, or the new request's own pendingPageAudioRequest
+    /// assignment could be clobbered by a stop that was meant for the
+    /// PREVIOUS tap. No dedup guard: unlike an image (fetched once,
+    /// cached), each tap should always actually play audio again, even
+    /// for a page already heard.
+    func replayPageAudio(storyId: String, pageIndex: Int) {
         Task { [weak self] in
-            await self?.coordinator?.synthesizePage(storyId: storyId, pageIndex: pageIndex)
+            guard let coordinator = self?.coordinator else { return }
+            await coordinator.stopPageAudio()
+            await coordinator.synthesizePage(storyId: storyId, pageIndex: pageIndex)
         }
     }
 
@@ -615,14 +647,21 @@ final class AppModel: ObservableObject {
     /// overwrite selectedStory once the real detail arrives. Guards against
     /// stomping an already-in-flight fetch, same as the automatic trigger.
     func openStory(_ summary: SavedStorySummary) {
-        guard pendingStoryDetailFetchId == nil else { return }
+        // Require a live coordinator before committing to any of this --
+        // without it, this would navigate into a permanently-blank
+        // Reading screen and wedge pendingStoryDetailFetchId forever
+        // (nothing can ever clear it: no connection means no
+        // story_detail will arrive, and no error frame will arrive
+        // either), silently blocking The End's auto-navigation for the
+        // NEXT story too.
+        guard pendingStoryDetailFetchId == nil, let coordinator else { return }
         selectedStory = SavedStoryDetail(
             id: summary.id, title: summary.title, pages: [], epilogue: nil, rewriteStatus: summary.rewriteStatus
         )
         screen = .reading
         pendingStoryDetailFetchId = summary.id
-        Task { [weak self] in
-            await self?.coordinator?.getStory(storyId: summary.id)
+        Task {
+            await coordinator.getStory(storyId: summary.id)
         }
     }
 
@@ -906,16 +945,27 @@ final class AppModel: ObservableObject {
                         Task { await coordinator.listStories() }
                     }
 
-                    // A fresh story list arrived, from either the trigger
-                    // above or the backgrounding-recovery check in
-                    // handleAppForegrounded() -- newest entry first
-                    // (matches story_store.list_stories()'s own
-                    // ordering). Only act on it once per concluded story
-                    // (lastAcknowledgedConcludedStoryId guards this --
-                    // its whole purpose is surviving a coordinator
-                    // teardown, see its own doc comment), and only start
-                    // a detail request if one isn't already in flight.
-                    if let newest = storyList?.first,
+                    // A fresh story list arrived, from any of the four
+                    // triggers named above -- newest entry first (matches
+                    // story_store.list_stories()'s own ordering). The
+                    // FIRST such list of this AppModel's lifetime only
+                    // establishes what "already existed" looks like; every
+                    // list after it is checked for a newly-concluded story
+                    // to navigate to. Only act once per concluded story
+                    // (lastAcknowledgedConcludedStoryId guards this -- its
+                    // whole purpose is surviving a coordinator teardown,
+                    // see its own doc comment), and only start a detail
+                    // request if one isn't already in flight.
+                    if let storyList, !self.hasEstablishedLibraryBaseline {
+                        // The very first list this AppModel instance has
+                        // ever seen -- seed the baseline without
+                        // navigating. See hasEstablishedLibraryBaseline's
+                        // doc comment for why: this list's newest entry
+                        // might be an old story from a previous session,
+                        // not something that just concluded.
+                        self.hasEstablishedLibraryBaseline = true
+                        self.lastAcknowledgedConcludedStoryId = storyList.first?.id
+                    } else if let newest = storyList?.first,
                        newest.id != self.lastAcknowledgedConcludedStoryId,
                        self.pendingStoryDetailFetchId == nil {
                         self.pendingStoryDetailFetchId = newest.id
@@ -976,15 +1026,35 @@ final class AppModel: ObservableObject {
                     // just means "no server error yet," and must not erase
                     // a client-side error (e.g. audio capture failing to
                     // start) that connect() already surfaced.
+                    // coordinator.lastErrorMessage is a STICKY latest
+                    // value (cleared only when a new story starts
+                    // server-side), not a one-shot event -- reacting to
+                    // "errorMessage != nil" unconditionally on every
+                    // ~100ms poll tick would clear pendingStoryDetailFetchId
+                    // over and over for the rest of the story after a
+                    // single error, permanently discarding any later
+                    // Library-tap fetch's real response the instant it
+                    // arrived (it could never match a flag that keeps
+                    // getting nulled out). React only the one tick the
+                    // value actually changes.
+                    if errorMessage != self.lastObservedCoordinatorErrorMessage {
+                        if errorMessage != nil {
+                            // A pending story-detail fetch can never be
+                            // resolved by an error frame (no story_detail
+                            // will follow it) -- clear it so a stale,
+                            // permanently-unresolvable fetch doesn't block
+                            // every future Library tap or The End
+                            // auto-navigation. Only done on the edge where
+                            // this specific error first appears, not on
+                            // every later tick it's still the current
+                            // sticky value.
+                            self.pendingStoryDetailFetchId = nil
+                        }
+                    }
                     if let errorMessage {
                         self.lastErrorMessage = errorMessage
-                        // A pending story-detail fetch can never be
-                        // resolved by an error frame (no story_detail will
-                        // follow it) -- clear it so a stale, permanently-
-                        // unresolvable fetch doesn't block every future
-                        // Library tap or The End auto-navigation.
-                        self.pendingStoryDetailFetchId = nil
                     }
+                    self.lastObservedCoordinatorErrorMessage = errorMessage
                     // The connection died: consumeServerEvents() saw
                     // `.closed` and walked the coordinator's own state back
                     // to .idle, but nothing else about that is visible to

@@ -690,6 +690,86 @@ final class SessionCoordinatorTests: XCTestCase {
         runLoop.cancel()
     }
 
+    /// Reproduces the real bug pendingPageAudioDoneMarkersToDiscard exists
+    /// for: a rapid re-tap (stop an in-flight request, immediately request
+    /// a new one) must not let the abandoned request's still-arriving tail
+    /// get played as if it were the new request's audio. The stop alone is
+    /// not enough -- by the time the leftovers arrive,
+    /// pendingPageAudioRequest is already non-nil again for the NEW
+    /// request, so the routing check the previous test relies on would
+    /// wave them straight through to playback.
+    func testAbandonedPageAudioTailDoesNotBleedIntoNextRequest() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        // Page A starts streaming.
+        await coordinator.synthesizePage(storyId: "pip", pageIndex: 1)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.audio(Data([1, 1, 1])))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        // Child re-taps before A finishes -- abandon A, request B.
+        await coordinator.stopPageAudio()
+        await coordinator.synthesizePage(storyId: "pip", pageIndex: 2)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        // A's already-in-flight tail keeps arriving (the server had no
+        // way to know A was abandoned) -- this chunk must be discarded,
+        // not played as if it belonged to B.
+        connection.emit(.audio(Data([9, 9, 9])))
+        connection.emit(.message(.pageAudioDone(storyId: "pip", pageIndex: 1)))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        // B's real audio now arrives and must play normally.
+        connection.emit(.audio(Data([2, 2, 2])))
+        connection.emit(.message(.pageAudioDone(storyId: "pip", pageIndex: 2)))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        XCTAssertEqual(audio.enqueued, [Data([1, 1, 1]), Data([2, 2, 2])], "A's post-abandonment tail (9,9,9) must never reach playback")
+
+        runLoop.cancel()
+    }
+
+    /// The failure mode the discard counter could otherwise introduce: an
+    /// abandoned synthesize_page whose page_index turns out to be invalid
+    /// is answered server-side with an error frame and NO page_audio_done
+    /// (see session.py's _page_or_error), so the marker the counter waits
+    /// for never comes. Without the error frame also clearing that count,
+    /// the .audio routing would swallow every later frame forever and the
+    /// app would go silent for the rest of the connection -- including
+    /// live-turn story audio, which has nothing to do with page reading.
+    func testErrorClearsOwedDiscardMarkersSoLiveAudioStillPlays() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        await coordinator.synthesizePage(storyId: "pip", pageIndex: 1)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        // Abandoned while in flight -- a page_audio_done marker is now
+        // owed, but this request is one the server will reject outright.
+        await coordinator.stopPageAudio()
+        connection.emit(.message(.error("no page 1 for story 'pip'", turnId: 0)))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.message(.responseText("hi", turnId: 1)))
+        connection.emit(.audio(Data([7, 8, 9])))
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(audio.enqueued, [Data([7, 8, 9])], "an error frame must clear owed discard markers, or live audio is lost forever")
+
+        runLoop.cancel()
+    }
+
     /// Mirrors testUnrelatedErrorClearsStuckPendingPageImageRequestSoLiveAudioStillPlays
     /// for the audio case: an unrelated error must not leave
     /// pendingPageAudioRequest stuck forever silently diverting live-turn

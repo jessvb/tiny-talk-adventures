@@ -1,18 +1,20 @@
 import Foundation
 import TinyTalkCore
 
-/// Fixture data for the Library/Reading/The End screens until the real
-/// server API (`list_stories`/`get_story`, storybook-persistence
-/// sub-project) is wired up -- reached only via Settings' "COMING SOON"
-/// preview buttons, never shown in the real onboarding->story flow (see
-/// this project's own "no fabricated toggles that don't do anything"
-/// convention in SettingsView.swift: these are a developer preview of
-/// real, working screens, not a fake feature claimed to a child user).
+/// Fixture data reached only via Settings' "COMING SOON" preview button
+/// for the Reading screen (`MockStories.pip`), never shown in the real
+/// onboarding->story flow -- see this project's own "no fabricated
+/// toggles that don't do anything" convention in SettingsView.swift:
+/// this is a developer preview of a real, working screen, not a fake
+/// feature claimed to a child user. The Library and The End screens now
+/// run on the real server API (`list_stories`/`get_story`), so the
+/// fixtures that stood in for it (`librarySummaries`, `detail(forId:)`)
+/// were deleted once nothing called them.
 /// Pip's title/pages/epilogue are transcribed verbatim from the Claude
 /// Design canvas's own "1a" interactive prototype (project
-/// d19c0d00-d971-4dc6-ac5b-1a06aaf11025); the other two "done" stories and
-/// the pending/failed examples are original filler so every Library card
-/// state (done/pending/failed) is exercised on-device.
+/// d19c0d00-d971-4dc6-ac5b-1a06aaf11025); the other details below are
+/// original filler, kept as ready-made preview material for the
+/// remaining card states (done with no epilogue, pending, failed).
 enum MockStories {
     static let pip = SavedStoryDetail(
         id: "pip",
@@ -57,31 +59,4 @@ enum MockStories {
     static let stillWriting = SavedStoryDetail(id: "brave-turtle", title: nil, pages: [], epilogue: nil, rewriteStatus: .pending)
 
     static let couldNotFinish = SavedStoryDetail(id: "missing-star", title: nil, pages: [], epilogue: nil, rewriteStatus: .failed)
-
-    /// The Library screen's grid, newest first -- matches story_store.py's
-    /// own `list_stories()` ordering.
-    static var librarySummaries: [SavedStorySummary] {
-        let now = Date()
-        let calendar = Calendar.current
-        func daysAgo(_ n: Int) -> Date { calendar.date(byAdding: .day, value: -n, to: now) ?? now }
-
-        return [
-            summary(for: stillWriting, createdAt: now, pageCount: 0),
-            summary(for: pip, createdAt: now, pageCount: pip.pages.count),
-            summary(for: couldNotFinish, createdAt: daysAgo(1), pageCount: 0),
-            summary(for: cookies, createdAt: daysAgo(6), pageCount: cookies.pages.count),
-            summary(for: dolphinSleepover, createdAt: daysAgo(15), pageCount: dolphinSleepover.pages.count),
-        ]
-    }
-
-    /// Looks up the full detail behind one Library card's summary --
-    /// stands in for the real `GetStory(story_id)` round trip until that's
-    /// wired up.
-    static func detail(forId id: String) -> SavedStoryDetail? {
-        [pip, cookies, dolphinSleepover, stillWriting, couldNotFinish].first { $0.id == id }
-    }
-
-    private static func summary(for detail: SavedStoryDetail, createdAt: Date, pageCount: Int) -> SavedStorySummary {
-        SavedStorySummary(id: detail.id, title: detail.title, createdAt: createdAt, pageCount: pageCount, rewriteStatus: detail.rewriteStatus)
-    }
 }
