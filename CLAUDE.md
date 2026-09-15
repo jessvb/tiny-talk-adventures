@@ -143,31 +143,67 @@ content mid-rewrite, which exercised PR #18's retry logic
 `qwen3.5:9b`) — the rewrite still completed as `rewrite_status: "done"`.
 Both the base rewrite pipeline and the safety-retry fix are now confirmed
 against real hardware, not just the fakes-based test suite. PR #14 (a
-small epilogue-grammar fix, tests-only verified, no on-device step
-needed) is open and ready to merge whenever convenient.
+small epilogue-grammar fix) and PR #21 (a second, separate safety-retry
+gap — this one in the live "Finish this story" conclude flow rather than
+the background rewrite, plus a fix for the empty-reply retry branch
+resubmitting an unchanged prompt) are both merged too.
 
 Parent-adjustable story length ("turns per story", "pages in the
 storybook", via a new `update_settings` wire message) is implemented and
-merged to local `main` — see
+merged (PR #20) — see
 `docs/superpowers/specs/2026-09-09-story-length-settings-design.md`.
-**Not yet pushed to `origin/main`** (local `main` is currently ahead of
-the remote) — push whenever the household is ready to fast-forward it.
+Local `main` and `origin/main` are in sync.
 
-An away-from-home demo mode has an approved spec merged
-(`docs/superpowers/specs/2026-09-09-away-from-home-demo-mode-design.md`)
-but no implementation yet — a candidate for a future sub-project, not
-in progress.
+Away-from-home demo mode — letting the phone talk to Elsie via cloud APIs
+(Groq) when off the home WiFi, gated behind a hidden parent-only Settings
+toggle — is implemented and **merged (PR #22)**; see
+`docs/superpowers/specs/2026-09-09-away-from-home-demo-mode-design.md`.
+Several rounds of real on-device testing found and fixed real bugs (a
+dead Groq model id, TTS audio garbling, a voice-matching bug, and —
+after 3+ partial buffer-tuning attempts didn't fully resolve audio
+stutter — an architectural fix decoupling playback scheduling from
+waiting for each buffer to finish) plus added a storyteller voice picker
+in Settings. Currently confirmed working, not just merged. That testing
+also surfaced gaps now tracked as their own issues rather than fixed
+here: #23 (turn history lost after backgrounding), #24 (main's newer
+features silently no-op in demo mode, since it bypasses the real
+server), #25 (toggle LLM backend outside demo mode too), and #26 (demo
+mode has no fallback for storybook page art's image generation, below —
+it needs the home Mac's Neural Engine).
 
 Wiring the iOS screens to the real server API (`list_stories`, `get_story`,
 `synthesize_page`) instead of `MockStories.swift` is **partially in
-flight**: PR #17 (open, not yet merged, not yet tested on-device) wires
-just The End screen — a "Finish this story" menu item that sends the
-existing `conclude_story` action, and real auto-navigation to The End
-gated on both `rewriting_started` arriving and the concluding turn's
-audio actually finishing local playback. The Library and Reading screens
-are still 100% mock-data-only and untouched by PR #17; wiring those (plus
-Landing's/StoryView's real "Read Stories" buttons, and swapping
-`ReadingView`'s `AVSpeechSynthesizer` stand-in for a real
+flight**: PR #17 is **merged** — it wires The End screen — a "Finish this
+story" menu item that sends the existing `conclude_story` action, and
+real auto-navigation to The End gated on both `rewriting_started`
+arriving and the concluding turn's audio actually finishing local
+playback. The Library and Reading screens are still 100% mock-data-only;
+wiring those (plus Landing's/StoryView's real "Read Stories" buttons, and
+swapping `ReadingView`'s `AVSpeechSynthesizer` stand-in for a real
 `synthesize_page` round trip) is unscoped and needs its own
 `superpowers:brainstorming` session per "Working process" above before
 implementation.
+
+Storybook page art — per-page illustrations via a local Stable Diffusion
+1.5 + LoRA + IP-Adapter pipeline (for character consistency across a
+story's pages), generated during the same background rewrite — is
+implemented and **merged (PR #27)**: see
+`docs/superpowers/specs/2026-09-11-storybook-page-art-design.md`. The
+real Stable Diffusion/LoRA/IP-Adapter call path had never executed
+against real downloaded weights until on-device testing began, so
+several real bugs (missing `peft` dependency, an attention-slicing/
+IP-Adapter incompatibility, a severe Ollama/Stable-Diffusion memory-
+contention slowdown, and an image-quality issue traced to a missing LoRA
+trigger phrase) surfaced and were fixed one at a time directly on the
+open PR rather than in review or fakes-based tests. Confirmed working on
+real hardware, not just merged: a 3-page story's illustrations now
+generate in ~3.5 minutes (down from ~90 minutes pre-fix), and image
+style reads as storybook-appropriate after the trigger-phrase fix. That
+testing also surfaced two issues confirmed unrelated to page art itself:
+#34 (a PyTorch MPS segfault during live TTS/STT) and #36 (backgrounding
+the app during an ordinary pause between turns can navigate to a stale,
+unrelated earlier story's End screen).
+
+For currently open bugs (several filed 2026-09-11 through 2026-09-14 out
+of the on-device testing above), check `gh issue list` rather than this
+file — issue status changes faster than this doc gets updated.
