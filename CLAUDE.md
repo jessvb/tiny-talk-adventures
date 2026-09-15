@@ -186,19 +186,23 @@ implementation.
 
 Storybook page art — per-page illustrations via a local Stable Diffusion
 1.5 + LoRA + IP-Adapter pipeline (for character consistency across a
-story's pages), generated during the same background rewrite — has an
-approved spec, is implemented, and is **PR #27, open, in active
-on-device testing**: see
+story's pages), generated during the same background rewrite — is
+implemented and **merged (PR #27)**: see
 `docs/superpowers/specs/2026-09-11-storybook-page-art-design.md`. The
 real Stable Diffusion/LoRA/IP-Adapter call path had never executed
 against real downloaded weights until on-device testing began, so
 several real bugs (missing `peft` dependency, an attention-slicing/
 IP-Adapter incompatibility, a severe Ollama/Stable-Diffusion memory-
-contention slowdown, an image-quality issue traced to the LoRA's trigger
-phrase) have surfaced and been fixed one at a time directly on the open
-PR rather than in review or fakes-based tests. Don't delete
-`worktree-storybook-page-art-design` until this merges — testing is
-ongoing there.
+contention slowdown, and an image-quality issue traced to a missing LoRA
+trigger phrase) surfaced and were fixed one at a time directly on the
+open PR rather than in review or fakes-based tests. Confirmed working on
+real hardware, not just merged: a 3-page story's illustrations now
+generate in ~3.5 minutes (down from ~90 minutes pre-fix), and image
+style reads as storybook-appropriate after the trigger-phrase fix. That
+testing also surfaced two issues confirmed unrelated to page art itself:
+#34 (a PyTorch MPS segfault during live TTS/STT) and #36 (backgrounding
+the app during an ordinary pause between turns can navigate to a stale,
+unrelated earlier story's End screen).
 
 For currently open bugs (several filed 2026-09-11 through 2026-09-14 out
 of the on-device testing above), check `gh issue list` rather than this
