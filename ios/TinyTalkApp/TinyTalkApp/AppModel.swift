@@ -668,11 +668,25 @@ final class AppModel: ObservableObject {
     /// What LibraryView calls on appear, so opening Library is always
     /// fresh rather than depending on having recently backgrounded or
     /// concluded a story (the two triggers that otherwise populate
-    /// libraryStories, see startPollingState()).
+    /// libraryStories, see startPollingState()). Also Library's reconnect
+    /// entry point: "Home" (goHome()) always disconnects (see its own doc
+    /// comment), which used to leave a nil coordinator here with no
+    /// recovery -- openStory()'s own coordinator guard would then silently
+    /// no-op on every card tap, with zero feedback to the child. Reuses
+    /// the same connectResumingIfPending() reconnect Landing's "Create a
+    /// Story" already relies on; connect()'s own post-connect steps
+    /// already call listStories(), so no separate fetch is needed once it
+    /// completes. Guarded on `coordinator == nil` rather than `isConnected`
+    /// because connect() sets `coordinator` synchronously well before
+    /// isConnected flips true (see connect()'s own ordering) -- checking
+    /// isConnected here would let a second onAppear during that window
+    /// kick off a duplicate connect.
     func refreshLibrary() {
-        Task { [weak self] in
-            await self?.coordinator?.listStories()
+        guard let coordinator else {
+            Task { [weak self] in await self?.connectResumingIfPending() }
+            return
         }
+        Task { await coordinator.listStories() }
     }
 
     /// What Settings' story-length steppers call on every change -- see

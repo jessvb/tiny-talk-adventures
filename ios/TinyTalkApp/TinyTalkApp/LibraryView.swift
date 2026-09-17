@@ -18,7 +18,11 @@ struct LibraryView: View {
 
             VStack(spacing: 0) {
                 header
-                if model.libraryStories.isEmpty {
+                if !model.isConnected {
+                    Spacer()
+                    connectingState
+                    Spacer()
+                } else if model.libraryStories.isEmpty {
                     Spacer()
                     VStack(spacing: 8) {
                         Text("No stories yet — make one with me first!")
@@ -115,6 +119,34 @@ struct LibraryView: View {
             Text("Couldn't finish this storybook")
                 .font(TTA.Typography.story(13, italic: true))
                 .foregroundColor(TTA.Palette.alert)
+        }
+    }
+
+    /// Shown while Library is reconnecting -- reachable whenever "Home"
+    /// (AppModel.goHome()) disconnected the live session before landing
+    /// here (see AppModel.refreshLibrary()'s doc comment). Without this,
+    /// the grid below would either sit empty or -- worse -- show a stale
+    /// list from before the disconnect whose cards silently did nothing
+    /// when tapped, since openStory() requires a live coordinator.
+    private var connectingState: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+            Text("Opening your library…")
+                .font(TTA.Typography.story(15, italic: true))
+                .foregroundColor(TTA.Palette.inkSoft)
+            if let error = model.lastErrorMessage {
+                // Same styling as StoryView's errorBanner -- one error
+                // should look the same wherever it surfaces.
+                Text(error)
+                    .font(TTA.Typography.body(13, weight: .semibold))
+                    .foregroundColor(TTA.Palette.cream)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(TTA.Palette.alert)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .onTapGesture { model.lastErrorMessage = nil }
+                    .padding(.horizontal, 24)
+            }
         }
     }
 
