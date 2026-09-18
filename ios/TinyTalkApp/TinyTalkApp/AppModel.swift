@@ -822,6 +822,19 @@ final class AppModel: ObservableObject {
                     self.lastTranscript = transcript
                     self.lastReply = reply
                     self.isMicMuted = muted
+                    // Self-healing companion to screen's own didSet (see its
+                    // doc comment): on-device testing (issue #31) found that
+                    // one-shot mute can lose a narrow race against the
+                    // concluding turn's own turnEnd-driven setMuted(false)
+                    // if speech starts right as `screen` changes -- confirmed
+                    // by testing that waiting a few seconds before speaking
+                    // avoided it, meaning the mute eventually wins, just not
+                    // immediately. Reasserting here, once per ~100ms poll
+                    // tick, means a lost race self-corrects within one tick
+                    // instead of staying lost until the next screen change.
+                    if self.screen != .creating, !muted {
+                        Task { await coordinator.setMuted(true) }
+                    }
                     self.currentTurnId = turnId
                     self.coordinatorDebugLog = log
                     self.debugLog = self.mergedDebugLog()
