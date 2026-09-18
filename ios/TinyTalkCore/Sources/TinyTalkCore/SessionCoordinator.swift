@@ -505,8 +505,15 @@ public actor SessionCoordinator {
     /// Each loop iteration awaits a full play() call, so the ditty's own
     /// baked-in trailing silence (see WaitingDitty.audio) paces the loop --
     /// no separate timer/sleep needed. Bounded by dittyTimeoutSeconds: past
-    /// that, handleDittyTimeout() runs instead of looping again.
-    private func startWaitingDitty() {
+    /// that, `onTimeout` runs instead of looping again.
+    ///
+    /// Shared by the live-turn wait (startWaitingDitty()) and the
+    /// page-audio wait (startPageAudioDitty()) -- both play the same clip
+    /// through the same single player node. Sharing ONE dittyTask field
+    /// (rather than a separate one per purpose) is what makes the no-op-if-
+    /// already-running guard below also guarantee the two can never run at
+    /// once, with no extra bookkeeping.
+    private func startDittyLoop(onTimeout: @escaping @Sendable () async -> Void) {
         guard let waitingDittyAudio, dittyTask == nil else {
             // logDebug, not print: this is the single highest-signal line
             // for diagnosing "the ditty didn't resume after backgrounding"
@@ -514,7 +521,7 @@ public actor SessionCoordinator {
             // doc comment for why most ditty-loop prints stay excluded from
             // it -- this one is a rare, one-shot event, not per-iteration
             // noise).
-            logDebug("SessionCoordinator: startWaitingDitty() no-op (audio configured=\(waitingDittyAudio != nil), already running=\(dittyTask != nil))")
+            logDebug("SessionCoordinator: startDittyLoop() no-op (audio configured=\(waitingDittyAudio != nil), already running=\(dittyTask != nil))")
             return
         }
         logDebug("SessionCoordinator: starting ditty loop")
@@ -526,7 +533,7 @@ public actor SessionCoordinator {
             while !Task.isCancelled {
                 if Date().timeIntervalSince(dittyStartedAt) >= dittyTimeoutSeconds {
                     print("SessionCoordinator: ditty loop timed out after \(iteration) iteration(s)")
-                    await self.handleDittyTimeout()
+                    await onTimeout()
                     return
                 }
                 iteration += 1
@@ -535,6 +542,26 @@ public actor SessionCoordinator {
             }
             print("SessionCoordinator: ditty loop ended after \(iteration) iteration(s), cancelled=\(Task.isCancelled)")
         }
+    }
+
+    private func startWaitingDitty() {
+        startDittyLoop { [weak self] in await self?.handleDittyTimeout() }
+    }
+
+    /// Page-audio counterpart to startWaitingDitty() -- covers the gap
+    /// between a 🔊 tap and the first real audio chunk actually starting
+    /// playback (network round trip + the server's own TTS synthesis time
+    /// for that page's text), which previously had no audio feedback at
+    /// all -- reported on-device as "I didn't get any voices initially."
+    /// Stopped wherever pendingPageAudioRequest itself gets resolved or
+    /// abandoned: the first real chunk (consumeServerEvents()'s .audio
+    /// branch), stopPageAudio(), a send failure in synthesizePage(), and
+    /// the unrelated-error cleanup branch in consumeServerEvents() -- all
+    /// of those call the shared stopWaitingDitty() directly rather than a
+    /// separate stop function, since stopping is identical regardless of
+    /// which purpose started it.
+    private func startPageAudioDitty() {
+        startDittyLoop { [weak self] in await self?.handlePageAudioDittyTimeout() }
     }
 
     /// Stops the ditty loop, if one is running. Calls stopPlaybackImmediately()
@@ -574,6 +601,24 @@ public actor SessionCoordinator {
         await setMuted(false)
         lastErrorMessage = "The agent took too long thinking. Can you say something to wake them up?"
         _ = try? machine.handle(.turnEnd)
+    }
+
+    /// Page-audio counterpart to handleDittyTimeout() -- deliberately does
+    /// NOT touch machine.state/turnContinuation/isMuted the way that one
+    /// does: a page-audio wait has no turn of its own to abandon, and a
+    /// live turn could genuinely be in progress at the same time (e.g. the
+    /// child navigated to Library mid-reply-wait via Elsie's desk's
+    /// "Library" menu item) -- this must only ever affect the page-audio
+    /// request that's timing out, never an unrelated live turn. Guards on
+    /// pendingPageAudioRequest still being set for the same reason
+    /// handleDittyTimeout() re-checks machine.state: the loop's timeout
+    /// check and this call aren't atomic, so real audio (or an error) may
+    /// already have resolved this request in the narrow window between them.
+    private func handlePageAudioDittyTimeout() async {
+        guard pendingPageAudioRequest != nil else { return }
+        stopWaitingDitty()
+        pendingPageAudioRequest = nil
+        lastErrorMessage = "That page's reading took too long to load."
     }
 
     /// Shared connection-lost recovery -- runs whether the loss was
@@ -735,6 +780,14 @@ public actor SessionCoordinator {
                     // fully resolve before a later-sent synthesizePage's
                     // bytes ever start arriving -- these two branches never
                     // actually race for the same frame.
+                    // Stops the page-audio ditty before this (or any later)
+                    // chunk reaches the shared player node -- a no-op past
+                    // the first chunk, since stopWaitingDitty() is already
+                    // a no-op once dittyTask is nil. Mirrors runTurn()'s own
+                    // .audio case stopping the live-turn ditty before its
+                    // first real chunk, for the same "never in flight on
+                    // the same player node at once" reason.
+                    stopWaitingDitty()
                     await audio.enqueue(data)
                     continue
                 }
@@ -769,10 +822,22 @@ public actor SessionCoordinator {
                 // Deliberately does NOT `continue`: the error frame itself
                 // still needs to fall through to normal turn-scoped error
                 // handling below, unchanged.
+                // Captured before clearing below, since stopping the
+                // page-audio ditty (if any) needs to know whether THIS
+                // error is what it was waiting on -- an unconditional
+                // stopWaitingDitty() here would be wrong, since it could
+                // just as easily be a live-turn ditty currently running
+                // for an entirely unrelated turn (see startPageAudioDitty()'s
+                // doc comment on the two sharing one dittyTask), which this
+                // page-scoped error must never silence.
+                let wasAwaitingPageAudio = pendingPageAudioRequest != nil
                 pendingPageImageRequests.removeAll()
                 pendingPageImageBytes = nil
                 pendingPageAudioRequest = nil
                 pendingPageAudioDoneMarkersToDiscard = 0
+                if wasAwaitingPageAudio {
+                    stopWaitingDitty()
+                }
             }
 
             // Story-lifecycle events carry no turn_id -- they're not
@@ -1104,8 +1169,13 @@ public actor SessionCoordinator {
     /// enqueued to playback as it arrives (see consumeServerEvents()'s
     /// .audio handling) -- unlike getPageImage, there is no result to poll,
     /// since this plays audio rather than producing data a UI reads back.
+    /// Starts the page-audio ditty immediately, covering the network +
+    /// TTS-synthesis gap before the first real chunk arrives (see
+    /// startPageAudioDitty()'s doc comment) -- stopped below on a send
+    /// failure, since nothing will ever arrive to stop it the normal way.
     public func synthesizePage(storyId: String, pageIndex: Int) async {
         pendingPageAudioRequest = (storyId: storyId, pageIndex: pageIndex)
+        startPageAudioDitty()
         do {
             try await connection.send(.synthesizePage(storyId: storyId, pageIndex: pageIndex))
         } catch {
@@ -1117,6 +1187,7 @@ public actor SessionCoordinator {
             if pendingPageAudioRequest?.storyId == storyId, pendingPageAudioRequest?.pageIndex == pageIndex {
                 pendingPageAudioRequest = nil
             }
+            stopWaitingDitty()
         }
     }
 
@@ -1140,6 +1211,11 @@ public actor SessionCoordinator {
             pendingPageAudioDoneMarkersToDiscard += 1
         }
         pendingPageAudioRequest = nil
+        // A no-op if the ditty already stopped itself (real audio already
+        // arrived) -- still needed here for the case where the child
+        // swipes away/re-taps before any real chunk ever showed up, since
+        // nothing else would ever stop it otherwise.
+        stopWaitingDitty()
         audio.stopPlaybackImmediately()
     }
 

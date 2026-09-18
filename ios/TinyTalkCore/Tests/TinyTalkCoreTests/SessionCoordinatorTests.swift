@@ -866,6 +866,141 @@ final class SessionCoordinatorTests: XCTestCase {
         runLoop.cancel()
     }
 
+    /// The page-audio counterpart to
+    /// testWaitingDittyLoopsWhileWaitingForReplyAndStopsWhenRealAudioArrives
+    /// -- confirms the fix for the on-device report "I didn't get any
+    /// voices initially" (tapping 🔊 gave no audio feedback while the
+    /// server synthesized that page's TTS).
+    func testPageAudioDittyLoopsWhileWaitingAndStopsWhenRealAudioArrives() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        audio.playDelayNanos = 5_000_000 // paces the loop so it iterates a few times, not thousands
+        let vad = FakeVAD()
+        let dittyAudio = Data([0xAA, 0xBB])
+        let coordinator = SessionCoordinator(
+            connection: connection, audio: audio, vad: vad, waitingDittyAudio: dittyAudio
+        )
+        let runLoop = Task { await coordinator.start() }
+
+        await coordinator.synthesizePage(storyId: "pip", pageIndex: 1)
+        // No chunks arrive yet -- let the ditty loop run for a while.
+        try? await Task.sleep(nanoseconds: 30_000_000)
+
+        let playedWhileWaiting = audio.played
+        XCTAssertFalse(playedWhileWaiting.isEmpty, "the ditty should have looped at least once while waiting for page audio")
+        XCTAssertTrue(
+            playedWhileWaiting.allSatisfy { $0 == dittyAudio },
+            "only ditty audio should have played so far -- no real page audio has arrived yet"
+        )
+
+        connection.emit(.audio(Data([1, 2, 3])))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        // The loop must have genuinely stopped, not just paused.
+        let countRightAfterRealAudio = audio.played.count
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(
+            audio.played.count, countRightAfterRealAudio,
+            "the page-audio ditty loop must have stopped -- no further chunks should appear once real audio starts"
+        )
+        XCTAssertEqual(audio.enqueued, [Data([1, 2, 3])])
+
+        runLoop.cancel()
+    }
+
+    func testPageAudioDittyStopsOnStopPageAudio() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        audio.playDelayNanos = 5_000_000
+        let vad = FakeVAD()
+        let dittyAudio = Data([0xAA, 0xBB])
+        let coordinator = SessionCoordinator(
+            connection: connection, audio: audio, vad: vad, waitingDittyAudio: dittyAudio
+        )
+        let runLoop = Task { await coordinator.start() }
+
+        await coordinator.synthesizePage(storyId: "pip", pageIndex: 1)
+        try? await Task.sleep(nanoseconds: 20_000_000) // ditty looping, no chunk yet
+
+        await coordinator.stopPageAudio()
+
+        let countRightAfterStop = audio.played.count
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(
+            audio.played.count, countRightAfterStop,
+            "stopPageAudio() must stop the page-audio ditty, even though no real audio ever arrived to stop it the other way"
+        )
+
+        runLoop.cancel()
+    }
+
+    /// Confirms a real gap this fix closes: without it, an abandoned
+    /// synthesize_page whose story/page is invalid (error frame, no
+    /// page_audio_done -- see session.py's _page_or_error) would leave the
+    /// page-audio ditty looping for the full dittyTimeoutSeconds instead of
+    /// stopping the instant the error arrives.
+    func testPageAudioDittyStopsOnUnrelatedError() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        audio.playDelayNanos = 5_000_000
+        let vad = FakeVAD()
+        let dittyAudio = Data([0xAA, 0xBB])
+        let coordinator = SessionCoordinator(
+            connection: connection, audio: audio, vad: vad, waitingDittyAudio: dittyAudio
+        )
+        let runLoop = Task { await coordinator.start() }
+
+        await coordinator.synthesizePage(storyId: "pip", pageIndex: 1)
+        try? await Task.sleep(nanoseconds: 20_000_000) // ditty looping
+
+        connection.emit(.message(.error("no page 1 for story 'pip'", turnId: 0)))
+
+        let countRightAfterError = audio.played.count
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(
+            audio.played.count, countRightAfterError,
+            "an error answering synthesize_page must stop the page-audio ditty immediately, not just eventually via its timeout"
+        )
+
+        runLoop.cancel()
+    }
+
+    /// Confirms handlePageAudioDittyTimeout() is properly scoped: it must
+    /// resolve entirely on its own, without needing or affecting any
+    /// turn/session state -- a page-audio wait has no turn of its own to
+    /// abandon, unlike handleDittyTimeout()'s live-turn version.
+    func testPageAudioDittyTimesOutWithoutTouchingSessionState() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        audio.playDelayNanos = 5_000_000 // a couple of iterations before the timeout fires
+        let vad = FakeVAD()
+        let dittyAudio = Data([0xAA, 0xBB])
+        let coordinator = SessionCoordinator(
+            connection: connection, audio: audio, vad: vad,
+            waitingDittyAudio: dittyAudio, dittyTimeoutSeconds: 0.03
+        )
+        let runLoop = Task { await coordinator.start() }
+
+        await coordinator.synthesizePage(storyId: "pip", pageIndex: 1)
+        // No page audio (or error) ever arrives -- let the timeout fire.
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        let stateAfterTimeout = await coordinator.state
+        XCTAssertEqual(stateAfterTimeout, .idle, "a page-audio ditty timeout must never touch the turn state machine")
+        let mutedAfterTimeout = await coordinator.isMuted
+        XCTAssertFalse(mutedAfterTimeout, "a page-audio ditty timeout must never touch mute state")
+
+        // The loop must have genuinely stopped, not just paused.
+        let countRightAfterTimeout = audio.played.count
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(
+            audio.played.count, countRightAfterTimeout,
+            "the page-audio ditty loop must stop once it times out, not keep looping forever"
+        )
+
+        runLoop.cancel()
+    }
+
     func testIsRewritingTracksRewritingStartedAndDone() async {
         let connection = FakeConnection()
         let audio = FakeAudio()
