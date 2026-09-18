@@ -55,6 +55,18 @@ final class AppModel: ObservableObject {
     @Published var storyTurnCount: Int
     @Published var storybookPageCount: Int
     @Published var screen: AppScreen
+    /// Where LibraryView's back button returns to -- Library is reachable
+    /// both from Landing (possibly disconnected, see refreshLibrary()'s
+    /// on-demand reconnect) and from Elsie's desk mid-story (already
+    /// connected, session running in the background). Deliberately NOT
+    /// derived from isConnected the way SettingsView's equivalent back
+    /// button is: Library's own reconnect can make isConnected true again
+    /// for a visit that started from Landing, which would make isConnected
+    /// alone indistinguishable from "came from a live story." Every screen
+    /// that navigates to .library sets this explicitly rather than relying
+    /// on the .landing default, since AppModel is one long-lived instance
+    /// across the whole session.
+    var libraryReturnScreen: AppScreen = .landing
     @Published var state: SessionState = .idle
     @Published var lastTranscript: String = ""
     @Published var lastReply: String = ""
@@ -270,12 +282,22 @@ final class AppModel: ObservableObject {
         screen = .landing
     }
 
-    /// What Landing's "Create a Story" button (and the menu's "New Story"
-    /// entry, for a first connect from a cold app launch) calls. Reuses
-    /// connectResumingIfPending() as-is so backgrounding/resume behavior is
-    /// identical regardless of which screen initiated the connect.
+    /// What Landing's "Create a Story" button and Library's "+ New story"
+    /// tile both call. Reuses connectResumingIfPending() as-is so
+    /// backgrounding/resume behavior is identical regardless of which
+    /// screen initiated the connect. Guarded on isConnected: Library's "+"
+    /// tile is now reachable while ALREADY connected (via Elsie's desk's
+    /// own "Library" menu item, which navigates there without
+    /// disconnecting) -- without this guard, tapping it mid-story would
+    /// call connect() a second time on top of the live coordinator,
+    /// leaking its WebSocket/audio engine/Task and double-capturing the
+    /// mic rather than just returning to the story already in progress.
+    /// The live session keeps running via startPollingState()'s poll loop
+    /// regardless of which screen is on-screen, so simply navigating back
+    /// to .creating is enough to resume it.
     func startStory() async {
         screen = .creating
+        guard !isConnected else { return }
         await connectResumingIfPending()
     }
 

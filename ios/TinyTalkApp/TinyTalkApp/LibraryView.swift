@@ -53,7 +53,7 @@ struct LibraryView: View {
     private var header: some View {
         HStack(spacing: 12) {
             Button {
-                model.screen = .landing
+                model.screen = model.libraryReturnScreen
             } label: {
                 Image(systemName: "chevron.left")
             }

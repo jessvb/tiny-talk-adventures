@@ -65,6 +65,7 @@ struct LandingView: View {
                         }
                     } else {
                         Button {
+                            model.libraryReturnScreen = .landing
                             model.screen = .library
                         } label: {
                             Label("Read Stories", systemImage: "book.closed.fill")
