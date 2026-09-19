@@ -58,6 +58,12 @@ final class FakeAudio: AudioPlaying, @unchecked Sendable {
     /// to register its buffer -- mirrors playWasCancelled's purpose for
     /// the enqueue path.
     var enqueueWasCancelled: Bool { lock.withLock { _enqueueWasCancelled } }
+    /// True while a waitForPlaybackToFinish() call is suspended waiting on
+    /// outstanding buffers -- i.e. runTurn() has processed its turnEnd and
+    /// the (simulated) reply is still audibly playing. The observable that
+    /// lets a test wait for that moment deterministically instead of
+    /// sleeping a fixed time and hoping turnEnd has been handled by then.
+    var hasPlaybackWaiter: Bool { lock.withLock { waiter != nil } }
 
     func stopPlaybackImmediately() {
         let toResume: CheckedContinuation<Void, Never>? = lock.withLock {
