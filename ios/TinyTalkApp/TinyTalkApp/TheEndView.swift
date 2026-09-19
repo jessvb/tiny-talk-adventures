@@ -139,7 +139,11 @@ struct TheEndView: View {
 
             Spacer(minLength: 12)
 
-            Text("by \(childName) & Elsie · \(detail.pages.count) pages")
+            // .pending/.failed details carry no pages, so a count would read
+            // "0 pages" on the cover.
+            Text(detail.pages.isEmpty
+                 ? "by \(childName) & Elsie"
+                 : "by \(childName) & Elsie · \(detail.pages.count) pages")
                 .font(TTA.Typography.story(12.5))
                 .foregroundColor(Color(hex: 0xffe9b8))
         }
