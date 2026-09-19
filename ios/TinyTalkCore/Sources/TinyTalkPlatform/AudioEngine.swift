@@ -182,6 +182,100 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         }
     }
 
+    // MARK: Capture diagnostics (issue #39)
+    //
+    // Observation only -- nothing below feeds back into capture/teardown
+    // behavior. Issue #39: the mic silently stopped delivering audio in
+    // server mode after a demo-mode session (or, in a second on-device
+    // report, startCapturing() threw an opaque error), root cause not yet
+    // established between (1) a stale AVAudioEngine still holding the input
+    // hardware and (2) VAD/ONNX state. The snapshot lines these emit (see
+    // CaptureSnapshot) are meant to tell those apart on the next
+    // occurrence -- the logic lives in CaptureDiagnostics.swift/
+    // CaptureSnapshot.swift so it can be unit-tested; only the
+    // AVAudioEngine/AVAudioSession reads live here.
+
+    /// Every RealAudioEngine still alive, weakly -- diagnostics must never
+    /// keep an engine alive themselves, or the live count would lie.
+    /// Engines join lazily, on their first startCapturing()/stopCapturing()
+    /// call (see WeakInstanceRegistry).
+    private static let liveEngines = WeakInstanceRegistry<RealAudioEngine>()
+    private static let zeroBufferWatchdogNanos: UInt64 = 2_000_000_000
+    private let captureDiagnostics = CaptureDiagnostics()
+
+    /// Same print + timestamped onDebugEvent pairing as this file's other
+    /// diagnostics (see onDebugEvent's doc comment).
+    private func emitDiagnostic(_ message: String) {
+        print(message)
+        onDebugEvent?("[\(DebugTimestamp.now())] \(message)")
+    }
+
+    /// Reads the engine, tap, input node and AVAudioSession state right now.
+    /// Not for use from the tap callback -- it touches AVAudioSession.
+    private func captureSnapshot(_ label: String, runningBefore: Bool? = nil) -> CaptureSnapshot {
+        let id = Self.liveEngines.id(for: self)
+        let inputFormat = engine.inputNode.outputFormat(forBus: 0)
+        let session = AVAudioSession.sharedInstance()
+        let others = Self.liveEngines.liveInstances()
+            .filter { $0.instance !== self }
+            .map {
+                CaptureSnapshot.OtherEngine(
+                    id: $0.id,
+                    stopCalled: $0.instance.captureDiagnostics.wasStopped,
+                    engineRunning: $0.instance.engine.isRunning
+                )
+            }
+        return CaptureSnapshot(
+            label: label,
+            engineId: id,
+            engineRunning: engine.isRunning,
+            engineRunningBefore: runningBefore,
+            tapInstalled: captureDiagnostics.isTapInstalled,
+            inputSampleRate: inputFormat.sampleRate,
+            inputChannelCount: Int(inputFormat.channelCount),
+            session: .init(
+                category: session.category.rawValue,
+                mode: session.mode.rawValue,
+                otherAudioPlaying: session.isOtherAudioPlaying,
+                silenceSecondaryAudioHint: session.secondaryAudioShouldBeSilencedHint,
+                inputAvailable: session.isInputAvailable,
+                inputPorts: session.currentRoute.inputs.map { $0.portType.rawValue },
+                sampleRate: session.sampleRate
+            ),
+            liveEngines: Self.liveEngines.liveCount,
+            otherEngines: others,
+            counts: captureDiagnostics.counts
+        )
+    }
+
+    /// Log-only: reports once, shortly after startCapturing() succeeds,
+    /// whether the tap has delivered ANY buffer yet -- a loud warning if
+    /// not (nothing reached the app: hypothesis 1), a quiet "ok" line with
+    /// the counts if so. Never restarts or otherwise touches capture.
+    /// stopCapturing() cancels it. Holds `self` weakly: this Task must not
+    /// itself keep an old engine alive.
+    private func startZeroBufferWatchdog() {
+        let diagnostics = captureDiagnostics
+        let seconds = String(format: "%.1f", Double(Self.zeroBufferWatchdogNanos) / 1_000_000_000)
+        let task = Task { [weak self] in
+            await CaptureWatchdog.run(
+                after: Self.zeroBufferWatchdogNanos,
+                diagnostics: diagnostics,
+                onZeroBuffers: { _ in
+                    guard let self else { return }
+                    self.emitDiagnostic(self.captureSnapshot(
+                        "WARNING watchdog: ZERO tap buffers \(seconds)s after startCapturing() succeeded -- mic capture is silently dead (log only, nothing restarted)"
+                    ).formatted)
+                },
+                onBuffersFlowing: { _ in
+                    guard let self else { return }
+                    self.emitDiagnostic(self.captureSnapshot("watchdog ok: tap buffers are arriving \(seconds)s after startCapturing()").formatted)
+                }
+            )
+        }
+        diagnostics.replaceWatchdog(with: task)
+    }
+
     /// Starts mic capture. `onAudioCaptured` is invoked with 24kHz mono
     /// PCM16 LE chunks (matching the wire format) as they're captured --
     /// converted from whatever format the hardware's input node natively
@@ -189,7 +283,18 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     /// hand-off mechanism are tuned during on-device testing in Task 8;
     /// AVAudioConverter is the right tool for the format conversion itself.
     public func startCapturing(onAudioCaptured: @escaping @Sendable (Data) -> Void) async throws {
-        self.onAudioCaptured = onAudioCaptured
+        // Diagnostics (issue #39): state before anything below runs, so a
+        // start() that hangs or throws still leaves this line behind.
+        let engineRunningBefore = engine.isRunning
+        emitDiagnostic(captureSnapshot("startCapturing: begin").formatted)
+        // Counts each converted chunk (and its peak level) on its way out to
+        // the caller -- see CaptureDiagnostics. Captures only the
+        // diagnostics object, never self.
+        let diagnostics = captureDiagnostics
+        self.onAudioCaptured = { data in
+            diagnostics.chunkDelivered(peak: CaptureDiagnostics.peakAmplitude(ofPCM16: data))
+            onAudioCaptured(data)
+        }
 
         // Confirmed on-device (real iPhone 13 Pro): enabling voice
         // processing makes the input tap deliver zero buffers forever, no
@@ -232,10 +337,15 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         for attempt in 1...8 {
             do {
                 try installCaptureTapAndStart()
+                emitDiagnostic(captureSnapshot("startCapturing: started", runningBefore: engineRunningBefore).formatted)
+                startZeroBufferWatchdog()
                 return
             } catch {
                 lastError = error
-                print("RealAudioEngine: startCapturing attempt \(attempt)/8 failed: \(error)")
+                // emitDiagnostic (print + on-screen log), same text as the
+                // bare print() this replaced: these per-attempt reasons are
+                // exactly what issue #39's thrown-error report was missing.
+                emitDiagnostic("RealAudioEngine: startCapturing attempt \(attempt)/8 failed: \(error)")
                 do {
                     try await Task.sleep(nanoseconds: 250_000_000)
                 } catch {
@@ -243,6 +353,7 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
                 }
             }
         }
+        emitDiagnostic(captureSnapshot("startCapturing: FAILED after 8 attempts -- throwing").formatted)
         throw lastError!
     }
 
@@ -298,6 +409,9 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         print("RealAudioEngine: installing tap, hardwareFormat=\(hardwareFormat)")
         inputNode.installTap(onBus: 0, bufferSize: 2400, format: hardwareFormat) { [weak self] buffer, _ in
             guard let self else { return }
+            // Diagnostics (issue #39): a buffer reached the app at all --
+            // one lock-protected increment, see CaptureDiagnostics.
+            self.captureDiagnostics.bufferArrived()
             guard let outputBuffer = AVAudioPCMBuffer(
                 pcmFormat: self.wireFormat,
                 frameCapacity: AVAudioFrameCount(self.wireFormat.sampleRate * Double(buffer.frameLength) / hardwareFormat.sampleRate) + 1
@@ -335,6 +449,7 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             let data = Data(bytes: channelData[0], count: frameLength * MemoryLayout<Int16>.size)
             self.onAudioCaptured?(data)
         }
+        captureDiagnostics.setTapInstalled(true)
 
         do {
             try engine.start()
@@ -377,19 +492,33 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         playerNode.stop()
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
+        captureDiagnostics.setTapInstalled(false)
         do {
             try installCaptureTapAndStart()
         } catch {
-            print("RealAudioEngine: failed to rebuild capture tap after configuration change: \(error)")
+            // Issue #39 diagnostics: was a bare print(). A failed rebuild
+            // leaves NO tap installed -- a silent, permanent mic death if no
+            // later configuration change retries -- so it must reach the
+            // on-screen log, with the state snapshot. Same text as before.
+            emitDiagnostic("RealAudioEngine: failed to rebuild capture tap after configuration change: \(error)")
+            emitDiagnostic(captureSnapshot("rebuildCaptureTap: FAILED -- no capture tap is installed").formatted)
         }
     }
 
     public func stopCapturing() {
+        // Diagnostics (issue #39): read the state as the stop was requested
+        // (input format, session, other live engines), before the teardown
+        // below changes it; the after-teardown fields are patched in at the
+        // end. The line's timestamp vs. the NEW engine's "startCapturing:
+        // begin" is what shows the teardown/start ordering.
+        var stopSnapshot = captureSnapshot("stopCapturing")
+        captureDiagnostics.markStopped()
         if let configChangeObserver {
             NotificationCenter.default.removeObserver(configChangeObserver)
             self.configChangeObserver = nil
         }
         engine.inputNode.removeTap(onBus: 0)
+        captureDiagnostics.setTapInstalled(false)
         // Removing the tap alone leaves the engine (and its
         // voice-processing I/O unit, which owns the physical mic) running.
         // A fast disconnect/reconnect cycle then briefly has two
@@ -400,7 +529,19 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         // engine.start() }` already handles a caller needing to use this
         // same instance for playback afterward.
         engine.stop()
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        var sessionDeactivation = "ok"
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            // Was `try?`: still ignored, just no longer invisible.
+            sessionDeactivation = "threw \(error)"
+        }
+        stopSnapshot.label = "stopCapturing (session setActive(false): \(sessionDeactivation))"
+        stopSnapshot.engineRunningBefore = stopSnapshot.engineRunning
+        stopSnapshot.engineRunning = engine.isRunning
+        stopSnapshot.tapInstalled = captureDiagnostics.isTapInstalled
+        stopSnapshot.counts = captureDiagnostics.counts
+        emitDiagnostic(stopSnapshot.formatted)
     }
 
     public func stopPlaybackImmediately() {
