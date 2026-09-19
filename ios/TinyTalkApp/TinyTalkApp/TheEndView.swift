@@ -243,3 +243,24 @@ struct TheEndView: View {
             .animation(.easeInOut(duration: 2.4).repeatForever(autoreverses: true).delay(delay), value: sparkle)
     }
 }
+
+// One preview per rewrite status, against MockStories' fixtures, so the
+// cover's placeholder states can be eyeballed in Xcode without waiting on
+// a real story to conclude.
+#Preview("Done") {
+    let model = AppModel()
+    model.selectedStory = MockStories.pip
+    return TheEndView(model: model)
+}
+
+#Preview("Pending") {
+    let model = AppModel()
+    model.selectedStory = MockStories.stillWriting
+    return TheEndView(model: model)
+}
+
+#Preview("Failed") {
+    let model = AppModel()
+    model.selectedStory = MockStories.couldNotFinish
+    return TheEndView(model: model)
+}
