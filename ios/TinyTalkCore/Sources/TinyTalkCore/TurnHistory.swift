@@ -4,9 +4,11 @@ import Foundation
 /// AppModel's own polled lastTranscript/lastReply -- SessionCoordinator only
 /// ever exposes the CURRENT turn's latest transcript/reply (see its doc
 /// comments), not a running history, so there is nothing server-side to
-/// read this from. Deliberately bounded by the same disconnect/new-story
-/// resets that already clear debugLog, rather than persisted anywhere --
-/// this is a presentation convenience, not a second copy of the story
+/// read this from. Deliberately bounded by the user's own exits (Home, New
+/// Story) rather than persisted anywhere, and kept across a disconnect the
+/// user didn't choose (backgrounding, a dropped connection -- see
+/// TurnHistory.coordinatorReplaced()) -- this is a presentation
+/// convenience, not a second copy of the story
 /// (server/tinytalk/story_store.py's turn list remains the one real record).
 public struct StoryTurn: Identifiable, Equatable, Sendable {
     public enum Speaker: Equatable, Sendable { case child, elsie }
