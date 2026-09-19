@@ -201,3 +201,98 @@ async def test_concurrent_synthesize_calls_never_overlap_in_the_pipeline():
     assert len(pipeline.windows) == 2
     (start1, end1), (start2, end2) = sorted(pipeline.windows)
     assert end1 <= start2, f"pipeline calls overlapped: {pipeline.windows}"
+
+
+class BlockingPipeline:
+    """Holds a call open until the test releases it, so a test can act while
+    that call is provably mid-flight on its worker thread."""
+
+    def __init__(self, lang_code: str) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.in_call = False
+
+    def __call__(self, text: str, voice: str):
+        self.in_call = True
+        try:
+            self.entered.set()
+            assert self.release.wait(timeout=5)
+            yield ("graphemes", "phonemes", np.array([0.0], dtype=np.float32))
+        finally:
+            self.in_call = False
+
+
+async def test_cancelled_synthesis_does_not_clear_the_mps_cache_under_its_orphaned_call(monkeypatch):
+    # Issue #34, reproduced on real hardware (2026-09-19): cancelling a turn
+    # mid-synthesis (barge-in, new utterance, disconnect) orphans the
+    # pipeline call on its worker thread, and the old `finally` then ran
+    # torch.mps.empty_cache() on a SECOND worker thread while that call was
+    # still inside the MPS backend. empty_cache() also tears down PyTorch's
+    # process-wide MPSGraph cache, so the running kernel's graph was freed
+    # underneath it -- SIGSEGV in _lstm_mps (or, next run, an ObjC "cannot
+    # form weak reference to MPSGraph" abort), no Python traceback. The
+    # release must wait for the orphaned call to actually finish.
+    pipeline = BlockingPipeline("a")
+    cleared_while_call_running: list[bool] = []
+    monkeypatch.setattr(
+        torch.mps, "empty_cache", lambda: cleared_while_call_running.append(pipeline.in_call)
+    )
+    tts = KokoroTts(pipeline_factory=lambda code: pipeline)
+
+    async def run():
+        return [chunk async for chunk in tts.synthesize("hello")]
+
+    task = asyncio.create_task(run())
+    assert await asyncio.to_thread(pipeline.entered.wait, 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.1)  # long enough for a racing release to have fired mid-call
+    pipeline.release.set()  # the orphaned worker thread now runs to completion
+    for _ in range(100):
+        if cleared_while_call_running:
+            break
+        await asyncio.sleep(0.02)
+
+    # Still released exactly once (memory footprint must not creep back up),
+    # but only after the orphaned call was done with the MPS backend.
+    assert cleared_while_call_running == [False]
+
+
+class TrackingCache:
+    """Stands in for torch.mps.empty_cache, recording each call's wall-clock
+    window so a test can assert it never overlapped a pipeline call."""
+
+    def __init__(self, delay: float = 0.05) -> None:
+        self.delay = delay
+        self.windows: list[tuple[float, float]] = []
+        self._windows_lock = threading.Lock()
+
+    def __call__(self) -> None:
+        start = time.monotonic()
+        time.sleep(self.delay)
+        end = time.monotonic()
+        with self._windows_lock:
+            self.windows.append((start, end))
+
+
+async def test_mps_cache_release_never_overlaps_any_pipeline_call(monkeypatch):
+    # Same bug from the other direction: with two synthesize() calls in
+    # flight, the first one's cache release must not run alongside the
+    # second one's pipeline call either.
+    pipeline = TrackingPipeline("a", delay=0.05)
+    cache = TrackingCache(delay=0.05)
+    monkeypatch.setattr(torch.mps, "empty_cache", cache)
+    tts = KokoroTts(pipeline_factory=lambda code: pipeline)
+
+    async def run():
+        return [chunk async for chunk in tts.synthesize("hello")]
+
+    await asyncio.gather(run(), run())
+
+    assert len(pipeline.windows) == 2 and len(cache.windows) == 2
+    windows = sorted(pipeline.windows + cache.windows)
+    for (_, earlier_end), (later_start, _) in zip(windows, windows[1:]):
+        assert earlier_end <= later_start, (
+            f"GPU work overlapped: pipeline={pipeline.windows} cache={cache.windows}"
+        )
