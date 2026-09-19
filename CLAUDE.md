@@ -169,20 +169,39 @@ here: #23 (turn history lost after backgrounding), #24 (main's newer
 features silently no-op in demo mode, since it bypasses the real
 server), #25 (toggle LLM backend outside demo mode too), and #26 (demo
 mode has no fallback for storybook page art's image generation, below —
-it needs the home Mac's Neural Engine).
+it needs the home Mac's Neural Engine). Since then #33 (the same
+image-generation gap, filed from the demo-mode side) and #39 (the mic
+silently dying in server mode after a demo-mode session) have joined
+them, and the Library/Reading wiring below widened #24: `DemoConnection`
+silently ignores `list_stories`/`get_story`/`get_page_image`/
+`synthesize_page`/`conclude_story`/`update_settings`, so Library,
+Reading, The End, "Finish this story", and the story-length settings all
+do nothing away from home. Closing those gaps is the household's stated
+top priority (2026-09-19) and is going through `superpowers:brainstorming`
+— there is no spec yet.
 
 Wiring the iOS screens to the real server API (`list_stories`, `get_story`,
-`synthesize_page`) instead of `MockStories.swift` is **partially in
-flight**: PR #17 is **merged** — it wires The End screen — a "Finish this
-story" menu item that sends the existing `conclude_story` action, and
-real auto-navigation to The End gated on both `rewriting_started`
-arriving and the concluding turn's audio actually finishing local
-playback. The Library and Reading screens are still 100% mock-data-only;
-wiring those (plus Landing's/StoryView's real "Read Stories" buttons, and
-swapping `ReadingView`'s `AVSpeechSynthesizer` stand-in for a real
-`synthesize_page` round trip) is unscoped and needs its own
-`superpowers:brainstorming` session per "Working process" above before
-implementation.
+`synthesize_page`) instead of `MockStories.swift` is **complete and
+merged**. PR #17 wired The End screen — a "Finish this story" menu item
+that sends the existing `conclude_story` action, and real auto-navigation
+to The End gated on both `rewriting_started` arriving and the concluding
+turn's audio actually finishing local playback. PR #42 wired the rest —
+see `docs/superpowers/specs/2026-09-15-library-reading-screens-design.md`:
+Landing's "Read Stories" button (real, and only tappable once the story
+list is non-empty), `LibraryView` (real `list_stories`/`get_story`; it
+reconnects on demand when entered after "Home" disconnected the session),
+`ReadingView` (real `synthesize_page` audio instead of the
+`AVSpeechSynthesizer` stand-in, covered by the same waiting ditty a
+live-turn wait uses, alongside PR #27's illustrations), and a "Library"
+entry in Elsie's desk that leaves the live story running. All ten checks
+of its on-device script passed on real hardware (only the
+zero-saved-stories case was skipped, by choice). PR #38, merged right
+after, mutes the mic on every screen except story creation (issue #31);
+the #38 + #42 combination has only been build-checked together, not
+on-device tested together. One known gap from that testing, deliberately
+left open: #41 (Landing's "Read Stories" stays greyed out on a cold
+launch until the first connect, because fixing it naively would engage
+the mic before the child taps anything).
 
 Storybook page art — per-page illustrations via a local Stable Diffusion
 1.5 + LoRA + IP-Adapter pipeline (for character consistency across a
