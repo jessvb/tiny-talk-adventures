@@ -1,15 +1,19 @@
 import asyncio
+import logging
+import sys
 import threading
 import time
+import types
 
 import numpy as np
 import pytest
 import torch
 from phonemizer.backend.espeak.wrapper import EspeakWrapper
 
+from tinytalk import config
 from tinytalk.audio import float32_to_pcm16
 from tinytalk.engines import EngineError
-from tinytalk.tts_kokoro import KokoroTts, _configure_espeak_from_homebrew
+from tinytalk.tts_kokoro import KokoroTts, _configure_espeak_from_homebrew, _default_pipeline_factory
 
 
 def _make_fake_homebrew_layout(tmp_path):
@@ -296,3 +300,52 @@ async def test_mps_cache_release_never_overlaps_any_pipeline_call(monkeypatch):
         assert earlier_end <= later_start, (
             f"GPU work overlapped: pipeline={pipeline.windows} cache={cache.windows}"
         )
+
+
+async def test_cpu_device_never_touches_the_mps_cache(monkeypatch):
+    # TINYTALK_TTS_DEVICE=cpu is the fallback if MPS ever misbehaves again:
+    # it must take the MPS backend (and its process-wide graph cache) out of
+    # Kokoro's path entirely, not just run the model elsewhere.
+    monkeypatch.setattr(config, "KOKORO_DEVICE", "cpu")
+    calls = []
+    monkeypatch.setattr(torch.mps, "empty_cache", lambda: calls.append(True))
+    tts = KokoroTts(pipeline_factory=lambda code: FakePipeline(code))
+
+    [chunk async for chunk in tts.synthesize("The fox ran.")]
+
+    assert calls == []
+
+
+def test_startup_log_names_the_configured_device(monkeypatch, caplog):
+    monkeypatch.setattr(config, "KOKORO_DEVICE", "cpu")
+
+    with caplog.at_level(logging.INFO, logger="tinytalk.tts_kokoro"):
+        KokoroTts(pipeline_factory=lambda code: FakePipeline(code))
+
+    assert "device=cpu" in caplog.text
+
+
+@pytest.mark.parametrize("device", ["cpu", "mps"])
+def test_default_factory_builds_the_pipeline_on_the_configured_device(monkeypatch, caplog, device):
+    built: dict = {}
+
+    class FakeKPipeline:
+        def __init__(self, lang_code: str, device: str) -> None:
+            built.update(lang_code=lang_code, device=device)
+            # What the real KModel reports once .to(device) has run.
+            self.model = types.SimpleNamespace(device=torch.device(device))
+
+    fake_kokoro = types.ModuleType("kokoro")
+    fake_kokoro.KPipeline = FakeKPipeline
+    monkeypatch.setitem(sys.modules, "kokoro", fake_kokoro)
+    monkeypatch.setattr("tinytalk.tts_kokoro._configure_espeak_from_homebrew", lambda: None)
+    monkeypatch.setattr(config, "KOKORO_DEVICE", device)
+
+    with caplog.at_level(logging.INFO, logger="tinytalk.tts_kokoro"):
+        pipeline = _default_pipeline_factory("a")
+
+    assert built == {"lang_code": "a", "device": device}
+    assert isinstance(pipeline, FakeKPipeline)
+    # The log names the device the loaded model REPORTS, not just what was
+    # asked for, so it confirms which path is really live.
+    assert f"loaded on device={device}" in caplog.text

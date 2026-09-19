@@ -8,6 +8,7 @@ agent is mid-sentence.
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 import threading
 from pathlib import Path
@@ -18,6 +19,8 @@ import torch
 from . import config
 from .audio import float32_to_pcm16
 from .engines import EngineError
+
+logger = logging.getLogger(__name__)
 
 
 def _configure_espeak_from_homebrew() -> None:
@@ -67,7 +70,11 @@ def _default_pipeline_factory(lang_code: str):
             "and `brew install espeak-ng`"
         ) from exc
     _configure_espeak_from_homebrew()
-    return KPipeline(lang_code=lang_code, device=config.KOKORO_DEVICE)
+    pipeline = KPipeline(lang_code=lang_code, device=config.KOKORO_DEVICE)
+    # What the loaded model reports, not just what was asked for -- the one
+    # line that confirms on real hardware which backend is actually live.
+    logger.info("tts: Kokoro pipeline loaded on device=%s", pipeline.model.device)
+    return pipeline
 
 
 class KokoroTts:
@@ -87,6 +94,13 @@ class KokoroTts:
         # A real OS thread lock, not asyncio.Lock -- see synthesize()'s
         # comment on why an asyncio-level lock can't do this job.
         self._synthesis_lock = threading.Lock()
+        # Logged at construction (server startup) because the weights
+        # themselves only load on the first synthesis; the "loaded on
+        # device=" line from _default_pipeline_factory follows once they do.
+        logger.info(
+            "tts: Kokoro will run on device=%s (TINYTALK_TTS_DEVICE=cpu|mps to change)",
+            config.KOKORO_DEVICE,
+        )
 
     def _get_pipeline(self):
         # Built lazily and cached: loading weights takes seconds, and doing it
