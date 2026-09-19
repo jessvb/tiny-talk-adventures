@@ -18,11 +18,6 @@
 import AVFoundation
 import TinyTalkCore
 
-public enum AudioEngineError: Error {
-    case sessionConfigurationFailed(any Error)
-    case captureStartFailed(any Error)
-}
-
 public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     /// Matches server/tinytalk/audio.py's MIC_SAMPLE_RATE/TTS_SAMPLE_RATE
     /// (both 24000) -- see Global Constraints.
