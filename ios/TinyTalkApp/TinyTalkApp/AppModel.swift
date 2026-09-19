@@ -54,7 +54,27 @@ final class AppModel: ObservableObject {
     /// below). Applies to the NEXT story only -- never retroactively.
     @Published var storyTurnCount: Int
     @Published var storybookPageCount: Int
-    @Published var screen: AppScreen
+    /// The mic must only actively listen on .creating -- see issue #31.
+    /// `screen` is set directly from ~15 call sites across every View file
+    /// (Settings' preview buttons, Library/Reading navigation, The End's
+    /// auto-nav, etc.), and only goHome() happened to disconnect (which
+    /// incidentally muted too). Centralizing the mute/unmute here, rather
+    /// than adding a call at each of those sites, matches AppScreen's own
+    /// doc comment about why navigation lives on AppModel instead of a
+    /// NavigationStack -- and guarantees nothing can introduce a new
+    /// `screen = ...` site that forgets it. Safe to call unconditionally:
+    /// isMuted is already a transient flag the coordinator itself flips
+    /// automatically across turn boundaries (see toggleMute()'s doc
+    /// comment), not a durable user preference, and a nil coordinator
+    /// (not yet connected) no-ops via the optional.
+    @Published var screen: AppScreen {
+        didSet {
+            guard screen != oldValue else { return }
+            let shouldBeMuted = screen != .creating
+            let coordinatorToMute = coordinator
+            Task { await coordinatorToMute?.setMuted(shouldBeMuted) }
+        }
+    }
     /// Where LibraryView's back button returns to -- Library is reachable
     /// both from Landing (possibly disconnected, see refreshLibrary()'s
     /// on-demand reconnect) and from Elsie's desk mid-story (already
@@ -932,6 +952,19 @@ final class AppModel: ObservableObject {
                     self.lastTranscript = transcript
                     self.lastReply = reply
                     self.isMicMuted = muted
+                    // Self-healing companion to screen's own didSet (see its
+                    // doc comment): on-device testing (issue #31) found that
+                    // one-shot mute can lose a narrow race against the
+                    // concluding turn's own turnEnd-driven setMuted(false)
+                    // if speech starts right as `screen` changes -- confirmed
+                    // by testing that waiting a few seconds before speaking
+                    // avoided it, meaning the mute eventually wins, just not
+                    // immediately. Reasserting here, once per ~100ms poll
+                    // tick, means a lost race self-corrects within one tick
+                    // instead of staying lost until the next screen change.
+                    if self.screen != .creating, !muted {
+                        Task { await coordinator.setMuted(true) }
+                    }
                     self.currentTurnId = turnId
                     self.coordinatorDebugLog = log
                     self.debugLog = self.mergedDebugLog()
