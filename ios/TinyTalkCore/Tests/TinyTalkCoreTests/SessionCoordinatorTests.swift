@@ -2586,8 +2586,144 @@ final class SessionCoordinatorTests: XCTestCase {
         connection.emit(.message(.turnEnd(turnId: 2)))
         try? await Task.sleep(nanoseconds: 20_000_000)
 
+        // Turn 2's own buffer genuinely finishes -- exactly ONE
+        // finishOldestEnqueuedBuffer() call, which only resolves turn 2's
+        // waitForPlaybackToFinish() if turn 1's discarded buffer is no
+        // longer counted as outstanding. The machine now stays .speaking
+        // through that wait (issue #28), so .idle below is what actually
+        // proves it resolved; before, it went .idle at turnEnd regardless
+        // and this assertion could never have caught a stuck wait.
+        audio.finishOldestEnqueuedBuffer()
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
         let state = await coordinator.state
         XCTAssertEqual(state, .idle, "turn 2 must complete normally -- turn 1's un-finished buffer must not leave stale outstanding state behind")
+
+        runLoop.cancel()
+    }
+
+    // MARK: - Issue #28: barge-in during the pipelined playback tail
+
+    /// Issue #28. The real server synthesizes far faster than real time (an
+    /// entire multi-sentence reply, and its turn_end, can arrive within
+    /// ~1-2s of the first chunk while the audio takes 5-8+s to actually
+    /// play -- see session.py's _cancel_turn()), and since playback was
+    /// pipelined (enqueue() per chunk, one waitForPlaybackToFinish() at
+    /// turnEnd) the coordinator processes that turnEnd long before the
+    /// audio has finished. handleSpeechStart() only takes the
+    /// stop-playback path (interrupt()) from .waitingForReply/.speaking,
+    /// so a child talking over the still-playing tail of the reply hit the
+    /// ordinary "new utterance" path instead, which never stops playback:
+    /// Elsie kept talking. autoFinishEnqueuedBuffers = false is what makes
+    /// the fake reply "genuinely still playing" at this point, exactly
+    /// like the real device's playerNode queue.
+    func testBargeInAfterTurnEndWhileTheReplyIsStillPlayingStopsPlayback() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        audio.autoFinishEnqueuedBuffers = false // the reply is still audibly playing until the test says otherwise
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        // The whole reply AND its turn_end arrive while the buffer is
+        // still (simulated-)playing.
+        connection.emit(.message(.responseText("hi", turnId: 1)))
+        connection.emit(.audio(Data([1, 2, 3])))
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertFalse(audio.stopped, "sanity: nothing has stopped playback yet")
+
+        vad.fire(.speechStart) // the child talks over the tail of Elsie's reply
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertTrue(audio.stopped, "a barge-in during the tail of a reply that is still playing must stop playback")
+        let state = await coordinator.state
+        XCTAssertEqual(state, .listening)
+        let history = await coordinator.latencyHistory
+        XCTAssertEqual(history.count, 1, "the barge-in must show up in the on-screen VAD->stopped latency list")
+
+        runLoop.cancel()
+    }
+
+    /// The same root cause, seen from the UI: StoryView's status line
+    /// reads "Elsie is talking" for .speaking and "Ready when you are" for
+    /// .idle, and it went to .idle as soon as the server's turn_end
+    /// arrived -- a second or two into a reply that was still audibly
+    /// playing for several more.
+    func testStateStaysSpeakingUntilTheReplyHasFinishedPlayingThenReturnsToIdle() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        audio.autoFinishEnqueuedBuffers = false
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        connection.emit(.message(.responseText("hi", turnId: 1)))
+        connection.emit(.audio(Data([1, 2, 3])))
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        var state = await coordinator.state
+        XCTAssertEqual(state, .speaking, "turn_end has arrived but the audio is still playing -- Elsie is still talking")
+
+        audio.finishOldestEnqueuedBuffer() // playback genuinely finishes
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        state = await coordinator.state
+        XCTAssertEqual(state, .idle, "back to idle once the last buffer has actually finished")
+
+        runLoop.cancel()
+    }
+
+    /// Barge-in during the tail must leave the coordinator able to run the
+    /// next turn normally: the cancelled turn's runTurn() is suspended in
+    /// waitForPlaybackToFinish() when the interrupt resets the audio, and
+    /// must not apply its (now stale) turnEnd to the machine afterwards.
+    func testBargeInDuringThePlaybackTailThenNewTurnCompletesNormally() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        audio.autoFinishEnqueuedBuffers = false
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart) // turn 1
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        connection.emit(.message(.responseText("hi", turnId: 1)))
+        connection.emit(.audio(Data([1])))
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        vad.fire(.speechStart) // barge-in during the tail -- turn 2
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertTrue(audio.stopped)
+
+        audio.autoFinishEnqueuedBuffers = true
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        var state = await coordinator.state
+        XCTAssertEqual(state, .waitingForReply, "turn 1's stale turnEnd must not walk turn 2 back to idle")
+
+        connection.emit(.message(.responseText("hi again", turnId: 2)))
+        connection.emit(.audio(Data([2])))
+        connection.emit(.message(.turnEnd(turnId: 2)))
+        try? await Task.sleep(nanoseconds: 30_000_000)
+
+        state = await coordinator.state
+        XCTAssertEqual(state, .idle)
+        XCTAssertEqual(audio.enqueued, [Data([1]), Data([2])], "turn 2's audio must reach playback normally")
 
         runLoop.cancel()
     }
