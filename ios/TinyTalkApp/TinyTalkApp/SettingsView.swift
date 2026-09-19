@@ -339,10 +339,10 @@ struct SettingsView: View {
         }
     }
 
-    /// Developer preview of the Library/Reading/The End screens against
-    /// mock data -- see MockStories.swift and TheEndView.swift's doc
-    /// comments for why these aren't wired into the real Landing/Story
-    /// "Read Stories" buttons yet.
+    /// Developer preview of the Reading/The End screens against mock data
+    /// -- see MockStories.swift. Library is no longer previewed here: it
+    /// shows real data via Landing's "Read Stories" button (LandingView.swift)
+    /// once at least one story exists.
     private var storybookPreviewCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("COMING SOON: STORYBOOKS")
@@ -357,10 +357,6 @@ struct SettingsView: View {
             previewButton("Preview: The End") {
                 model.selectedStory = MockStories.pip
                 model.screen = .theEnd
-            }
-            previewButton("Preview: Library") {
-                model.libraryStories = MockStories.librarySummaries
-                model.screen = .library
             }
             previewButton("Preview: Reading") {
                 model.selectedStory = MockStories.pip
