@@ -602,19 +602,63 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// A live session for the story-menu actions that need one (Finish this
+    /// story, New Story) -- issue #40. After a connection dies on its own
+    /// (startPollingState()'s `closed` handling) or a foreground reconnect
+    /// fails, `coordinator` is nil but StoryView stays on screen looking
+    /// live, so those actions' old `guard let coordinator else { return }`
+    /// made them silent no-ops. This reconnects on demand instead, the same
+    /// way refreshLibrary() does for Library (see its doc comment for why
+    /// `coordinator == nil` rather than isConnected gates it). Returns
+    /// whether a live session exists afterwards; when not, lastErrorMessage
+    /// says why -- connect() reports its own reasons (bad address, mic
+    /// denied, ...), and a generic one fills in if it somehow didn't.
+    ///
+    /// Reconnects FRESH (pendingResumeTurnId dropped), unlike startStory()/
+    /// refreshLibrary(): both callers are about to supersede whatever turn
+    /// was in flight (new_story discards the story; conclude_story cancels
+    /// the turn and forces the final reply), so resuming it would only
+    /// start a ditty and replay audio the very next call tears down.
+    private func ensureConnected() async -> Bool {
+        if isConnected { return true }
+        // connect() sets `coordinator` well before isConnected flips, so a
+        // non-nil one here means a reconnect (an earlier tap's, or
+        // Landing's) is already mid-flight -- let it finish rather than
+        // start a duplicate; this tap is dropped.
+        guard coordinator == nil else { return false }
+        // The "disconnected from server" banner from the drop that got us
+        // here is about to be stale either way; a failed attempt sets its
+        // own.
+        lastErrorMessage = nil
+        pendingResumeTurnId = nil
+        await connectResumingIfPending()
+        guard isConnected else {
+            if lastErrorMessage == nil {
+                lastErrorMessage = "couldn't reconnect to the server"
+            }
+            return false
+        }
+        return true
+    }
+
     /// What the "Finish this story" menu item calls -- see
     /// SessionCoordinator.concludeStory(). Bypasses the model's own
     /// phrase-matching entirely: the server forces a real final reply
-    /// and marks the story done unconditionally.
+    /// and marks the story done unconditionally. Reconnects first if the
+    /// session had dropped -- see ensureConnected().
     func finishStory() async {
-        guard let coordinator else { return }
+        guard await ensureConnected(), let coordinator else { return }
         await coordinator.concludeStory()
     }
 
     /// Debug/testing affordance: abandon the current story and start a
     /// fresh one without disconnecting -- see SessionCoordinator.newStory().
+    /// Reconnects first if the session had dropped (see ensureConnected()),
+    /// and only clears the on-screen history once there is a session to
+    /// start the new story on -- a failed reconnect leaves the old story
+    /// on screen alongside its error banner.
     func startNewStory() async {
-        guard let coordinator else { return }
+        guard await ensureConnected(), let coordinator else { return }
         turnHistory.clear()
         await coordinator.newStory()
     }
