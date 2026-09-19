@@ -62,6 +62,28 @@ public struct TurnHistory: Equatable, Sendable {
         }
     }
 
+    /// Call when a new SessionCoordinator takes over from one that was torn
+    /// down WITHOUT a user-initiated exit (a backgrounding or an unexpected
+    /// drop) -- the turns already on screen are kept, since the story they
+    /// belong to is still going.
+    ///
+    /// Which turn ids are already "seen" depends on whether the new
+    /// coordinator continues the old one's numbering. If it is resuming
+    /// (`resumingTurnId` non-nil, see SessionCoordinator.resume(turnId:)) it
+    /// adopts that id, and the server replays the held reply stamped with the
+    /// SAME id -- so the ids already appended must be kept, or the replay of
+    /// a reply that is already on screen (e.g. backgrounded during the tail
+    /// of its audio) would be appended a second time. If it isn't resuming
+    /// (nothing was in flight, or away-from-home mode, which never resumes),
+    /// the fresh coordinator numbers its turns from 1 again, and those ids
+    /// must be forgotten -- otherwise its first turn's id collides with the
+    /// old coordinator's and the new bubbles are silently swallowed.
+    public mutating func coordinatorReplaced(resumingTurnId: Int?) {
+        guard resumingTurnId == nil else { return }
+        lastAppendedTranscriptTurnId = nil
+        lastAppendedReplyTurnId = nil
+    }
+
     /// Forgets everything -- a user-initiated exit (Home, New Story), where
     /// the next story must start from a blank screen.
     public mutating func clear() {

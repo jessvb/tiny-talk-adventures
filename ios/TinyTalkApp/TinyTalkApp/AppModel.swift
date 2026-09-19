@@ -386,7 +386,9 @@ final class AppModel: ObservableObject {
             // error taxonomy. The design spec requires this be surfaced
             // clearly rather than silently swallowed.
             lastErrorMessage = "could not start audio capture: \(error.localizedDescription). Check Settings > Privacy > Microphone."
-            disconnect()
+            // This attempt never owned the history -- it may be a
+            // foreground reconnect of a story still on screen.
+            disconnect(keepingTurnHistory: true)
             return
         }
 
@@ -501,7 +503,7 @@ final class AppModel: ObservableObject {
             try await audio.startCapturing { pcm in micContinuation.yield(pcm) }
         } catch {
             lastErrorMessage = "could not start audio capture: \(error.localizedDescription). Check Settings > Privacy > Microphone."
-            disconnect()
+            disconnect(keepingTurnHistory: true)  // same reasoning as connect()'s
             return
         }
 
@@ -509,7 +511,18 @@ final class AppModel: ObservableObject {
         startPollingState()
     }
 
-    func disconnect() {
+    /// Full session teardown. `keepingTurnHistory` is for every disconnect
+    /// the USER didn't choose -- backgrounding (handleAppBackgrounded()), a
+    /// connection that died on its own (startPollingState()'s `closed`
+    /// handling), a connect attempt that failed partway (connect()'s capture
+    /// failure): the story on screen is still going, so its bubbles stay
+    /// (issue #23) and connectResumingIfPending() reconciles them with
+    /// whatever the server replays. The default clears them: goHome()/
+    /// disconnectUserInitiated() and setAwayFromHomeEnabled() are exits
+    /// after which the next story must start from a blank screen, and a
+    /// caller that forgets to think about this errs on the side of not
+    /// leaking one story's text into the next.
+    func disconnect(keepingTurnHistory: Bool = false) {
         pollTask?.cancel()
         runLoop?.cancel()
         // Cancelling runLoop's Task alone does not stop the coordinator's
@@ -544,7 +557,9 @@ final class AppModel: ObservableObject {
         coordinatorDebugLog = []
         audioDebugLog = []
         debugLog = []
-        turnHistory.clear()
+        if !keepingTurnHistory {
+            turnHistory.clear()
+        }
         // A torn-down coordinator can never deliver on either pending
         // request -- see their doc comments. lastAcknowledgedConcludedStoryId
         // is deliberately NOT reset here.
@@ -574,6 +589,12 @@ final class AppModel: ObservableObject {
     func connectResumingIfPending() async {
         let resumingTurnId = pendingResumeTurnId
         pendingResumeTurnId = nil
+        // The single funnel every reconnect goes through, so the one place
+        // to tell the kept-across-disconnect turn history whether the fresh
+        // coordinator continues the old one's turn numbering -- see
+        // TurnHistory.coordinatorReplaced(). Away-from-home never resumes
+        // (see connectAwayFromHome()), so it always restarts numbering.
+        turnHistory.coordinatorReplaced(resumingTurnId: awayFromHomeEnabled ? nil : resumingTurnId)
         if awayFromHomeEnabled {
             await connectAwayFromHome()
         } else {
@@ -829,7 +850,9 @@ final class AppModel: ObservableObject {
             pendingResumeTurnId = nil
         }
         print("AppModel: backgrounded while \(liveState) -- pendingResumeTurnId=\(String(describing: pendingResumeTurnId))")
-        disconnect()
+        // The story on screen is still going -- keep its bubbles (issue
+        // #23); connectResumingIfPending() reconciles them on foreground.
+        disconnect(keepingTurnHistory: true)
     }
 
     /// Called when the app returns to the foreground. Only reconnects if
@@ -1105,7 +1128,10 @@ final class AppModel: ObservableObject {
                     // correct to resume instead of always starting fresh.
                     self.pendingResumeTurnId = resumableTurnId
                     print("AppModel: connection closed unexpectedly -- pendingResumeTurnId=\(String(describing: resumableTurnId))")
-                    self.disconnect()
+                    // Same as backgrounding: not the user's choice, and the
+                    // reply this turn id resumes into belongs on the
+                    // bubbles already shown (issue #23).
+                    self.disconnect(keepingTurnHistory: true)
                     return true
                 }
                 if shouldStop { return }
