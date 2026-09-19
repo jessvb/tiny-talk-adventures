@@ -181,6 +181,34 @@ public actor SessionCoordinator {
     /// image), so a later marker can never reuse stale bytes that
     /// belonged to an earlier request.
     private var pendingPageImageBytes: Data?
+    /// The single in-flight synthesizePage() request, if any -- see
+    /// getPageImage()'s pendingPageImageRequests for why THAT one is a
+    /// queue. This one is a single optional, not a queue: ReadingView's
+    /// manual tap-per-page 🔊 model (no prefetch-all-pages, unlike images)
+    /// means at most one page-audio request is ever genuinely in flight at
+    /// once. Checked before the turn-scoped isCurrentTurnAudio gate in
+    /// consumeServerEvents(), same placement as pendingPageImageRequests,
+    /// so incoming page audio isn't silently dropped or misrouted as
+    /// live-turn audio. Cleared by stopPageAudio(), by an unrelated error
+    /// (mirrors the image case), by handleConnectionLost(), and by
+    /// matching page_audio_done marker.
+    private var pendingPageAudioRequest: (storyId: String, pageIndex: Int)?
+    /// Count of still-outstanding page_audio_done markers from requests
+    /// this coordinator has already abandoned via stopPageAudio() (with a
+    /// request genuinely still in flight at the time) but whose remaining
+    /// audio the server is still draining -- see stopPageAudio()'s doc
+    /// comment. The server processes one client message to completion
+    /// before starting the next (see pendingPageImageRequests' doc
+    /// comment for the identical guarantee, relied on there for the image
+    /// case), so while this is > 0, EVERY arriving .audio frame is
+    /// guaranteed to be a leftover chunk from an abandoned generation,
+    /// never real audio for whatever NEW request pendingPageAudioRequest
+    /// now names -- discarding unconditionally here is what stops a rapid
+    /// re-tap from playing the tail of the previous page over the start
+    /// of the new one. A counter, not a boolean, because a second rapid
+    /// re-tap before the first abandoned request's marker arrives must
+    /// not lose track of needing to discard for BOTH.
+    private var pendingPageAudioDoneMarkersToDiscard = 0
     /// True once BOTH signals for "the story just concluded, AND the
     /// concluding turn's audio has genuinely finished playing" have been
     /// observed. A UI must wait for this (not just isRewriting) before
@@ -477,8 +505,15 @@ public actor SessionCoordinator {
     /// Each loop iteration awaits a full play() call, so the ditty's own
     /// baked-in trailing silence (see WaitingDitty.audio) paces the loop --
     /// no separate timer/sleep needed. Bounded by dittyTimeoutSeconds: past
-    /// that, handleDittyTimeout() runs instead of looping again.
-    private func startWaitingDitty() {
+    /// that, `onTimeout` runs instead of looping again.
+    ///
+    /// Shared by the live-turn wait (startWaitingDitty()) and the
+    /// page-audio wait (startPageAudioDitty()) -- both play the same clip
+    /// through the same single player node. Sharing ONE dittyTask field
+    /// (rather than a separate one per purpose) is what makes the no-op-if-
+    /// already-running guard below also guarantee the two can never run at
+    /// once, with no extra bookkeeping.
+    private func startDittyLoop(onTimeout: @escaping @Sendable () async -> Void) {
         guard let waitingDittyAudio, dittyTask == nil else {
             // logDebug, not print: this is the single highest-signal line
             // for diagnosing "the ditty didn't resume after backgrounding"
@@ -486,7 +521,7 @@ public actor SessionCoordinator {
             // doc comment for why most ditty-loop prints stay excluded from
             // it -- this one is a rare, one-shot event, not per-iteration
             // noise).
-            logDebug("SessionCoordinator: startWaitingDitty() no-op (audio configured=\(waitingDittyAudio != nil), already running=\(dittyTask != nil))")
+            logDebug("SessionCoordinator: startDittyLoop() no-op (audio configured=\(waitingDittyAudio != nil), already running=\(dittyTask != nil))")
             return
         }
         logDebug("SessionCoordinator: starting ditty loop")
@@ -498,7 +533,7 @@ public actor SessionCoordinator {
             while !Task.isCancelled {
                 if Date().timeIntervalSince(dittyStartedAt) >= dittyTimeoutSeconds {
                     print("SessionCoordinator: ditty loop timed out after \(iteration) iteration(s)")
-                    await self.handleDittyTimeout()
+                    await onTimeout()
                     return
                 }
                 iteration += 1
@@ -507,6 +542,26 @@ public actor SessionCoordinator {
             }
             print("SessionCoordinator: ditty loop ended after \(iteration) iteration(s), cancelled=\(Task.isCancelled)")
         }
+    }
+
+    private func startWaitingDitty() {
+        startDittyLoop { [weak self] in await self?.handleDittyTimeout() }
+    }
+
+    /// Page-audio counterpart to startWaitingDitty() -- covers the gap
+    /// between a 🔊 tap and the first real audio chunk actually starting
+    /// playback (network round trip + the server's own TTS synthesis time
+    /// for that page's text), which previously had no audio feedback at
+    /// all -- reported on-device as "I didn't get any voices initially."
+    /// Stopped wherever pendingPageAudioRequest itself gets resolved or
+    /// abandoned: the first real chunk (consumeServerEvents()'s .audio
+    /// branch), stopPageAudio(), a send failure in synthesizePage(), and
+    /// the unrelated-error cleanup branch in consumeServerEvents() -- all
+    /// of those call the shared stopWaitingDitty() directly rather than a
+    /// separate stop function, since stopping is identical regardless of
+    /// which purpose started it.
+    private func startPageAudioDitty() {
+        startDittyLoop { [weak self] in await self?.handlePageAudioDittyTimeout() }
     }
 
     /// Stops the ditty loop, if one is running. Calls stopPlaybackImmediately()
@@ -546,6 +601,24 @@ public actor SessionCoordinator {
         await setMuted(false)
         lastErrorMessage = "The agent took too long thinking. Can you say something to wake them up?"
         _ = try? machine.handle(.turnEnd)
+    }
+
+    /// Page-audio counterpart to handleDittyTimeout() -- deliberately does
+    /// NOT touch machine.state/turnContinuation/isMuted the way that one
+    /// does: a page-audio wait has no turn of its own to abandon, and a
+    /// live turn could genuinely be in progress at the same time (e.g. the
+    /// child navigated to Library mid-reply-wait via Elsie's desk's
+    /// "Library" menu item) -- this must only ever affect the page-audio
+    /// request that's timing out, never an unrelated live turn. Guards on
+    /// pendingPageAudioRequest still being set for the same reason
+    /// handleDittyTimeout() re-checks machine.state: the loop's timeout
+    /// check and this call aren't atomic, so real audio (or an error) may
+    /// already have resolved this request in the narrow window between them.
+    private func handlePageAudioDittyTimeout() async {
+        guard pendingPageAudioRequest != nil else { return }
+        stopWaitingDitty()
+        pendingPageAudioRequest = nil
+        lastErrorMessage = "That page's reading took too long to load."
     }
 
     /// Shared connection-lost recovery -- runs whether the loss was
@@ -594,6 +667,15 @@ public actor SessionCoordinator {
         // oldest request, so the whole queue is cleared, not just one entry.
         pendingPageImageRequests.removeAll()
         pendingPageImageBytes = nil
+        // A lost connection means no page_audio_done marker (or further
+        // chunks) for any pending synthesizePage() request will ever
+        // arrive either -- same reasoning as the image case just above.
+        // That applies equally to the markers still owed by already-
+        // abandoned requests, so the discard counter resets too:
+        // otherwise it would survive into the next connection and eat
+        // that connection's first real page-audio chunks.
+        pendingPageAudioRequest = nil
+        pendingPageAudioDoneMarkersToDiscard = 0
         // Captured BEFORE machine.handle(.disconnected) below overwrites
         // machine.state -- see resumableTurnIdAtDisconnect's doc comment for
         // why this has to happen exactly here. Same criteria
@@ -677,36 +759,85 @@ public actor SessionCoordinator {
                     pendingPageImageBytes = data
                     continue
                 }
+                if pendingPageAudioDoneMarkersToDiscard > 0 {
+                    // A frame that's guaranteed to be a leftover chunk
+                    // from an already-abandoned synthesizePage() request
+                    // -- see pendingPageAudioDoneMarkersToDiscard's doc
+                    // comment. Must be checked before the
+                    // pendingPageAudioRequest branch below: once a NEW
+                    // request has been sent, pendingPageAudioRequest is
+                    // already non-nil again for that new request, but
+                    // these bytes still belong to the old one.
+                    continue
+                }
+                if pendingPageAudioRequest != nil {
+                    // Unlike images, streamed straight to playback rather
+                    // than stashed -- see pendingPageAudioRequest's doc
+                    // comment. Safe to check after the image-queue branch
+                    // above: the server processes one message at a time to
+                    // completion (see pendingPageImageRequests' doc
+                    // comment), so any earlier-sent getPageImage requests
+                    // fully resolve before a later-sent synthesizePage's
+                    // bytes ever start arriving -- these two branches never
+                    // actually race for the same frame.
+                    // Stops the page-audio ditty before this (or any later)
+                    // chunk reaches the shared player node -- a no-op past
+                    // the first chunk, since stopWaitingDitty() is already
+                    // a no-op once dittyTask is nil. Mirrors runTurn()'s own
+                    // .audio case stopping the live-turn ditty before its
+                    // first real chunk, for the same "never in flight on
+                    // the same player node at once" reason.
+                    stopWaitingDitty()
+                    await audio.enqueue(data)
+                    continue
+                }
                 guard isCurrentTurnAudio else { continue }
                 turnContinuation?.yield(event)
                 continue
             }
 
-            if case .message(.error) = event, !pendingPageImageRequests.isEmpty {
-                // A get_page_image failure (missing story, out-of-range
-                // page_index) is reported as a generic error frame and
-                // session.py's handle_get_page_image never sends a
-                // page_image_done marker in that case -- see
-                // pendingPageImageRequests' doc comment. The wire protocol
-                // gives no way to correlate a specific error back to any
-                // one specific pending page-image request (the server's
-                // error path uses whatever turn_id happens to be current,
-                // not anything tied to the request, and with more than one
-                // request in flight there's no way to tell which one this
-                // error was even for), so ANY error while a request is
-                // pending is treated as a safe-to-clear signal for the
-                // WHOLE queue. Worst case this clears still-legitimately-
-                // in-flight requests early -- those pages' images just
-                // never show up (no crash, no silence) -- which is far
-                // better than leaving pendingPageImageRequests stuck
-                // forever, which would permanently divert every later
-                // .audio frame away from playback (see the branch just
-                // above). Deliberately does NOT `continue`: the error frame
-                // itself still needs to fall through to the normal
-                // turn-scoped error handling below (lastErrorMessage /
-                // turnContinuation) unchanged.
+            if case .message(.error) = event,
+               !pendingPageImageRequests.isEmpty || pendingPageAudioRequest != nil
+                || pendingPageAudioDoneMarkersToDiscard > 0 {
+                // A get_page_image or synthesize_page failure is reported
+                // as a generic error frame with no way to correlate it back
+                // to a specific pending request -- see
+                // pendingPageImageRequests' doc comment. ANY error while
+                // either kind of request is pending is treated as a
+                // safe-to-clear signal for both: worst case a page's image
+                // or audio just never shows up/plays, which is far better
+                // than leaving either stuck forever, permanently diverting
+                // every later .audio frame away from live-turn playback.
+                // The same applies, and matters even more, to markers owed
+                // by ALREADY-ABANDONED requests: server-side,
+                // handle_synthesize_page() answers a bad story_id/
+                // page_index with an error frame and NO page_audio_done
+                // (see session.py's _page_or_error), so an abandoned
+                // request that fails that way never sends the marker its
+                // discard count is waiting for. Without this clause that
+                // count would stay above zero forever and the .audio
+                // branch above would silently swallow EVERY later frame,
+                // live-turn story audio included -- the app would simply
+                // go deaf for the rest of the connection.
+                // Deliberately does NOT `continue`: the error frame itself
+                // still needs to fall through to normal turn-scoped error
+                // handling below, unchanged.
+                // Captured before clearing below, since stopping the
+                // page-audio ditty (if any) needs to know whether THIS
+                // error is what it was waiting on -- an unconditional
+                // stopWaitingDitty() here would be wrong, since it could
+                // just as easily be a live-turn ditty currently running
+                // for an entirely unrelated turn (see startPageAudioDitty()'s
+                // doc comment on the two sharing one dittyTask), which this
+                // page-scoped error must never silence.
+                let wasAwaitingPageAudio = pendingPageAudioRequest != nil
                 pendingPageImageRequests.removeAll()
                 pendingPageImageBytes = nil
+                pendingPageAudioRequest = nil
+                pendingPageAudioDoneMarkersToDiscard = 0
+                if wasAwaitingPageAudio {
+                    stopWaitingDitty()
+                }
             }
 
             // Story-lifecycle events carry no turn_id -- they're not
@@ -759,6 +890,32 @@ public actor SessionCoordinator {
                     pendingPageImageBytes = nil
                 }
                 continue
+            case .message(.pageAudioDone(let storyId, let pageIndex)):
+                // If any abandoned generation's marker is still owed, this
+                // MUST be one of those (never the current
+                // pendingPageAudioRequest's own marker) -- the server's
+                // strict per-connection ordering guarantees an older
+                // request's marker always arrives before a newer one's,
+                // see pendingPageAudioDoneMarkersToDiscard's doc comment.
+                // Consume it as a discard, don't try to match it against
+                // pendingPageAudioRequest (which names the NEW request,
+                // not the one this marker belongs to).
+                if pendingPageAudioDoneMarkersToDiscard > 0 {
+                    pendingPageAudioDoneMarkersToDiscard -= 1
+                    continue
+                }
+                // No turn_id, same as the other story-lifecycle events
+                // above. Unlike pageImageDone, there is no bytes buffer to
+                // consume here -- every chunk already reached playback
+                // directly in the .audio branch above. This just clears
+                // the pending marker once the matching request's audio is
+                // fully sent, so a later unrelated error (see above) no
+                // longer needs to guard against clearing a request that's
+                // already finished.
+                if pendingPageAudioRequest?.storyId == storyId, pendingPageAudioRequest?.pageIndex == pageIndex {
+                    pendingPageAudioRequest = nil
+                }
+                continue
             default:
                 break
             }
@@ -774,7 +931,7 @@ public actor SessionCoordinator {
             case .audio, .closed,
                  .message(.rewritingStarted), .message(.rewritingDone),
                  .message(.storyList), .message(.storyDetail),
-                 .message(.pageImageDone):
+                 .message(.pageImageDone), .message(.pageAudioDone):
                 fatalError("unreachable: handled above")
             }
 
@@ -1008,6 +1165,60 @@ public actor SessionCoordinator {
         }
     }
 
+    /// See protocol.py's SynthesizePage. Fire-and-forget; each chunk is
+    /// enqueued to playback as it arrives (see consumeServerEvents()'s
+    /// .audio handling) -- unlike getPageImage, there is no result to poll,
+    /// since this plays audio rather than producing data a UI reads back.
+    /// Starts the page-audio ditty immediately, covering the network +
+    /// TTS-synthesis gap before the first real chunk arrives (see
+    /// startPageAudioDitty()'s doc comment) -- stopped below on a send
+    /// failure, since nothing will ever arrive to stop it the normal way.
+    public func synthesizePage(storyId: String, pageIndex: Int) async {
+        pendingPageAudioRequest = (storyId: storyId, pageIndex: pageIndex)
+        startPageAudioDitty()
+        do {
+            try await connection.send(.synthesizePage(storyId: storyId, pageIndex: pageIndex))
+        } catch {
+            // Mirrors getPageImage()'s send-failure cleanup: this request
+            // never reached the server, so nothing will ever arrive to
+            // resolve it -- clear it now rather than leaving it stuck,
+            // which would permanently divert later live-turn audio into
+            // playback-as-page-audio (see the .audio branch below).
+            if pendingPageAudioRequest?.storyId == storyId, pendingPageAudioRequest?.pageIndex == pageIndex {
+                pendingPageAudioRequest = nil
+            }
+            stopWaitingDitty()
+        }
+    }
+
+    /// What ReadingView calls when the child swipes to a new page or
+    /// leaves Reading while a page's audio is still playing/pending --
+    /// mirrors AVSpeechSynthesizer.stopSpeaking(at: .immediate)'s old
+    /// role. Must clear pendingPageAudioRequest, not just stop playback:
+    /// otherwise a chunk still in flight from the just-abandoned request
+    /// would reach consumeServerEvents()'s .audio branch, see the (now
+    /// stale) pending request, and start playing again moments after the
+    /// child already left the page. There is no wire-level cancellation
+    /// for synthesize_page, so the server keeps streaming the abandoned
+    /// request's remaining chunks regardless -- which is what
+    /// pendingPageAudioDoneMarkersToDiscard exists to swallow, see its
+    /// doc comment.
+    public func stopPageAudio() async {
+        if pendingPageAudioRequest != nil {
+            // This request's own page_audio_done marker (and any
+            // remaining chunks before it) will still arrive -- see
+            // pendingPageAudioDoneMarkersToDiscard's doc comment.
+            pendingPageAudioDoneMarkersToDiscard += 1
+        }
+        pendingPageAudioRequest = nil
+        // A no-op if the ditty already stopped itself (real audio already
+        // arrived) -- still needed here for the case where the child
+        // swipes away/re-taps before any real chunk ever showed up, since
+        // nothing else would ever stop it otherwise.
+        stopWaitingDitty()
+        audio.stopPlaybackImmediately()
+    }
+
     /// Starts the waiting-ditty loop for a turn resume() already set up --
     /// split out for ordering reasons only, see resume()'s doc comment.
     /// Guards on still being .waitingForReply since, by the time the
@@ -1128,7 +1339,7 @@ public actor SessionCoordinator {
                 return
             case .message(.rewritingStarted), .message(.rewritingDone),
                  .message(.storyList), .message(.storyDetail),
-                 .message(.pageImageDone):
+                 .message(.pageImageDone), .message(.pageAudioDone):
                 fatalError("unreachable: consumeServerEvents() never forwards story-lifecycle events into turnContinuation")
             }
         }

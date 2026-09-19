@@ -290,6 +290,18 @@ struct StoryView: View {
                     menuOpen = false
                     model.goHome()
                 }
+                // Unlike "Home", deliberately does NOT disconnect -- mirrors
+                // "Settings" below, which already leaves the live session
+                // running in the background (see SettingsView's own back
+                // button, which returns to .creating when isConnected).
+                // libraryReturnScreen must be set here, not left at its
+                // .landing default, or Library's back button would strand
+                // the child on Landing instead of resuming their story.
+                menuRow("Library", systemImage: "books.vertical.fill") {
+                    menuOpen = false
+                    model.libraryReturnScreen = .creating
+                    model.screen = .library
+                }
                 menuRow("Settings", systemImage: "gearshape.fill") {
                     menuOpen = false
                     model.screen = .settings
