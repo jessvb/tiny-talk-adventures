@@ -109,6 +109,15 @@ KOKORO_VOICE = os.environ.get("TINYTALK_TTS_VOICE", "af_heart")
 # a representative reply-length synthesis (1.11s vs 2.01s for 9.4s of
 # audio). Overridable in case a future non-Apple-Silicon host needs "cpu"
 # or "cuda" instead.
+#
+# "cpu" is also the fallback if PyTorch's MPS backend ever crashes the server
+# again (issue #34's SIGSEGV in _lstm_mps was a race in our own code -- fixed
+# in tts_kokoro.py -- but MPS is the only place that class of native crash
+# can happen; "cpu" takes Kokoro off it entirely). Re-measured 2026-09-19
+# through KokoroTts.synthesize for a 4-sentence, 19.6s-of-audio reply
+# (warm, cached weights): MPS 0.88s to first audio / 3.2s total; CPU 1.20s /
+# 4.3s. So the fallback costs ~0.3s of reply latency, and synthesis still
+# runs ~4.5x faster than real time.
 KOKORO_DEVICE = os.environ.get("TINYTALK_TTS_DEVICE", "mps")
 
 # One turn = one child utterance + one agent reply. Roughly matched to a
