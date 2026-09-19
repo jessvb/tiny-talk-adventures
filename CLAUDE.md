@@ -197,8 +197,9 @@ entry in Elsie's desk that leaves the live story running. All ten checks
 of its on-device script passed on real hardware (only the
 zero-saved-stories case was skipped, by choice). PR #38, merged right
 after, mutes the mic on every screen except story creation (issue #31);
-the #38 + #42 combination has only been build-checked together, not
-on-device tested together. One known gap from that testing, deliberately
+the two were then verified together on-device (Landing→Library,
+mid-story→Library, and a real conclusion→The End all kept the mic
+muted). One known gap from that testing, deliberately
 left open: #41 (Landing's "Read Stories" stays greyed out on a cold
 launch until the first connect, because fixing it naively would engage
 the mic before the child taps anything).
