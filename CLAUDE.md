@@ -178,7 +178,8 @@ silently ignores `list_stories`/`get_story`/`get_page_image`/
 Reading, The End, "Finish this story", and the story-length settings all
 do nothing away from home. Closing those gaps is the household's stated
 top priority (2026-09-19) and is going through `superpowers:brainstorming`
-— there is no spec yet.
+→ spec → plan; look in `docs/superpowers/specs/` and `gh pr list` for
+where it currently stands.
 
 Wiring the iOS screens to the real server API (`list_stories`, `get_story`,
 `synthesize_page`) instead of `MockStories.swift` is **complete and
