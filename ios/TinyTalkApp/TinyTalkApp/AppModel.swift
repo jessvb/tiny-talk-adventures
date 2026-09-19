@@ -655,8 +655,12 @@ final class AppModel: ObservableObject {
     /// fresh one without disconnecting -- see SessionCoordinator.newStory().
     /// Reconnects first if the session had dropped (see ensureConnected()),
     /// and only clears the on-screen history once there is a session to
-    /// start the new story on -- a failed reconnect leaves the old story
-    /// on screen alongside its error banner.
+    /// start the new story on -- a reconnect connect() itself rejects (mic
+    /// denied, bad address, ...) leaves the old story on screen alongside
+    /// its error banner. (A server that is still unreachable only shows up
+    /// afterwards, through the poll loop's usual "disconnected from
+    /// server" banner -- connect() can't tell earlier, since the WebSocket
+    /// opens asynchronously.)
     func startNewStory() async {
         guard await ensureConnected(), let coordinator else { return }
         turnHistory.clear()
