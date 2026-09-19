@@ -118,36 +118,45 @@ struct StoryView: View {
     // MARK: - Conversation
 
     private var conversation: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    if let error = model.lastErrorMessage {
-                        errorBanner(error)
+        VStack(spacing: 0) {
+            // Pinned above the scrolling history rather than first inside it:
+            // the history now survives a disconnect (issue #23), so a banner
+            // at the top of the scroll content would sit far above the
+            // bottom-anchored bubbles -- out of view exactly when the
+            // "disconnected from server" cue matters most.
+            if let error = model.lastErrorMessage {
+                errorBanner(error)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 16)
+            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(model.turns) { turn in
+                            bubble(for: turn).id(turn.id)
+                        }
+                        if model.state == .waitingForReply {
+                            thinkingRow.id("thinking")
+                        }
                     }
-                    ForEach(model.turns) { turn in
-                        bubble(for: turn).id(turn.id)
-                    }
-                    if model.state == .waitingForReply {
-                        thinkingRow.id("thinking")
-                    }
+                    .padding(16)
+                    // Without an explicit width, an otherwise-empty VStack (no
+                    // turns yet, not thinking) has near-zero natural
+                    // size -- confirmed on real hardware to leave the ScrollView
+                    // collapsed to a thin centered column with the raw window
+                    // background showing on both sides, instead of claiming the
+                    // full width offered by its parent.
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(16)
-                // Without an explicit width, an otherwise-empty VStack (no
-                // turns yet, no error, not thinking) has near-zero natural
-                // size -- confirmed on real hardware to leave the ScrollView
-                // collapsed to a thin centered column with the raw window
-                // background showing on both sides, instead of claiming the
-                // full width offered by its parent.
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(TTA.Palette.outerPaper)
-            .onChange(of: model.turns.count) { _ in
-                withAnimation { proxy.scrollTo(model.turns.last?.id, anchor: .bottom) }
-            }
-            .onChange(of: model.state) { newState in
-                if newState == .waitingForReply {
-                    withAnimation { proxy.scrollTo("thinking", anchor: .bottom) }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(TTA.Palette.outerPaper)
+                .onChange(of: model.turns.count) { _ in
+                    withAnimation { proxy.scrollTo(model.turns.last?.id, anchor: .bottom) }
+                }
+                .onChange(of: model.state) { newState in
+                    if newState == .waitingForReply {
+                        withAnimation { proxy.scrollTo("thinking", anchor: .bottom) }
+                    }
                 }
             }
         }

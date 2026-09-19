@@ -19,22 +19,6 @@ enum AppScreen: Equatable {
     case theEnd
 }
 
-/// One line of the on-screen story-so-far, built entirely client-side from
-/// AppModel's own polled lastTranscript/lastReply -- SessionCoordinator only
-/// ever exposes the CURRENT turn's latest transcript/reply (see its doc
-/// comments), not a running history, so there is nothing server-side to
-/// read this from. Deliberately bounded by the same disconnect/new-story
-/// resets that already clear debugLog, rather than persisted anywhere --
-/// this is a presentation convenience, not a second copy of the story
-/// (server/tinytalk/story_store.py's turn list remains the one real record).
-struct StoryTurn: Identifiable, Equatable {
-    enum Speaker: Equatable { case child, elsie }
-
-    let id = UUID()
-    let speaker: Speaker
-    let text: String
-}
-
 @MainActor
 final class AppModel: ObservableObject {
     @Published var serverAddress: String
@@ -95,7 +79,11 @@ final class AppModel: ObservableObject {
     @Published var isConnected = false
     @Published var isMicMuted = false
     @Published var objectRecognitionHint: String?
-    @Published var turns: [StoryTurn] = []
+    /// The story screen's chat history and its duplicate-tracking -- see
+    /// TurnHistory/StoryTurn in TinyTalkCore. `turns` is what StoryView
+    /// renders.
+    @Published private(set) var turnHistory = TurnHistory()
+    var turns: [StoryTurn] { turnHistory.turns }
     /// The Library screen's real saved-story list -- populated from the
     /// server's real list_stories() response via startPollingState()'s
     /// poll loop (see AppModel.swift's poll loop and refreshLibrary()).
@@ -136,15 +124,6 @@ final class AppModel: ObservableObject {
     private let pendingDemoStore = PendingDemoStore()
     private var runLoop: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
-    /// Which turn_id's transcript/reply has already been appended to
-    /// `turns` -- without this, every 100ms poll tick would re-append the
-    /// same still-current turn's text again. Not a perfect boundary (a poll
-    /// tick can in principle land just as currentTurnId advances to a new
-    /// turn before this turn's own reply was polled), but this is a
-    /// presentation nicety, not the source of truth -- see StoryTurn's doc
-    /// comment.
-    private var lastAppendedTranscriptTurnId: Int?
-    private var lastAppendedReplyTurnId: Int?
     /// Ordered pipe from the audio tap's real-time callback into the
     /// coordinator actor. Kept as a stream (not a per-buffer `Task { await
     /// coordinator.captureAudio(pcm) }`) because separate unstructured
@@ -407,7 +386,9 @@ final class AppModel: ObservableObject {
             // error taxonomy. The design spec requires this be surfaced
             // clearly rather than silently swallowed.
             lastErrorMessage = "could not start audio capture: \(error.localizedDescription). Check Settings > Privacy > Microphone."
-            disconnect()
+            // This attempt never owned the history -- it may be a
+            // foreground reconnect of a story still on screen.
+            disconnect(keepingTurnHistory: true)
             return
         }
 
@@ -522,7 +503,7 @@ final class AppModel: ObservableObject {
             try await audio.startCapturing { pcm in micContinuation.yield(pcm) }
         } catch {
             lastErrorMessage = "could not start audio capture: \(error.localizedDescription). Check Settings > Privacy > Microphone."
-            disconnect()
+            disconnect(keepingTurnHistory: true)  // same reasoning as connect()'s
             return
         }
 
@@ -530,7 +511,18 @@ final class AppModel: ObservableObject {
         startPollingState()
     }
 
-    func disconnect() {
+    /// Full session teardown. `keepingTurnHistory` is for every disconnect
+    /// the USER didn't choose -- backgrounding (handleAppBackgrounded()), a
+    /// connection that died on its own (startPollingState()'s `closed`
+    /// handling), a connect attempt that failed partway (connect()'s capture
+    /// failure): the story on screen is still going, so its bubbles stay
+    /// (issue #23) and connectResumingIfPending() reconciles them with
+    /// whatever the server replays. The default clears them: goHome()/
+    /// disconnectUserInitiated() and setAwayFromHomeEnabled() are exits
+    /// after which the next story must start from a blank screen, and a
+    /// caller that forgets to think about this errs on the side of not
+    /// leaking one story's text into the next.
+    func disconnect(keepingTurnHistory: Bool = false) {
         pollTask?.cancel()
         runLoop?.cancel()
         // Cancelling runLoop's Task alone does not stop the coordinator's
@@ -565,9 +557,9 @@ final class AppModel: ObservableObject {
         coordinatorDebugLog = []
         audioDebugLog = []
         debugLog = []
-        turns = []
-        lastAppendedTranscriptTurnId = nil
-        lastAppendedReplyTurnId = nil
+        if !keepingTurnHistory {
+            turnHistory.clear()
+        }
         // A torn-down coordinator can never deliver on either pending
         // request -- see their doc comments. lastAcknowledgedConcludedStoryId
         // is deliberately NOT reset here.
@@ -597,6 +589,12 @@ final class AppModel: ObservableObject {
     func connectResumingIfPending() async {
         let resumingTurnId = pendingResumeTurnId
         pendingResumeTurnId = nil
+        // The single funnel every reconnect goes through, so the one place
+        // to tell the kept-across-disconnect turn history whether the fresh
+        // coordinator continues the old one's turn numbering -- see
+        // TurnHistory.coordinatorReplaced(). Away-from-home never resumes
+        // (see connectAwayFromHome()), so it always restarts numbering.
+        turnHistory.coordinatorReplaced(resumingTurnId: awayFromHomeEnabled ? nil : resumingTurnId)
         if awayFromHomeEnabled {
             await connectAwayFromHome()
         } else {
@@ -604,22 +602,68 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// A live session for the story-menu actions that need one (Finish this
+    /// story, New Story) -- issue #40. After a connection dies on its own
+    /// (startPollingState()'s `closed` handling) or a foreground reconnect
+    /// fails, `coordinator` is nil but StoryView stays on screen looking
+    /// live, so those actions' old `guard let coordinator else { return }`
+    /// made them silent no-ops. This reconnects on demand instead, the same
+    /// way refreshLibrary() does for Library (see its doc comment for why
+    /// `coordinator == nil` rather than isConnected gates it). Returns
+    /// whether a live session exists afterwards; when not, lastErrorMessage
+    /// says why -- connect() reports its own reasons (bad address, mic
+    /// denied, ...), and a generic one fills in if it somehow didn't.
+    ///
+    /// Reconnects FRESH (pendingResumeTurnId dropped), unlike startStory()/
+    /// refreshLibrary(): both callers are about to supersede whatever turn
+    /// was in flight (new_story discards the story; conclude_story cancels
+    /// the turn and forces the final reply), so resuming it would only
+    /// start a ditty and replay audio the very next call tears down.
+    private func ensureConnected() async -> Bool {
+        if isConnected { return true }
+        // connect() sets `coordinator` well before isConnected flips, so a
+        // non-nil one here means a reconnect (an earlier tap's, or
+        // Landing's) is already mid-flight -- let it finish rather than
+        // start a duplicate; this tap is dropped.
+        guard coordinator == nil else { return false }
+        // The "disconnected from server" banner from the drop that got us
+        // here is about to be stale either way; a failed attempt sets its
+        // own.
+        lastErrorMessage = nil
+        pendingResumeTurnId = nil
+        await connectResumingIfPending()
+        guard isConnected else {
+            if lastErrorMessage == nil {
+                lastErrorMessage = "couldn't reconnect to the server"
+            }
+            return false
+        }
+        return true
+    }
+
     /// What the "Finish this story" menu item calls -- see
     /// SessionCoordinator.concludeStory(). Bypasses the model's own
     /// phrase-matching entirely: the server forces a real final reply
-    /// and marks the story done unconditionally.
+    /// and marks the story done unconditionally. Reconnects first if the
+    /// session had dropped -- see ensureConnected().
     func finishStory() async {
-        guard let coordinator else { return }
+        guard await ensureConnected(), let coordinator else { return }
         await coordinator.concludeStory()
     }
 
     /// Debug/testing affordance: abandon the current story and start a
     /// fresh one without disconnecting -- see SessionCoordinator.newStory().
+    /// Reconnects first if the session had dropped (see ensureConnected()),
+    /// and only clears the on-screen history once there is a session to
+    /// start the new story on -- a reconnect connect() itself rejects (mic
+    /// denied, bad address, ...) leaves the old story on screen alongside
+    /// its error banner. (A server that is still unreachable only shows up
+    /// afterwards, through the poll loop's usual "disconnected from
+    /// server" banner -- connect() can't tell earlier, since the WebSocket
+    /// opens asynchronously.)
     func startNewStory() async {
-        guard let coordinator else { return }
-        turns = []
-        lastAppendedTranscriptTurnId = nil
-        lastAppendedReplyTurnId = nil
+        guard await ensureConnected(), let coordinator else { return }
+        turnHistory.clear()
         await coordinator.newStory()
     }
 
@@ -854,7 +898,9 @@ final class AppModel: ObservableObject {
             pendingResumeTurnId = nil
         }
         print("AppModel: backgrounded while \(liveState) -- pendingResumeTurnId=\(String(describing: pendingResumeTurnId))")
-        disconnect()
+        // The story on screen is still going -- keep its bubbles (issue
+        // #23); connectResumingIfPending() reconciles them on foreground.
+        disconnect(keepingTurnHistory: true)
     }
 
     /// Called when the app returns to the foreground. Only reconnects if
@@ -969,30 +1015,13 @@ final class AppModel: ObservableObject {
                     self.coordinatorDebugLog = log
                     self.debugLog = self.mergedDebugLog()
                     // Turn history for the story screen's chat view -- see
-                    // StoryTurn's doc comment. Appends at most once per
-                    // turn_id per speaker, keyed off the turn_id the
-                    // transcript/reply TEXT ITSELF belongs to
-                    // (lastTranscriptTurnId/lastReplyTurnId) -- NOT off
-                    // activeTurnId/turnId (the CURRENT/latest turn), which
-                    // can already have advanced to a new turn the instant
-                    // the child starts talking again, before that new
-                    // turn's own transcript/reply have arrived. Keying off
-                    // activeTurnId was confirmed on real hardware to
-                    // duplicate the previous bubble the moment the child
-                    // spoke again, and then silently skip the real new
-                    // turn once it did arrive (already marked "seen" under
-                    // the wrong id) -- the UI appeared backed up by one
-                    // turn. Keyed off turn_id rather than text equality so
-                    // a repeated phrase (e.g. the child saying "hi" in two
-                    // different turns) still gets its own bubble.
-                    if !transcript.isEmpty, let transcriptTurnId, transcriptTurnId != self.lastAppendedTranscriptTurnId {
-                        self.turns.append(StoryTurn(speaker: .child, text: transcript))
-                        self.lastAppendedTranscriptTurnId = transcriptTurnId
-                    }
-                    if !reply.isEmpty, let replyTurnId, replyTurnId != self.lastAppendedReplyTurnId {
-                        self.turns.append(StoryTurn(speaker: .elsie, text: reply))
-                        self.lastAppendedReplyTurnId = replyTurnId
-                    }
+                    // TurnHistory.observe() for why this is keyed off the
+                    // text's own turn ids (lastTranscriptTurnId/
+                    // lastReplyTurnId), NOT activeTurnId/turnId above.
+                    self.turnHistory.observe(
+                        transcript: transcript, transcriptTurnId: transcriptTurnId,
+                        reply: reply, replyTurnId: replyTurnId
+                    )
                     self.isRewriting = rewriting
 
                     // Library's real data source: every listStories()
@@ -1147,7 +1176,10 @@ final class AppModel: ObservableObject {
                     // correct to resume instead of always starting fresh.
                     self.pendingResumeTurnId = resumableTurnId
                     print("AppModel: connection closed unexpectedly -- pendingResumeTurnId=\(String(describing: resumableTurnId))")
-                    self.disconnect()
+                    // Same as backgrounding: not the user's choice, and the
+                    // reply this turn id resumes into belongs on the
+                    // bubbles already shown (issue #23).
+                    self.disconnect(keepingTurnHistory: true)
                     return true
                 }
                 if shouldStop { return }
