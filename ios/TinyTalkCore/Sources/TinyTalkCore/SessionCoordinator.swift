@@ -24,7 +24,9 @@
 /// cancelled here -- confirmed with a test asserting the in-flight
 /// `enqueue(_:)` call observes cancellation and does not complete after
 /// the interrupt. (Genuinely waiting for real playback completion happens
-/// only once per turn, at turnEnd -- see readyToShowTheEnd's doc comment.)
+/// only once per turn, at turnEnd -- see readyToShowTheEnd's doc comment --
+/// and the machine stays .speaking through that wait, so a barge-in during
+/// the reply's audible tail still reaches interrupt().)
 /// `stopPlaybackImmediately()` is still called synchronously first, before
 /// any of that cancellation machinery runs, so the child stops hearing the
 /// agent instantly regardless of how long structured cancellation takes to
@@ -1296,7 +1298,6 @@ public actor SessionCoordinator {
                 // was never reached (the "waiting" is over either way).
                 stopWaitingDitty()
                 await setMuted(false)
-                _ = try? machine.handle(.turnEnd)
                 turnContinuation = nil
                 // .audio events this turn only enqueue()'d their buffers
                 // (see the .audio case above) -- this is now the one
@@ -1311,6 +1312,26 @@ public actor SessionCoordinator {
                 await audio.waitForPlaybackToFinish()
                 let waitElapsedSeconds = Double(DispatchTime.now().uptimeNanoseconds - waitStarted.uptimeNanoseconds) / 1_000_000_000
                 logDebug("waitForPlaybackToFinish() took \(String(format: "%.2f", waitElapsedSeconds))s at turnEnd")
+                // The machine only leaves .speaking NOW, once playback has
+                // genuinely finished -- not when the server's turn_end
+                // arrived (issue #28). The server synthesizes far faster
+                // than real time, so with pipelined playback turn_end lands
+                // while most of the reply is still audibly playing; going
+                // .idle that early meant a child talking over that tail hit
+                // handleSpeechStart()'s ordinary new-utterance path, which
+                // never calls audio.stopPlaybackImmediately() (only
+                // interrupt(), reached from .waitingForReply/.speaking,
+                // does) -- Elsie just kept talking, and StoryView's status
+                // line already read "Ready when you are". Before pipelining
+                // this held automatically, since each play() call awaited
+                // its own buffer. Skipped if this turn was cancelled during
+                // the wait (a barge-in, newStory() or concludeStory()
+                // already moved the machine on): applying this turnEnd to
+                // whatever state that left behind -- e.g. a NEW turn's
+                // .waitingForReply -- would corrupt it.
+                if !Task.isCancelled {
+                    _ = try? machine.handle(.turnEnd)
+                }
                 noteTurnPlaybackFinished()
                 return
             case .message(.error(let text, _)):
