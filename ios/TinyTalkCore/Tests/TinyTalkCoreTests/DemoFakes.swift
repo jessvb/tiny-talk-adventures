@@ -29,3 +29,82 @@ final class ScriptedChatClient: ChatCompleting, @unchecked Sendable {
         }
     }
 }
+
+/// Holds every complete() call open until the test releases it -- lets a
+/// test keep a live turn genuinely in flight.
+final class GatedChatClient: ChatCompleting, @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var released = false
+    private let reply: String
+
+    init(reply: String) {
+        self.reply = reply
+    }
+
+    func complete(messages: [[String: String]]) async throws -> String {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumeNow: Bool = lock.withLock {
+                if released { return true }
+                waiter = continuation
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
+        return reply
+    }
+
+    func release() {
+        let toResume: CheckedContinuation<Void, Never>? = lock.withLock {
+            released = true
+            let current = waiter
+            waiter = nil
+            return current
+        }
+        toResume?.resume()
+    }
+}
+
+/// Reports what it was asked to illustrate and returns a scripted result.
+final class FakeIllustrator: StoryIllustrating, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _receivedPages: [[String]] = []
+    let result: IllustrationResult
+
+    init(result: IllustrationResult) {
+        self.result = result
+    }
+
+    var receivedPages: [[String]] { lock.withLock { _receivedPages } }
+
+    func illustrate(pages: [String]) async -> IllustrationResult {
+        lock.withLock { _receivedPages.append(pages) }
+        return result
+    }
+}
+
+/// Answers every call with the same reply after a short real delay, and
+/// records the highest number of calls ever in flight at once -- the probe
+/// a "builds never overlap" test needs.
+final class ConcurrencyProbeChatClient: ChatCompleting, @unchecked Sendable {
+    private let lock = NSLock()
+    private var inFlight = 0
+    private var _maxInFlight = 0
+    private let reply: String
+
+    init(reply: String) {
+        self.reply = reply
+    }
+
+    var maxInFlight: Int { lock.withLock { _maxInFlight } }
+
+    func complete(messages: [[String: String]]) async throws -> String {
+        lock.withLock {
+            inFlight += 1
+            _maxInFlight = max(_maxInFlight, inFlight)
+        }
+        try? await Task.sleep(nanoseconds: 40_000_000)
+        lock.withLock { inFlight -= 1 }
+        return reply
+    }
+}
