@@ -1007,6 +1007,15 @@ final class AppModel: ObservableObject {
                 // @Sendable closure even when (as here) it only ever runs
                 // synchronously on this same task.
                 let shouldStop: Bool = await MainActor.run {
+                    // This iteration read the PREVIOUS coordinator's state
+                    // before a disconnect() or backend switch replaced or
+                    // nil'd self.coordinator; applying it now would re-seed
+                    // libraryStories and the End-screen baseline from the
+                    // backend we just left (see
+                    // resetLibraryStateForBackendSwitch()). Returning true
+                    // ends this now-orphaned poll task, which disconnect()
+                    // already cancelled.
+                    guard self.coordinator === coordinator else { return true }
                     self.state = currentState
                     self.latencyHistory = history
                     self.lastTranscript = transcript
