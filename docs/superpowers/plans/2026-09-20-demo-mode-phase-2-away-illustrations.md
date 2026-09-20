@@ -12,6 +12,13 @@
 
 **Refinement of the spec's phasing.** The spec lists `get_page_image` and "uploading images with the sync payload" under Phase 2. While building Phase 1 it made more sense to ship them there — `DemoConnection` is one file, and the sync payload/server validator define the wire format once (the spec's own Phase 1 text already says the validator "handles images from the start"). Both were unit-tested in Phase 1 with fake illustrators and synthetic images. So this phase is only the image *source* and its wiring.
 
+## Known carry-overs from Phase 1's final review (not tasks in this plan)
+
+Phase 1's whole-branch review surfaced two items that are inert until this phase ships pictures. They are NOT implemented here (each needs its own verified code and tests); decide with the household whether to add them to this phase or file them as issues:
+
+- **An interrupted illustration pass is never resumed.** `DemoStoryLibrary.resumeInterruptedBuilds()` only picks up stories whose `rewriteStatus` is `pending`. A story killed after its `illustrationsStatus = .pending` is saved (the rewrite already `done`) shows its pictures as perpetually pending and syncs home text-only.
+- **Image bytes are read on the main actor.** `DemoStoryLibrary.syncPayloads` (called from `AppModel.connect()`) reads every page's JPEG from disk synchronously on the main actor, and `resumeInterruptedBuilds()` runs `store.loadAll()` from a main-actor-inherited `Task`. Negligible with no pictures; with pictures, consider moving both off the main actor.
+
 ## Global Constraints
 
 - **Optional and free.** "Illustrations are enabled only when both are present" (Cloudflare account id and API token). "No Cloudflare credentials: text-only storybooks, silently." Nothing here may make credentials mandatory.
@@ -61,7 +68,7 @@ git -C /Users/jess/Development/claude-tests/tiny-talk-adventures worktree add -b
 cp -n ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2/ios/TinyTalkApp/Local.xcconfig.example ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2/ios/TinyTalkApp/Local.xcconfig
 ```
 
-- [ ] **Record the baseline** with the whole-suite recipe above (no `--filter`). With Phase 1 merged onto the spec-commit base it is **333** Swift tests; every count below is "baseline + N" (the per-task `+N` figures are exact; absolute totals assume 333). Confirm Phase 1's files are present: `ios/TinyTalkCore/Sources/TinyTalkCore/DemoStoryLibrary.swift` must define `StoryIllustrating` and `IllustrationResult`.
+- [ ] **Record the baseline** with the whole-suite recipe above (no `--filter`). With Phase 1 merged onto the spec-commit base it is **335** Swift tests (333 as originally planned, plus the two Safety tests Phase 1's final-review fix wave added); every count below is "baseline + N" (the per-task `+N` figures are exact; absolute totals assume 335). Confirm Phase 1's files are present: `ios/TinyTalkCore/Sources/TinyTalkCore/DemoStoryLibrary.swift` must define `StoryIllustrating` and `IllustrationResult`.
 
 ## File Structure
 
@@ -958,7 +965,7 @@ swift test --package-path ~/Development/claude-tests/tiny-talk-adventures/.claud
 grep -E "Executed [0-9]+ tests?|error:" /tmp/demo-mode-swift.txt | grep -v "ditty loop" | tail -3
 ```
 
-Expected: `Executed 362 tests, with 0 failures` (333 baseline + 11 + 5 + 13).
+Expected: `Executed 364 tests, with 0 failures` (335 baseline + 11 + 5 + 13; 362 if your baseline is the originally planned 333).
 
 - [ ] **Step 7: Commit.**
 
@@ -1117,17 +1124,17 @@ git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktre
 
 **Files:** none.
 
-- [ ] **Step 1: Full Swift suite.** Expected `Executed 362 tests, with 0 failures` (Task 3 Step 6's commands; re-run a lone `testPageAudioDittyStopsOnStopPageAudio` failure — known flake).
+- [ ] **Step 1: Full Swift suite.** Expected `Executed 364 tests, with 0 failures` (362 on the originally planned 333 baseline) (Task 3 Step 6's commands; re-run a lone `testPageAudioDittyStopsOnStopPageAudio` failure — known flake).
 
 - [ ] **Step 2: App build.** Expected `** BUILD SUCCEEDED **` (Task 4 Step 3's commands).
 
 - [ ] **Step 3: Exactness check against the verified implementation** (only if the local scratch branch still exists; verify `git rev-parse --verify 62b55d3` first, otherwise skip):
 
 ```bash
-git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 diff --ignore-all-space --ignore-blank-lines --stat 62b55d3 HEAD -- ios server
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 diff --ignore-all-space --ignore-blank-lines --stat 62b55d3 HEAD -- ios/TinyTalkCore/Sources/TinyTalkCore/ImageGeneration.swift ios/TinyTalkCore/Sources/TinyTalkCore/ImageDownscaler.swift ios/TinyTalkCore/Sources/TinyTalkCore/IllustrationPass.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/ImageFakes.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/CloudflareImageClientTests.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/IllustrationPassTests.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/ImageDownscalerTests.swift ios/TinyTalkApp/TinyTalkApp/SettingsView.swift
 ```
 
-Expected: no output.
+Expected: no output — Phase 2's own files match the verified implementation. (`AppModel.swift` is deliberately left out of this check: besides Phase 2's `makeIllustrator` it also carries Phase 1's reviewed execution-time changes, see "Post-execution corrections" at the end of Phase 1's plan.)
 
 - [ ] **Step 4: Push and open a DRAFT PR** (never push to `main`; never merge). Mark ready only after the household's on-device pass.
 
