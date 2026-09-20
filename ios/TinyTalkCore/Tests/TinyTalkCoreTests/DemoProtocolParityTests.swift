@@ -76,10 +76,22 @@ final class DemoProtocolParityTests: XCTestCase {
             let recorder = EventRecorder(connection)
 
             try await connection.send(message)
-            let events = await recorder.settle()
+            // The wait depends on the classification: a case that must answer
+            // is awaited until its first event arrives (several emit from a
+            // detached Task, so a fixed sleep could flake on a loaded
+            // machine), while a silent-by-design case needs a fixed quiet
+            // period to prove nothing was emitted.
+            let expectation = Self.expectation(for: message)
+            let events: [ServerConnectionEvent]
+            switch expectation {
+            case .respondsWithAnEvent:
+                events = await recorder.waitForCount(1)
+            case .silentByDesign:
+                events = await recorder.settle()
+            }
             recorder.stop()
 
-            switch Self.expectation(for: message) {
+            switch expectation {
             case .respondsWithAnEvent:
                 XCTAssertFalse(events.isEmpty, "\(message) must answer with at least one event, never silence")
             case .silentByDesign(let reason):

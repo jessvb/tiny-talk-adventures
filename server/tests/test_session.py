@@ -1933,9 +1933,12 @@ def _sync_with_storybook_fixtures(tmp_path, monkeypatch, *, accept: bool):
     synced_storybook.store_uploaded_storybook are recorded stand-ins."""
     from tinytalk import story_store
 
+    # The saved file's id deliberately differs from the phone's payload id
+    # ("srv" prefix): session.py must use the SERVER-derived id
+    # (story_id_from_path), never trust the client-supplied one.
     monkeypatch.setattr(
         story_store, "save_synced_story",
-        lambda payload, **kw: tmp_path / f"20260909T120000-{payload['id']}.json",
+        lambda payload, **kw: tmp_path / f"20260909T120000-srv{payload['id']}.json",
     )
     (tmp_path).mkdir(exist_ok=True)
     build_calls = []
@@ -1979,7 +1982,7 @@ async def test_a_synced_story_with_an_accepted_storybook_skips_the_rewrite(tmp_p
     await session.handle_text(_sync_message(_synced_story("abc12345", storybook=_STORYBOOK)))
     await asyncio.sleep(0.01)
 
-    assert store_calls == [("abc12345", _STORYBOOK, [("fox", "foxes are clever")])]
+    assert store_calls == [("srvabc12345", _STORYBOOK, [("fox", "foxes are clever")])]
     assert build_calls == [], "an accepted storybook must not be rewritten again"
 
 
@@ -1991,7 +1994,7 @@ async def test_a_synced_story_whose_storybook_is_rejected_falls_back_to_the_rewr
     await asyncio.sleep(0.01)
 
     assert len(store_calls) == 1
-    assert build_calls == ["abc12345"], "a rejected storybook must fall back to today's rewrite"
+    assert build_calls == ["srvabc12345"], "a rejected storybook must fall back to today's rewrite"
 
 
 async def test_a_synced_story_with_no_storybook_never_consults_the_validator(tmp_path, monkeypatch):
@@ -2002,7 +2005,7 @@ async def test_a_synced_story_with_no_storybook_never_consults_the_validator(tmp
     await asyncio.sleep(0.01)
 
     assert store_calls == []
-    assert build_calls == ["abc12345"]
+    assert build_calls == ["srvabc12345"]
 
 
 async def test_each_story_in_a_batch_is_judged_on_its_own(tmp_path, monkeypatch):
@@ -2015,8 +2018,8 @@ async def test_each_story_in_a_batch_is_judged_on_its_own(tmp_path, monkeypatch)
     ))
     await asyncio.sleep(0.01)
 
-    assert [call[0] for call in store_calls] == ["with1111"]
-    assert build_calls == ["without2"]
+    assert [call[0] for call in store_calls] == ["srvwith1111"]
+    assert build_calls == ["srvwithout2"]
 
 
 async def test_handle_sync_demo_stories_does_not_touch_the_rewriting_gate(tmp_path, monkeypatch):
