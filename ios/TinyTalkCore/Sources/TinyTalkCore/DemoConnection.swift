@@ -24,6 +24,25 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
         "- Write plain spoken words only: no emoji, no asterisks, no stage " +
         "directions, no narration about yourself."
 
+    /// Mirrors config.CONCLUDE_SAFETY_RETRY_ATTEMPTS.
+    static let concludeSafetyRetryAttempts = 3
+
+    /// Fed back when a forced conclusion trips the kid-safety check --
+    /// mirrors session.py's _CONCLUDE_SAFETY_RETRY_TEMPLATE.
+    static func concludeSafetyRetryPrompt(terms: String) -> String {
+        "That reply isn't appropriate for a young child -- it mentioned: " +
+        "\(terms). Give the same warm, complete ending again, same story, but " +
+        "leave out any mention of that. Remember: this must be the last " +
+        "reply, and it should end with the words \"The end.\""
+    }
+
+    /// Fed back when a forced-conclude attempt comes back empty --
+    /// mirrors session.py's _CONCLUDE_EMPTY_RETRY_NUDGE.
+    static let concludeEmptyRetryNudge =
+        "You didn't write anything. Please write your ending now -- a few " +
+        "warm sentences that finish the story, ending with the words " +
+        "\"The end.\""
+
     private static let sttFailureGuidance =
         "You didn't hear anything new from the child just now -- it might " +
         "have been background noise. Don't mention this or ask them to " +
@@ -36,7 +55,7 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
     private let ttsClient: any SpeechSynthesizing
     private let animalFactTracker: AnimalFactTracker
     private let systemPrompt: String
-    private let targetTurns: Int
+    private let library: DemoStoryLibrary?
     private let onStoryCompleted: ((PendingDemoStoryPayload) -> Void)?
 
     /// Optional hook for surfacing DemoConnection's diagnostic lines into
@@ -60,6 +79,19 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
     private var storyArc: StoryArc
     private var objectTracker = ObjectTracker()
     private var turnTask: Task<Void, Never>?
+    /// The chain of page-browsing media requests (page audio, page images)
+    /// -- see startMediaTask().
+    private var mediaTask: Task<Void, Never>?
+    /// The parent's story-length settings (see the .updateSettings case).
+    /// Lock-protected like everything above since a settings change can
+    /// arrive on any task. They apply to the NEXT story only.
+    private var targetTurns: Int
+    private var pageCount: Int
+    /// The page count in force when the CURRENT story began -- what its
+    /// storybook rewrite will ask for. Captured at story start (not read at
+    /// conclusion) so a mid-story settings change never applies
+    /// retroactively.
+    private var storyPageCount: Int
 
     public init(
         chatClient: any ChatCompleting,
@@ -68,6 +100,8 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
         animalFactTracker: AnimalFactTracker,
         systemPrompt: String = DemoConnection.defaultSystemPrompt,
         targetTurns: Int = 7,
+        pageCount: Int = 5,
+        library: DemoStoryLibrary? = nil,
         onStoryCompleted: ((PendingDemoStoryPayload) -> Void)? = nil
     ) {
         self.chatClient = chatClient
@@ -76,15 +110,32 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
         self.animalFactTracker = animalFactTracker
         self.systemPrompt = systemPrompt
         self.targetTurns = targetTurns
+        self.pageCount = pageCount
+        self.storyPageCount = pageCount
+        self.library = library
         self.onStoryCompleted = onStoryCompleted
         self.storyArc = StoryArc(targetTurns: targetTurns)
         (stream, continuation) = AsyncStream<ServerConnectionEvent>.makeStream()
+    }
+
+    /// Starts a fresh story with the CURRENT settings: a new arc, and the
+    /// page count its storybook will be asked for. Caller must hold `lock`.
+    /// Mirrors SessionRunner._begin_story() server-side.
+    private func beginStoryLocked() {
+        storyArc = StoryArc(targetTurns: targetTurns)
+        storyPageCount = pageCount
+    }
+
+    private func currentTurn() -> Int {
+        lock.withLockReturning { currentTurnId }
     }
 
     public func send(_ message: ClientMessage) async throws {
         switch message {
         case .speechStart(let turnId):
             lock.withLock {
+                mediaTask?.cancel()
+                mediaTask = nil
                 turnTask?.cancel()
                 turnTask = nil
                 currentTurnId = turnId
@@ -99,6 +150,8 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
             lock.withLock { turnTask = task }
         case .interrupt(let turnId):
             lock.withLock {
+                mediaTask?.cancel()
+                mediaTask = nil
                 turnTask?.cancel()
                 turnTask = nil
                 currentTurnId = turnId
@@ -109,26 +162,129 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
             tracker.recordSeen(label: label)
         case .newStory:
             lock.withLock {
+                mediaTask?.cancel()
+                mediaTask = nil
                 turnTask?.cancel()
                 turnTask = nil
                 conversation = DemoConversation()
-                storyArc = StoryArc(targetTurns: targetTurns)
+                beginStoryLocked()
                 objectTracker = ObjectTracker()
             }
             await animalFactTracker.reset()
-        case .syncDemoStories, .listStories, .getStory, .concludeStory, .updateSettings, .getPageImage, .synthesizePage:
-            // None of these are ever legitimately sent to a DemoConnection:
-            // syncDemoStories is only issued by AppModel.connect()'s real
-            // (LAN) path once already reconnected to the actual server (see
-            // SessionCoordinator.syncDemoStories); listStories/getStory/
-            // concludeStory/updateSettings/getPageImage/synthesizePage all concern the real
-            // server's saved-story library and settings (getPageImage's
-            // Stable Diffusion pipeline included), which a Groq-backed demo
-            // session has no equivalent of. No-op here rather than
-            // unreachable/fatalError so a future caller mistake fails
-            // silently (matching every other best-effort send in this file)
-            // instead of crashing the app.
+        case .updateSettings(let turns, let pages):
+            // Same bounds SessionRunner.handle_update_settings enforces
+            // server-side (turns 4-12, pages 3-10). Applies to the NEXT
+            // story only: an arc that hasn't started is rebuilt now (so the
+            // very next story uses it); one already in progress is left
+            // alone -- never retroactive.
+            lock.withLock {
+                targetTurns = max(4, min(12, turns))
+                pageCount = max(3, min(10, pages))
+                if !storyArc.hasStarted { beginStoryLocked() }
+            }
+        case .listStories:
+            continuation.yield(.message(.storyList(library?.list() ?? [])))
+        case .getStory(let storyId):
+            if let detail = library?.detail(id: storyId) {
+                continuation.yield(.message(.storyDetail(detail)))
+            } else {
+                continuation.yield(.message(.error("no saved story with id '\(storyId)'", turnId: currentTurn())))
+            }
+        case .concludeStory(let turnId):
+            // Same as a barge-in first: whatever was in flight is abandoned.
+            lock.withLock {
+                mediaTask?.cancel()
+                mediaTask = nil
+                turnTask?.cancel()
+                turnTask = nil
+                currentTurnId = turnId
+                audioBuffer = Data()
+            }
+            let task = Task { [weak self] in
+                guard let self else { return }
+                await self.runTurn(turnId: turnId, pcm: Data(), forceConclude: true)
+            }
+            lock.withLock { turnTask = task }
+        case .getPageImage(let storyId, let pageIndex):
+            startMediaTask { [weak self] in
+                await self?.runPageImage(storyId: storyId, pageIndex: pageIndex)
+            }
+        case .synthesizePage(let storyId, let pageIndex):
+            startMediaTask { [weak self] in
+                await self?.runPageAudio(storyId: storyId, pageIndex: pageIndex)
+            }
+        case .syncDemoStories:
+            // Genuinely never sent here: it is only issued by
+            // AppModel.connect()'s real (LAN) path, once already reconnected
+            // to the actual server (see SessionCoordinator.syncDemoStories).
+            // An explicit no-op -- deliberately not folded into a shared
+            // catch-all, so a NEW ClientMessage case can never silently
+            // inherit "do nothing" (see DemoProtocolParityTests).
             break
+        }
+    }
+
+    /// Runs page-browsing media work (page audio, page images) strictly in
+    /// arrival order, and never while a live turn is still producing its own
+    /// audio. Two reasons, both about the real server's behavior that
+    /// DemoConnection must reproduce: SessionCoordinator routes an .audio
+    /// frame to page playback whenever a page request is pending and to the
+    /// live turn otherwise, which is only correct if frames from the two
+    /// never interleave (the server guarantees that by handling one message
+    /// at a time to completion); and AVSpeechTts shares one
+    /// AVSpeechSynthesizer across every synthesize() call, so two
+    /// overlapping ones would cut each other off.
+    private func startMediaTask(_ work: @escaping @Sendable () async -> Void) {
+        lock.withLock {
+            let previous = mediaTask
+            let inFlightTurn = turnTask
+            mediaTask = Task {
+                await previous?.value
+                await inFlightTurn?.value
+                await work()
+            }
+        }
+    }
+
+    /// Every synthesize_page request ends with EXACTLY ONE terminating
+    /// frame -- page_audio_done, or an error for a bad story/page -- even
+    /// when cancelled part-way (a barge-in, a new story, close()).
+    /// SessionCoordinator keeps a request "pending" until one of those
+    /// arrives, and a pending request diverts every later audio frame into
+    /// page playback; a request that simply went quiet would wedge live
+    /// story audio.
+    private func runPageAudio(storyId: String, pageIndex: Int) async {
+        guard let text = library?.pageText(id: storyId, index: pageIndex) else {
+            continuation.yield(.message(.error(
+                "no page \(pageIndex) for story '\(storyId)'", turnId: currentTurn()
+            )))
+            return
+        }
+        if !Task.isCancelled {
+            for await chunk in ttsClient.synthesize(text) {
+                if Task.isCancelled { break }
+                continuation.yield(.audio(chunk))
+            }
+        }
+        continuation.yield(.message(.pageAudioDone(storyId: storyId, pageIndex: pageIndex)))
+    }
+
+    /// One binary frame then page_image_done(hasImage: true) when the page
+    /// has a picture; page_image_done(hasImage: false) alone when it
+    /// doesn't; an error frame for a bad story/page -- matching the real
+    /// server's handle_get_page_image.
+    private func runPageImage(storyId: String, pageIndex: Int) async {
+        guard library?.pageText(id: storyId, index: pageIndex) != nil else {
+            continuation.yield(.message(.error(
+                "no page \(pageIndex) for story '\(storyId)'", turnId: currentTurn()
+            )))
+            return
+        }
+        if let image = library?.pageImage(id: storyId, index: pageIndex) {
+            continuation.yield(.audio(image))
+            continuation.yield(.message(.pageImageDone(storyId: storyId, pageIndex: pageIndex, hasImage: true)))
+        } else {
+            continuation.yield(.message(.pageImageDone(storyId: storyId, pageIndex: pageIndex, hasImage: false)))
         }
     }
 
@@ -139,7 +295,10 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
     public func events() -> AsyncStream<ServerConnectionEvent> { stream }
 
     public func close() {
-        lock.lock(); turnTask?.cancel(); turnTask = nil; lock.unlock()
+        lock.lock()
+        mediaTask?.cancel(); mediaTask = nil
+        turnTask?.cancel(); turnTask = nil
+        lock.unlock()
         continuation.finish()
     }
 
@@ -153,22 +312,34 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
     /// happened to be current at that exact statement, which is how a
     /// just-concluded story could be lost or a reply could leak into the
     /// wrong story's transcript. See task-13-report.md's fix-up entry.
-    private func runTurn(turnId: Int, pcm: Data) async {
-        let (localConversation, localStoryArc, localObjectTracker) = lock.withLockReturning {
-            (conversation, storyArc, objectTracker)
+    private func runTurn(turnId: Int, pcm: Data, forceConclude: Bool = false) async {
+        let (localConversation, localStoryArc, localObjectTracker, localPageCount) = lock.withLockReturning {
+            (conversation, storyArc, objectTracker, storyPageCount)
         }
         do {
             try Task.checkCancellation()
-            let transcript = try await sttClient.transcribe(pcm)
-            try Task.checkCancellation()
-            continuation.yield(.message(.transcriptFinal(transcript, turnId: turnId)))
+            // "Finish this story" has no child audio: like the server (whose
+            // forced conclusion skips STT), no transcript is produced or emitted.
+            let transcript: String
+            if forceConclude {
+                transcript = ""
+            } else {
+                transcript = try await sttClient.transcribe(pcm)
+                try Task.checkCancellation()
+                continuation.yield(.message(.transcriptFinal(transcript, turnId: turnId)))
+            }
 
             let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
                 localConversation.addChild(trimmed)
             }
 
-            var guidance = localStoryArc.recordTurn(childText: transcript)
+            // forceConcludeGuidance() deliberately does NOT advance the arc's
+            // turn count (an out-of-band final turn, not the next turn of the
+            // normal budget), same as story_arc.py.
+            var guidance = forceConclude
+                ? localStoryArc.forceConcludeGuidance()
+                : localStoryArc.recordTurn(childText: transcript)
             let factGuidance = await animalFactTracker.recordTurn(transcript: transcript, stage: localStoryArc.stage)
             if !factGuidance.isEmpty {
                 guidance += "\n\n" + factGuidance
@@ -183,14 +354,51 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
                 guidance += "\n\n" + objectGuidance
                 onDebugEvent?("[\(DebugTimestamp.now())] object recognition guidance added for turn \(turnId)")
             }
-            if trimmed.isEmpty { guidance += "\n\n" + Self.sttFailureGuidance }
+            if trimmed.isEmpty && !forceConclude { guidance += "\n\n" + Self.sttFailureGuidance }
 
-            let messages = localConversation.toMessages(systemPrompt: systemPrompt + "\n\n" + guidance)
+            var messages = localConversation.toMessages(systemPrompt: systemPrompt + "\n\n" + guidance)
             try Task.checkCancellation()
-            let rawReply = try await chatClient.complete(messages: messages)
+            var raw = try await chatClient.complete(messages: messages)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             try Task.checkCancellation()
-            let reply = Safety.filterReply(rawReply.trimmingCharacters(in: .whitespacesAndNewlines))
-            localStoryArc.recordReply(replyText: reply)
+            var reply = Safety.filterReply(raw)
+            if forceConclude {
+                // An explicit "finish this story" request must not end on the
+                // generic safety-fallback line ("...What should happen next?")
+                // -- unlike an ordinary turn, where the conversation simply
+                // continues, this reply becomes the story's permanent ending.
+                // Retry with the flagged word(s) fed back (mirrors
+                // session.py's forced-conclude retry) before finally
+                // accepting the fallback as a last resort.
+                var attempt = 1
+                while reply == Safety.safeFallback && attempt < Self.concludeSafetyRetryAttempts {
+                    attempt += 1
+                    let blocked = Safety.findBlocked(raw)
+                    if blocked.isEmpty {
+                        // filterReply() also falls back on a genuinely empty
+                        // completion -- nothing to name, so nudge the model
+                        // to actually write something.
+                        messages.append(["role": "user", "content": Self.concludeEmptyRetryNudge])
+                    } else {
+                        messages.append(["role": "assistant", "content": raw])
+                        messages.append([
+                            "role": "user",
+                            "content": Self.concludeSafetyRetryPrompt(terms: blocked.joined(separator: ", ")),
+                        ])
+                    }
+                    try Task.checkCancellation()
+                    raw = try await chatClient.complete(messages: messages)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    try Task.checkCancellation()
+                    reply = Safety.filterReply(raw)
+                }
+                // Unconditional: an explicit request to finish must not be
+                // able to silently fail to end because the reply's wording
+                // happens not to match a natural-conclusion phrase.
+                localStoryArc.markDone()
+            } else {
+                localStoryArc.recordReply(replyText: reply)
+            }
 
             continuation.yield(.message(.responseText(reply, turnId: turnId)))
 
@@ -244,7 +452,12 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
             continuation.yield(.message(.turnEnd(turnId: turnId)))
 
             if localStoryArc.isDone {
-                await completeStory(conversation: localConversation, storyArc: localStoryArc, objectTracker: localObjectTracker)
+                await completeStory(
+                    conversation: localConversation,
+                    storyArc: localStoryArc,
+                    objectTracker: localObjectTracker,
+                    pageCount: localPageCount
+                )
             }
         } catch is CancellationError {
             return
@@ -272,7 +485,9 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
     /// already-accumulated animal-facts progress. Not fixed here --
     /// closing it needs a generation-counter mechanism disproportionate
     /// to this demo feature.
-    private func completeStory(conversation: DemoConversation, storyArc: StoryArc, objectTracker: ObjectTracker) async {
+    private func completeStory(
+        conversation: DemoConversation, storyArc: StoryArc, objectTracker: ObjectTracker, pageCount: Int
+    ) async {
         let turns = conversation.fullHistory
         let sharedFacts = await animalFactTracker.sharedFacts()
         let payload = PendingDemoStoryPayload(
@@ -287,10 +502,28 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
 
         lock.withLock {
             if self.conversation === conversation { self.conversation = DemoConversation() }
-            if self.storyArc === storyArc { self.storyArc = StoryArc(targetTurns: targetTurns) }
+            if self.storyArc === storyArc { beginStoryLocked() }
             if self.objectTracker === objectTracker { self.objectTracker = ObjectTracker() }
         }
         await animalFactTracker.reset()
+
+        // Mirrors SessionRunner._run_turn's concluding branch: turn_end has
+        // already gone out (runTurn sent it) and the transcript is saved;
+        // only now does rewriting_started follow. With the concluding turn's
+        // playback finishing, that event is what makes SessionCoordinator's
+        // readyToShowTheEnd true. The build then runs in the background --
+        // deliberately NOT tied to this connection's lifetime: it is
+        // app-level work, and cancelling it on close() (e.g. the app being
+        // backgrounded) would wrongly mark the story failed.
+        guard let library else { return }
+        library.begin(payload, pageCount: pageCount)
+        continuation.yield(.message(.rewritingStarted))
+        let continuation = self.continuation
+        let storyId = payload.id
+        Task {
+            await library.buildStorybook(id: storyId)
+            continuation.yield(.message(.rewritingDone))
+        }
     }
 }
 

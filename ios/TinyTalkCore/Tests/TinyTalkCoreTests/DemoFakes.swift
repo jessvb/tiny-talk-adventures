@@ -30,6 +30,94 @@ final class ScriptedChatClient: ChatCompleting, @unchecked Sendable {
     }
 }
 
+/// Records every event a DemoConnection emits and lets a test wait until N
+/// have arrived. One recorder per connection: an AsyncStream supports a
+/// single consumer, and a consumer that breaks out of its loop can end the
+/// stream for whoever reads next -- so tests must not call events() twice.
+final class EventRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _events: [ServerConnectionEvent] = []
+    private var task: Task<Void, Never>?
+
+    init(_ connection: DemoConnection) {
+        let stream = connection.events()
+        task = Task { [weak self] in
+            for await event in stream { self?.record(event) }
+        }
+    }
+
+    private func record(_ event: ServerConnectionEvent) {
+        lock.withLock { _events.append(event) }
+    }
+
+    var events: [ServerConnectionEvent] { lock.withLock { _events } }
+
+    /// Only the `.message` events, unwrapped.
+    var messages: [ServerEvent] {
+        events.compactMap { if case .message(let message) = $0 { return message } else { return nil } }
+    }
+
+    /// Only the binary `.audio` frames (page audio, page images and live
+    /// reply audio all arrive this way).
+    var audioFrames: [Data] {
+        events.compactMap { if case .audio(let data) = $0 { return data } else { return nil } }
+    }
+
+    func stop() { task?.cancel() }
+
+    /// Polls until at least `count` events have arrived (or the timeout
+    /// passes) and returns everything recorded so far.
+    @discardableResult
+    func waitForCount(_ count: Int, timeout: TimeInterval = 3) async -> [ServerConnectionEvent] {
+        let deadline = Date().addingTimeInterval(timeout)
+        while events.count < count && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        return events
+    }
+
+    /// Waits a fixed quiet period and returns whatever arrived -- for
+    /// asserting that NOTHING (more) was emitted.
+    func settle(nanoseconds: UInt64 = 150_000_000) async -> [ServerConnectionEvent] {
+        try? await Task.sleep(nanoseconds: nanoseconds)
+        return events
+    }
+}
+
+/// Synthesizes a fixed list of chunks, optionally with a real delay between
+/// them (and honouring cancellation), and records every text it was asked
+/// to speak.
+final class ChunkedTtsClient: SpeechSynthesizing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _synthesizedTexts: [String] = []
+    private let chunks: [Data]
+    private let delayNanos: UInt64
+
+    init(chunks: [Data], delayNanos: UInt64 = 0) {
+        self.chunks = chunks
+        self.delayNanos = delayNanos
+    }
+
+    var synthesizedTexts: [String] { lock.withLock { _synthesizedTexts } }
+
+    func synthesize(_ text: String) -> AsyncStream<Data> {
+        lock.withLock { _synthesizedTexts.append(text) }
+        let chunks = self.chunks
+        let delayNanos = self.delayNanos
+        return AsyncStream { continuation in
+            let task = Task {
+                for chunk in chunks {
+                    if Task.isCancelled { break }
+                    continuation.yield(chunk)
+                    if delayNanos > 0 { try? await Task.sleep(nanoseconds: delayNanos) }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
 /// Holds every complete() call open until the test releases it -- lets a
 /// test keep a live turn genuinely in flight.
 final class GatedChatClient: ChatCompleting, @unchecked Sendable {
