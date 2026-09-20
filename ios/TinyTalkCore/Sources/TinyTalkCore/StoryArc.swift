@@ -62,6 +62,15 @@ public final class StoryArc: @unchecked Sendable {
         return _isDone
     }
 
+    /// True once the first turn has been recorded -- mirrors story_arc.py's
+    /// has_started. Lets a settings change tell an arc that can still be
+    /// rebuilt with new settings from one already in progress (which must
+    /// never change retroactively).
+    public var hasStarted: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return turnCount > 0
+    }
+
     private func stageForTurn(_ turn: Int) -> StoryStage {
         if turn <= 1 { return .intro }
         let setupEnd = Int((Double(targetTurns) / 4).rounded())

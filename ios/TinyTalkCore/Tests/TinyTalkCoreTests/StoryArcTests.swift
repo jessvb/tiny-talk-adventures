@@ -2,6 +2,24 @@ import XCTest
 @testable import TinyTalkCore
 
 final class StoryArcTests: XCTestCase {
+    // MARK: - hasStarted (mirrors story_arc.py's has_started)
+
+    func testAFreshArcHasNotStartedAndRecordingATurnStartsIt() {
+        let arc = StoryArc(targetTurns: 7)
+        XCTAssertFalse(arc.hasStarted)
+        _ = arc.recordTurn(childText: "hello")
+        XCTAssertTrue(arc.hasStarted)
+    }
+
+    func testAnExplicitConclusionAloneDoesNotCountAsStartingTheArc() {
+        // forceConcludeGuidance()/markDone() deliberately leave turnCount
+        // alone (see story_arc.py), so they don't flip hasStarted either.
+        let arc = StoryArc(targetTurns: 7)
+        _ = arc.forceConcludeGuidance()
+        arc.markDone()
+        XCTAssertFalse(arc.hasStarted)
+    }
+
     // MARK: - Brief's required tests
 
     func testFirstTurnIsIntro() {
