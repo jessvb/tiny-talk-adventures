@@ -17,7 +17,7 @@ public struct StoryPage: Equatable, Sendable {
 
 /// Mirrors story_store.py's `rewrite_status` field exactly (`"pending"`,
 /// `"done"`, `"failed"`).
-public enum RewriteStatus: String, Equatable, Sendable {
+public enum RewriteStatus: String, Codable, Equatable, Sendable {
     case pending
     case done
     case failed
@@ -28,7 +28,7 @@ public enum RewriteStatus: String, Equatable, Sendable {
 /// (`nil`) means the text rewrite hasn't finished yet, or finished but
 /// no illustration pass has run at all -- distinct from any of the four
 /// named states.
-public enum IllustrationsStatus: String, Equatable, Sendable {
+public enum IllustrationsStatus: String, Codable, Equatable, Sendable {
     case pending
     case done
     case partial
