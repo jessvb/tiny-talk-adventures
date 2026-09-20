@@ -78,7 +78,7 @@ public enum ClientMessage: Sendable, Equatable {
             return #"{"type":"new_story"}"#
         case .syncDemoStories(let stories):
             let storiesJSON: [[String: Any]] = stories.map { story in
-                [
+                var storyJSON: [String: Any] = [
                     "id": story.id,
                     "created_at": story.createdAt,
                     "turns": story.turns.map {
@@ -86,6 +86,28 @@ public enum ClientMessage: Sendable, Equatable {
                     },
                     "shared_facts": story.sharedFacts,
                 ]
+                // Optional and backward compatible in both directions: an
+                // older server ignores the unknown key and rewrites from the
+                // transcript; a story with no finished storybook simply
+                // omits it. The epilogue is deliberately never sent -- the
+                // server recomputes it from shared_facts.
+                if let storybook = story.storybook {
+                    var storybookJSON: [String: Any] = [
+                        "title": storybook.title,
+                        "pages": storybook.pages.map { page -> [String: Any] in
+                            var pageJSON: [String: Any] = ["text": page.text]
+                            if let image = page.imageJPEG {
+                                pageJSON["image"] = image.base64EncodedString()
+                            }
+                            return pageJSON
+                        },
+                    ]
+                    if let status = storybook.illustrationsStatus {
+                        storybookJSON["illustrations_status"] = status.rawValue
+                    }
+                    storyJSON["storybook"] = storybookJSON
+                }
+                return storyJSON
             }
             let payload: [String: Any] = ["type": "sync_demo_stories", "stories": storiesJSON]
             guard let data = try? JSONSerialization.data(withJSONObject: payload),
