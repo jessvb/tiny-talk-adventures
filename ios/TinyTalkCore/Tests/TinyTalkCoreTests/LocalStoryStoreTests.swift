@@ -74,7 +74,7 @@ final class LocalStoryStoreTests: XCTestCase {
         XCTAssertNotNil(store.load(id: "keep"))
     }
 
-    func testAnIdThatCouldEscapeTheStoreDirectoryIsRejected() {
+    func testAnIdThatCouldEscapeTheStoreDirectoryIsRejected() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = LocalStoryStore(directory: directory)
         store.save(makeStory(id: "../escape"))
@@ -84,6 +84,22 @@ final class LocalStoryStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(
             atPath: directory.deletingLastPathComponent().appendingPathComponent("escape.json").path
         ))
+
+        // "." would resolve to the store directory itself -- remove(ids: ["."])
+        // would delete every story, and saveImage(id: ".") would drop a file
+        // straight into the store directory. A backslash id and the empty id
+        // are refused too. None of them may touch anything.
+        let populatedDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let populated = LocalStoryStore(directory: populatedDirectory)
+        populated.save(makeStory(id: "keep"))
+        let before = try FileManager.default.contentsOfDirectory(atPath: populatedDirectory.path).sorted()
+        populated.remove(ids: ["."])
+        for badId in [".", "a\\b", ""] {
+            populated.saveImage(Data([1]), id: badId, pageIndex: 0)
+            XCTAssertNil(populated.imageData(id: badId, pageIndex: 0), "image for id \"\(badId)\"")
+        }
+        XCTAssertNotNil(populated.load(id: "keep"))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: populatedDirectory.path).sorted(), before)
     }
 
     func testACorruptFileIsSkippedNotFatal() throws {

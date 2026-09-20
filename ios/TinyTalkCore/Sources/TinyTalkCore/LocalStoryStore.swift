@@ -79,9 +79,11 @@ public final class LocalStoryStore: @unchecked Sendable {
 
     /// Ids are generated locally (8 hex characters), but they also arrive
     /// via UI-supplied get_story/synthesize_page requests -- reject anything
-    /// that could escape `directory` rather than trust them.
+    /// that could escape `directory` rather than trust them. "." is refused
+    /// too: it would resolve to `directory` itself, so remove(ids: ["."])
+    /// would delete every story.
     private func isSafeId(_ id: String) -> Bool {
-        !id.isEmpty && !id.contains("/") && !id.contains("\\") && !id.contains("..")
+        !id.isEmpty && id != "." && !id.contains("/") && !id.contains("\\") && !id.contains("..")
     }
 
     private func jsonURL(_ id: String) -> URL { directory.appendingPathComponent("\(id).json") }
