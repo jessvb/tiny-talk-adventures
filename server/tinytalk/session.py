@@ -20,7 +20,7 @@ import logging
 import time
 from typing import Protocol
 
-from . import config, safety, storybook, story_store
+from . import config, safety, storybook, story_store, synced_storybook
 from .animal_facts import AnimalFactTracker
 from .audio import TTS_SAMPLE_RATE, split_sentences
 from .conversation import Conversation, Turn
@@ -411,7 +411,14 @@ class SessionRunner:
         triggers -- see story_store.save_synced_story() and
         _run_rewrite(). Runs independent of self._machine's state
         (unlike the live-turn actions above): a synced batch has no
-        relationship to whatever live story is or isn't in flight."""
+        relationship to whatever live story is or isn't in flight.
+
+        A story may also carry a finished `storybook` the phone already
+        wrote away from home (title, pages, illustrations). When it passes
+        synced_storybook's validation the rewrite is skipped entirely --
+        the phone's work is kept, not redone; otherwise (absent, or
+        rejected as untrusted input) the story is rewritten from its
+        transcript exactly as before."""
         for payload in stories:
             saved_path = story_store.save_synced_story(payload)
             if saved_path is None:
@@ -436,6 +443,11 @@ class SessionRunner:
                 for pair in payload.get("shared_facts", [])
                 if isinstance(pair, list) and len(pair) == 2
             ]
+            uploaded_storybook = payload.get("storybook")
+            if uploaded_storybook is not None and synced_storybook.store_uploaded_storybook(
+                story_id, uploaded_storybook, shared_facts
+            ):
+                continue
             asyncio.create_task(self._run_synced_rewrite(story_id, turns, shared_facts))
 
     async def handle_audio(self, pcm: bytes) -> None:

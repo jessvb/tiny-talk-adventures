@@ -1927,6 +1927,98 @@ async def test_handle_sync_demo_stories_skips_a_story_that_fails_to_save(monkeyp
     assert build_calls == []
 
 
+def _sync_with_storybook_fixtures(tmp_path, monkeypatch, *, accept: bool):
+    """Shared setup for the uploaded-storybook tests: save_synced_story is
+    faked (as in the tests above), storybook.build_and_attach and
+    synced_storybook.store_uploaded_storybook are recorded stand-ins."""
+    from tinytalk import story_store
+
+    monkeypatch.setattr(
+        story_store, "save_synced_story",
+        lambda payload, **kw: tmp_path / f"20260909T120000-{payload['id']}.json",
+    )
+    (tmp_path).mkdir(exist_ok=True)
+    build_calls = []
+    store_calls = []
+
+    async def fake_build_and_attach(story_id, turns, shared_facts, **kwargs):
+        build_calls.append(story_id)
+
+    def fake_store_uploaded_storybook(story_id, storybook, shared_facts, **kwargs):
+        store_calls.append((story_id, storybook, shared_facts))
+        return accept
+
+    monkeypatch.setattr("tinytalk.session.storybook.build_and_attach", fake_build_and_attach)
+    monkeypatch.setattr(
+        "tinytalk.session.synced_storybook.store_uploaded_storybook", fake_store_uploaded_storybook
+    )
+    return build_calls, store_calls
+
+
+_STORYBOOK = {"title": "Pip", "pages": [{"text": "Once."}]}
+
+
+def _sync_message(*stories) -> str:
+    return json.dumps({"type": "sync_demo_stories", "stories": list(stories)})
+
+
+def _synced_story(story_id: str, **extra) -> dict:
+    return {
+        "id": story_id,
+        "created_at": "2026-09-09T12:00:00+00:00",
+        "turns": [{"speaker": "child", "text": "hi", "interrupted": False}],
+        "shared_facts": [["fox", "foxes are clever"]],
+        **extra,
+    }
+
+
+async def test_a_synced_story_with_an_accepted_storybook_skips_the_rewrite(tmp_path, monkeypatch):
+    build_calls, store_calls = _sync_with_storybook_fixtures(tmp_path, monkeypatch, accept=True)
+    session = make_session(FakeTransport())
+
+    await session.handle_text(_sync_message(_synced_story("abc12345", storybook=_STORYBOOK)))
+    await asyncio.sleep(0.01)
+
+    assert store_calls == [("abc12345", _STORYBOOK, [("fox", "foxes are clever")])]
+    assert build_calls == [], "an accepted storybook must not be rewritten again"
+
+
+async def test_a_synced_story_whose_storybook_is_rejected_falls_back_to_the_rewrite(tmp_path, monkeypatch):
+    build_calls, store_calls = _sync_with_storybook_fixtures(tmp_path, monkeypatch, accept=False)
+    session = make_session(FakeTransport())
+
+    await session.handle_text(_sync_message(_synced_story("abc12345", storybook=_STORYBOOK)))
+    await asyncio.sleep(0.01)
+
+    assert len(store_calls) == 1
+    assert build_calls == ["abc12345"], "a rejected storybook must fall back to today's rewrite"
+
+
+async def test_a_synced_story_with_no_storybook_never_consults_the_validator(tmp_path, monkeypatch):
+    build_calls, store_calls = _sync_with_storybook_fixtures(tmp_path, monkeypatch, accept=True)
+    session = make_session(FakeTransport())
+
+    await session.handle_text(_sync_message(_synced_story("abc12345")))
+    await asyncio.sleep(0.01)
+
+    assert store_calls == []
+    assert build_calls == ["abc12345"]
+
+
+async def test_each_story_in_a_batch_is_judged_on_its_own(tmp_path, monkeypatch):
+    build_calls, store_calls = _sync_with_storybook_fixtures(tmp_path, monkeypatch, accept=True)
+    session = make_session(FakeTransport())
+
+    await session.handle_text(_sync_message(
+        _synced_story("with1111", storybook=_STORYBOOK),
+        _synced_story("without2"),
+    ))
+    await asyncio.sleep(0.01)
+
+    assert [call[0] for call in store_calls] == ["with1111"]
+    assert build_calls == ["without2"]
+
+
 async def test_handle_sync_demo_stories_does_not_touch_the_rewriting_gate(tmp_path, monkeypatch):
     """Regression test: synced stories must NOT send rewriting_done or
     touch self._machine, so they can't interfere with a concurrent live
