@@ -70,14 +70,14 @@ Sanity check once: `~/Development/claude-tests/tiny-talk-adventures/server/.venv
 - [ ] **Confirm you are on the right branch, clean.**
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 status --short --branch
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 status --short --branch
 ```
 
 Expected: `## worktree-demo-mode-phase-1` and no modified files (untracked/ignored files such as `ios/TinyTalkApp/Local.xcconfig` are fine).
 
 - [ ] **Record the baselines** (both must be green before you start). On the base this plan was verified against (`5b9700a`, the spec commit) they are **256** Swift tests and **423** server tests. Use the two test-command recipes above with no `--filter` / with `tests`.
 
-If `main` has moved since (PR #43 docs refresh, PR #44 spec, and draft PR #45's bugfix batch were all open when this was written), merge it first (`git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 merge origin/main`), re-run the baselines, and read every count in this plan as **baseline + N**: the per-task "+N" figures are exact, the absolute totals assume the 256 / 423 baselines. Overlap notes: PR #43 rewrites a comment inside `DemoConnection.swift`'s `send(_:)` (Task 6 replaces that whole file — keep the comment intent: `syncDemoStories` is never sent to a `DemoConnection`); PR #45 edits `AppModel.swift` and `SessionCoordinator.swift`, so if it has merged, Task 11's `AppModel.swift` hunks may need re-anchoring by content rather than by line number — the changes are self-contained and each hunk states its intent in its comments.
+If `main` has moved since (PR #43 docs refresh, PR #44 spec, and draft PR #45's bugfix batch were all open when this was written), merge it first (`git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 merge origin/main`), re-run the baselines, and read every count in this plan as **baseline + N**: the per-task "+N" figures are exact, the absolute totals assume the 256 / 423 baselines. Overlap notes: PR #43 rewrites a comment inside `DemoConnection.swift`'s `send(_:)` (Task 6 replaces that whole file — keep the comment intent: `syncDemoStories` is never sent to a `DemoConnection`); PR #45 edits `AppModel.swift` and `SessionCoordinator.swift`, so if it has merged, Task 11's `AppModel.swift` hunks may need re-anchoring by content rather than by line number — the changes are self-contained and each hunk states its intent in its comments.
 
 ## File Structure
 
@@ -224,10 +224,10 @@ Expected: `error:` lines saying `findBlocked` is not a member of `Safety`.
 - [ ] **Step 5: Commit.**
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add ios/TinyTalkCore/Sources/TinyTalkCore/Safety.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/SafetyTests.swift
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add ios/TinyTalkCore/Sources/TinyTalkCore/Safety.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/SafetyTests.swift
 ```
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "feat(ios): Safety.findBlocked, a port of safety.find_blocked" -m "Returns the blocked terms in a text (safe phrases masked first) so the storybook safety retry can tell the model what to leave out. isSafe now reuses it."
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "feat(ios): Safety.findBlocked, a port of safety.find_blocked" -m "Returns the blocked terms in a text (safe phrases masked first) so the storybook safety retry can tell the model what to leave out. isSafe now reuses it."
 ```
 
 ---
@@ -660,10 +660,10 @@ public struct StorybookWriter: Sendable {
 - [ ] **Step 6: Commit.**
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add ios/TinyTalkCore/Sources/TinyTalkCore/StorybookWriter.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/DemoFakes.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/StorybookWriterTests.swift
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add ios/TinyTalkCore/Sources/TinyTalkCore/StorybookWriter.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/DemoFakes.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/StorybookWriterTests.swift
 ```
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "feat(ios): StorybookWriter, a Swift port of the server's storybook rewrite" -m "Same prompts, tolerant JSON extraction, shared 3-attempt retry budget (unparseable or unsafe), and a fact-derived epilogue that is never model-written."
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "feat(ios): StorybookWriter, a Swift port of the server's storybook rewrite" -m "Same prompts, tolerant JSON extraction, shared 3-attempt retry budget (unparseable or unsafe), and a fact-derived epilogue that is never model-written."
 ```
 
 ---
@@ -975,10 +975,10 @@ public final class LocalStoryStore: @unchecked Sendable {
 - [ ] **Step 6: Commit.**
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add ios/TinyTalkCore/Sources/TinyTalkCore/SavedStory.swift ios/TinyTalkCore/Sources/TinyTalkCore/LocalStoryStore.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/LocalStoryStoreTests.swift
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add ios/TinyTalkCore/Sources/TinyTalkCore/SavedStory.swift ios/TinyTalkCore/Sources/TinyTalkCore/LocalStoryStore.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/LocalStoryStoreTests.swift
 ```
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "feat(ios): LocalStoryStore for storybooks made away from home" -m "File-backed <id>.json plus <id>/page-<i>.jpg, lock-guarded like PendingDemoStore, newest first. RewriteStatus and IllustrationsStatus become Codable."
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "feat(ios): LocalStoryStore for storybooks made away from home" -m "File-backed <id>.json plus <id>/page-<i>.jpg, lock-guarded like PendingDemoStore, newest first. RewriteStatus and IllustrationsStatus become Codable."
 ```
 
 ---
@@ -1688,10 +1688,10 @@ Expected: `Executed 306 tests, with 0 failures` (256 baseline + 7 + 17 + 9 + 15 
 - [ ] **Step 10: Commit.**
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add ios/TinyTalkCore/Sources/TinyTalkCore/PendingDemoStory.swift ios/TinyTalkCore/Sources/TinyTalkCore/SerialAsyncQueue.swift ios/TinyTalkCore/Sources/TinyTalkCore/DemoStoryLibrary.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/DemoFakes.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/PendingDemoStoreTests.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/DemoStoryLibraryTests.swift
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add ios/TinyTalkCore/Sources/TinyTalkCore/PendingDemoStory.swift ios/TinyTalkCore/Sources/TinyTalkCore/SerialAsyncQueue.swift ios/TinyTalkCore/Sources/TinyTalkCore/DemoStoryLibrary.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/DemoFakes.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/PendingDemoStoreTests.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/DemoStoryLibraryTests.swift
 ```
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "feat(ios): DemoStoryLibrary, the on-phone library behind Library/Reading" -m "Saves a finished story as pending, lists/details/pages it in the shapes the UI already consumes, builds its storybook one at a time process-wide, and produces sync payloads that carry the finished storybook. Adds the StoryIllustrating seam (nil = text-only) for Phase 2."
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "feat(ios): DemoStoryLibrary, the on-phone library behind Library/Reading" -m "Saves a finished story as pending, lists/details/pages it in the shapes the UI already consumes, builds its storybook one at a time process-wide, and produces sync payloads that carry the finished storybook. Adds the StoryIllustrating seam (nil = text-only) for Phase 2."
 ```
 
 - [ ] **Step 11: Mutation check A — prove the serial queue is what keeps builds from overlapping.** Temporarily change `buildStorybook(id:)` in `DemoStoryLibrary.swift`: replace
@@ -1711,10 +1711,10 @@ with
 Run `--filter DemoStoryLibraryTests/testTwoBuildsNeverOverlapEvenWhenStartedTogether` (same two commands as Step 4). Expected: **that test FAILS** (`maxInFlight` reaches 2). Then restore the committed file and confirm it is clean:
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 checkout -- ios/TinyTalkCore/Sources/TinyTalkCore/DemoStoryLibrary.swift
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 checkout -- ios/TinyTalkCore/Sources/TinyTalkCore/DemoStoryLibrary.swift
 ```
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 status --short
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 status --short
 ```
 
 Expected: no output.
@@ -1806,10 +1806,10 @@ Expected: `error:` lines — `value of type 'StoryArc' has no member 'hasStarted
 - [ ] **Step 5: Commit.**
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add ios/TinyTalkCore/Sources/TinyTalkCore/StoryArc.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/StoryArcTests.swift
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add ios/TinyTalkCore/Sources/TinyTalkCore/StoryArc.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/StoryArcTests.swift
 ```
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "feat(ios): StoryArc.hasStarted" -m "Lets a settings change rebuild an unstarted arc without ever changing one in progress, mirroring story_arc.py's has_started."
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "feat(ios): StoryArc.hasStarted" -m "Lets a settings change rebuild an unstarted arc without ever changing one in progress, mirroring story_arc.py's has_started."
 ```
 
 ---
@@ -1838,7 +1838,7 @@ The largest task. `DemoConnection.send(_:)` currently lumps every story-browsing
 - [ ] **Step 1: Confirm the file you are about to replace is still the base version.**
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 diff 5b9700a -- ios/TinyTalkCore/Sources/TinyTalkCore/DemoConnection.swift
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 diff 5b9700a -- ios/TinyTalkCore/Sources/TinyTalkCore/DemoConnection.swift
 ```
 
 Expected: no output — or only a comment change from PR #43 in the `send(_:)` region (see Preflight). Anything else means `main` changed this file since the plan was verified: stop and reconcile before overwriting.
@@ -3004,19 +3004,19 @@ Expected: `Executed 330 tests, with 0 failures` (306 + 2 + 22).
 - [ ] **Step 8: Commit.**
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add ios/TinyTalkCore/Sources/TinyTalkCore/DemoConnection.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/DemoFakes.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/DemoConnectionTests.swift
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add ios/TinyTalkCore/Sources/TinyTalkCore/DemoConnection.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/DemoFakes.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/DemoConnectionTests.swift
 ```
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "feat(ios): DemoConnection answers story-browsing messages locally" -m "Settings, Finish this story, list/get, page audio and page images, and rewriting_started/done in the server's order. Every ClientMessage case now has an explicit demo-mode behaviour; syncDemoStories is an explicit documented no-op. Media requests always end with one terminating frame and never interleave with a live turn."
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "feat(ios): DemoConnection answers story-browsing messages locally" -m "Settings, Finish this story, list/get, page audio and page images, and rewriting_started/done in the server's order. Every ClientMessage case now has an explicit demo-mode behaviour; syncDemoStories is an explicit documented no-op. Media requests always end with one terminating frame and never interleave with a live turn."
 ```
 
 - [ ] **Step 9: Mutation check — prove page audio really waits for a live turn.** Temporarily delete the line `await inFlightTurn?.value` in `startMediaTask(_:)` (inside `DemoConnection.swift`). Run `--filter DemoConnectionTests/testPageAudioWaitsForAnInFlightLiveTurnInsteadOfInterleavingWithIt` (same two commands as Step 4). Expected: **that test FAILS**. Restore and confirm clean:
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 checkout -- ios/TinyTalkCore/Sources/TinyTalkCore/DemoConnection.swift
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 checkout -- ios/TinyTalkCore/Sources/TinyTalkCore/DemoConnection.swift
 ```
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 status --short
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 status --short
 ```
 
 Expected: no output.
@@ -3155,10 +3155,10 @@ Expected: the with-a-storybook test fails (the encoded JSON has no `storybook` k
 - [ ] **Step 5: Commit.**
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add ios/TinyTalkCore/Sources/TinyTalkCore/Protocol.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/ProtocolTests.swift
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add ios/TinyTalkCore/Sources/TinyTalkCore/Protocol.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/ProtocolTests.swift
 ```
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "feat(ios): sync_demo_stories carries a finished storybook" -m "Optional and backward compatible in both directions. Pages carry base64 JPEG bytes when they have a picture; the epilogue is never sent (the server derives it)."
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "feat(ios): sync_demo_stories carries a finished storybook" -m "Optional and backward compatible in both directions. Pages carry base64 JPEG bytes when they have a picture; the epilogue is never sent (the server derives it)."
 ```
 
 ---
@@ -3283,16 +3283,16 @@ Expected: `Executed 1 test, with 0 failures`.
 - [ ] **Step 3: Commit.**
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add ios/TinyTalkCore/Tests/TinyTalkCoreTests/DemoProtocolParityTests.swift
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add ios/TinyTalkCore/Tests/TinyTalkCoreTests/DemoProtocolParityTests.swift
 ```
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "test(ios): protocol-parity guard for DemoConnection" -m "An exhaustive switch over ClientMessage forces an explicit demo-mode decision for every case, so a new server-only message can never silently no-op away from home again (#24)."
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "test(ios): protocol-parity guard for DemoConnection" -m "An exhaustive switch over ClientMessage forces an explicit demo-mode decision for every case, so a new server-only message can never silently no-op away from home again (#24)."
 ```
 
 - [ ] **Step 4: Mutation check A — a new `ClientMessage` case must break the build.** Temporarily add `case parityProbe` as the last case of `enum ClientMessage` in `Protocol.swift`. Run `--filter DemoProtocolParityTests` (Step 2's commands). Expected: **compile errors**, `switch must be exhaustive`, reported in `Protocol.swift` (its own `encode()`) and in `DemoConnection.swift` — `send(_:)` deliberately has no `default:`, which is the first line of defence and fails first because the library target builds before the tests. The parity test's own exhaustive switch is the second line: once the library compiles again, it fails to compile until someone adds a sample and a classification for the new case in the tests. Restore:
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 checkout -- ios/TinyTalkCore/Sources/TinyTalkCore/Protocol.swift
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 checkout -- ios/TinyTalkCore/Sources/TinyTalkCore/Protocol.swift
 ```
 
 - [ ] **Step 5: Mutation check B — a message quietly re-lumped into a no-op must fail the test.** In `DemoConnection.swift`, temporarily replace the `.listStories` case body (`continuation.yield(.message(.storyList(library?.list() ?? [])))`) with `break`. Run the same filter. Expected: **the test FAILS** with `listStories must answer with at least one event, never silence`. Restore with `git checkout --` on `DemoConnection.swift` and confirm `git status --short` prints nothing.
@@ -3818,10 +3818,10 @@ def store_uploaded_storybook(
 - [ ] **Step 5: Commit.**
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add server/tinytalk/synced_storybook.py server/tests/test_synced_storybook.py
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add server/tinytalk/synced_storybook.py server/tests/test_synced_storybook.py
 ```
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "feat(server): validate and store storybooks uploaded at sync time" -m "Untrusted input: bounded title/pages/image sizes, PIL header check and pixel cap before decoding, re-encode to a server-named PNG, kid-safety check over title/pages/epilogue, epilogue recomputed from shared_facts. Any rejection returns False so the caller falls back to today's transcript rewrite."
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "feat(server): validate and store storybooks uploaded at sync time" -m "Untrusted input: bounded title/pages/image sizes, PIL header check and pixel cap before decoding, re-encode to a server-named PNG, kid-safety check over title/pages/epilogue, epilogue recomputed from shared_facts. Any rejection returns False so the caller falls back to today's transcript rewrite."
 ```
 
 ---
@@ -4036,10 +4036,10 @@ Expected: `463 passed` (423 baseline + 35 + 4 + 1).
 - [ ] **Step 6: Commit.**
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add server/tinytalk/session.py server/tests/test_session.py server/tests/test_protocol.py
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add server/tinytalk/session.py server/tests/test_session.py server/tests/test_protocol.py
 ```
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "feat(server): keep an accepted uploaded storybook instead of rewriting it" -m "handle_sync_demo_stories runs the validator when a synced story carries a storybook and skips the transcript rewrite only when it passes; absent or rejected storybooks behave exactly as before."
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "feat(server): keep an accepted uploaded storybook instead of rewriting it" -m "handle_sync_demo_stories runs the validator when a synced story carries a storybook and skips the transcript rewrite only when it passes; absent or rejected storybooks behave exactly as before."
 ```
 
 ---
@@ -4188,7 +4188,7 @@ Expected: `** BUILD SUCCEEDED **`.
 - [ ] **Step 4: Confirm nothing unintended is staged** — `Local.xcconfig` must not appear:
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 status --short
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 status --short
 ```
 
 Expected: only ` M ios/TinyTalkApp/TinyTalkApp/AppModel.swift`.
@@ -4196,10 +4196,10 @@ Expected: only ` M ios/TinyTalkApp/TinyTalkApp/AppModel.swift`.
 - [ ] **Step 5: Commit.**
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add ios/TinyTalkApp/TinyTalkApp/AppModel.swift
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 add ios/TinyTalkApp/TinyTalkApp/AppModel.swift
 ```
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "feat(ios): wire the local storybook library into demo mode and sync" -m "connectAwayFromHome builds a DemoStoryLibrary on a shared Groq client, sends the story-length settings, and resumes interrupted builds. A real backend switch resets library state including the End-screen baseline (the #36 pattern). Sync uploads each finished storybook and clears the local copy."
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 commit -m "feat(ios): wire the local storybook library into demo mode and sync" -m "connectAwayFromHome builds a DemoStoryLibrary on a shared Groq client, sends the story-length settings, and resumes interrupted builds. A real backend switch resets library state including the End-screen baseline (the #36 pattern). Sync uploads each finished storybook and clears the local copy."
 ```
 
 ---
@@ -4217,7 +4217,7 @@ git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mo
 - [ ] **Step 4: Exactness check against the verified implementation** (only if the local scratch branch still exists in this repository; skip otherwise):
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 diff --ignore-all-space --ignore-blank-lines --stat d43aa4a HEAD -- ios server
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 diff --ignore-all-space --ignore-blank-lines --stat d43aa4a HEAD -- ios server
 ```
 
 Expected: no output — your tree matches the verified Phase 1 (whitespace and blank lines aside). Any output is a transcription difference to explain before opening the PR. (Verify `git rev-parse --verify d43aa4a` succeeds first; if that commit is gone, skip this step.)
@@ -4225,7 +4225,7 @@ Expected: no output — your tree matches the verified Phase 1 (whitespace and b
 - [ ] **Step 5: Push the branch and open a DRAFT PR** (never push to `main`; never merge). Mark ready only after the on-device pass below.
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 push -u origin worktree-demo-mode-phase-1
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-1 push -u origin worktree-demo-mode-phase-1
 ```
 
 Then `gh pr create --draft --base main` with a body that summarizes the spec's Phase 1, lists the test counts above, and **pastes the on-device script below verbatim**.

@@ -47,10 +47,10 @@ The XCTest count is the last `Executed N tests` line (the file ends with a Swift
 - [ ] **Create this phase's worktree from a `main` that contains Phase 1** (after Phase 1's PR merges):
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures fetch origin
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures fetch origin
 ```
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures worktree add -b worktree-demo-mode-phase-2 ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 origin/main
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures worktree add -b worktree-demo-mode-phase-2 /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 origin/main
 ```
 
 (If Phase 1 has not merged yet, branch from its head instead: replace `origin/main` with `worktree-demo-mode-phase-1`, and retarget this phase's PR to `main` once Phase 1 merges.)
@@ -378,10 +378,10 @@ public final class CloudflareImageClient: ImageGenerating, @unchecked Sendable {
 - [ ] **Step 5: Commit.**
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 add ios/TinyTalkCore/Sources/TinyTalkCore/ImageGeneration.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/CloudflareImageClientTests.swift
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 add ios/TinyTalkCore/Sources/TinyTalkCore/ImageGeneration.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/CloudflareImageClientTests.swift
 ```
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 commit -m "feat(ios): ImageGenerating seam and CloudflareImageClient (FLUX.1 schnell)" -m "Swappable image backend plus its Cloudflare Workers AI implementation. Accepts the v4 REST envelope or the bare object, refuses account ids that could alter the request path, truncates prompts to the documented 2048 characters, and maps every failure to a typed error. No test touches the network."
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 commit -m "feat(ios): ImageGenerating seam and CloudflareImageClient (FLUX.1 schnell)" -m "Swappable image backend plus its Cloudflare Workers AI implementation. Accepts the v4 REST envelope or the bare object, refuses account ids that could alter the request path, truncates prompts to the documented 2048 characters, and maps every failure to a typed error. No test touches the network."
 ```
 
 - [ ] **Step 6: Re-check the free-tier figures** (the spec asks for this at implementation time). Open `developers.cloudflare.com/workers-ai/platform/pricing/` and the FLUX.1 [schnell] model page. If the free daily allocation (10,000 neurons/day) or the per-image cost (≈ 58 neurons for a default 1024×1024, 4-step image → about 170 images/day) differs materially, note the new figure in the PR description; nothing in the code depends on it.
@@ -558,10 +558,10 @@ public enum ImageDownscaler {
 - [ ] **Step 6: Commit.**
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 add ios/TinyTalkCore/Sources/TinyTalkCore/ImageDownscaler.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/ImageFakes.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/ImageDownscalerTests.swift
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 add ios/TinyTalkCore/Sources/TinyTalkCore/ImageDownscaler.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/ImageFakes.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/ImageDownscalerTests.swift
 ```
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 commit -m "feat(ios): ImageDownscaler re-encodes pictures to a small JPEG" -m "At most 512 px on the long side, quality 0.8, never upscaled; returns nil for bytes that are not an image. Keeps stored and uploaded pictures around 50-100 KB."
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 commit -m "feat(ios): ImageDownscaler re-encodes pictures to a small JPEG" -m "At most 512 px on the long side, quality 0.8, never upscaled; returns nil for bytes that are not an image. Keeps stored and uploaded pictures around 50-100 KB."
 ```
 
 ---
@@ -963,10 +963,10 @@ Expected: `Executed 362 tests, with 0 failures` (333 baseline + 11 + 5 + 13).
 - [ ] **Step 7: Commit.**
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 add ios/TinyTalkCore/Sources/TinyTalkCore/IllustrationPass.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/ImageFakes.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/IllustrationPassTests.swift
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 add ios/TinyTalkCore/Sources/TinyTalkCore/IllustrationPass.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/ImageFakes.swift ios/TinyTalkCore/Tests/TinyTalkCoreTests/IllustrationPassTests.swift
 ```
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 commit -m "feat(ios): IllustrationPass draws one picture per storybook page" -m "Swift port of illustrations.py: a scene sentence per page from the chat model, then pictures strictly in page order. Adds a fixed style directive and a 60 s total time budget so a slow cloud service cannot hold The End hostage; a failed page has no picture and the status is done/partial/failed."
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 commit -m "feat(ios): IllustrationPass draws one picture per storybook page" -m "Swift port of illustrations.py: a scene sentence per page from the chat model, then pictures strictly in page order. Adds a fixed style directive and a 60 s total time budget so a slow cloud service cannot hold The End hostage; a failed page has no picture and the status is done/partial/failed."
 ```
 
 ---
@@ -1097,7 +1097,7 @@ Expected: `** BUILD SUCCEEDED **`.
 - [ ] **Step 4: Confirm nothing unintended is staged** (`Local.xcconfig` is gitignored and must not appear):
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 status --short
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 status --short
 ```
 
 Expected: only ` M ios/TinyTalkApp/TinyTalkApp/AppModel.swift` and ` M ios/TinyTalkApp/TinyTalkApp/SettingsView.swift`.
@@ -1105,10 +1105,10 @@ Expected: only ` M ios/TinyTalkApp/TinyTalkApp/AppModel.swift` and ` M ios/TinyT
 - [ ] **Step 5: Commit.**
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 add ios/TinyTalkApp/TinyTalkApp/AppModel.swift ios/TinyTalkApp/TinyTalkApp/SettingsView.swift
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 add ios/TinyTalkApp/TinyTalkApp/AppModel.swift ios/TinyTalkApp/TinyTalkApp/SettingsView.swift
 ```
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 commit -m "feat(ios): away-from-home storybook pictures via Cloudflare, opt-in" -m "Two secure Settings fields (account id, API token) stored in the Keychain like the Groq key. AppModel builds an IllustrationPass only when both are present, so without credentials storybooks stay text-only, silently. Pass diagnostics go to the on-screen debug log."
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 commit -m "feat(ios): away-from-home storybook pictures via Cloudflare, opt-in" -m "Two secure Settings fields (account id, API token) stored in the Keychain like the Groq key. AppModel builds an IllustrationPass only when both are present, so without credentials storybooks stay text-only, silently. Pass diagnostics go to the on-screen debug log."
 ```
 
 ---
@@ -1124,7 +1124,7 @@ git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mo
 - [ ] **Step 3: Exactness check against the verified implementation** (only if the local scratch branch still exists; verify `git rev-parse --verify 62b55d3` first, otherwise skip):
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 diff --ignore-all-space --ignore-blank-lines --stat 62b55d3 HEAD -- ios server
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 diff --ignore-all-space --ignore-blank-lines --stat 62b55d3 HEAD -- ios server
 ```
 
 Expected: no output.
@@ -1132,7 +1132,7 @@ Expected: no output.
 - [ ] **Step 4: Push and open a DRAFT PR** (never push to `main`; never merge). Mark ready only after the household's on-device pass.
 
 ```bash
-git -C ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 push -u origin worktree-demo-mode-phase-2
+git -C /Users/jess/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/demo-mode-phase-2 push -u origin worktree-demo-mode-phase-2
 ```
 
 Then `gh pr create --draft --base main` with a body that summarizes the spec's Phase 2, states the test counts, reports the Task 1 Step 7 envelope check (or that it is still pending), and **pastes the on-device script below verbatim**.
