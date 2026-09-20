@@ -68,8 +68,7 @@ public enum Safety {
         let maskedRange = NSRange(masked.startIndex..., in: masked)
         var found: [String] = []
         for match in blockedPattern.matches(in: masked, range: maskedRange) {
-            guard let range = Range(match.range, in: masked) else { continue }
-            let term = String(masked[range]).lowercased()
+            let term = (masked as NSString).substring(with: match.range).lowercased()
             if !found.contains(term) { found.append(term) }
         }
         return found

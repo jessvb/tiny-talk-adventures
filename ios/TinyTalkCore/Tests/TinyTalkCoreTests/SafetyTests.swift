@@ -159,6 +159,16 @@ final class SafetyTests: XCTestCase {
         XCTAssertEqual(Safety.findBlocked("The hunter had a GUN."), ["gun"])
     }
 
+    func testFindBlockedListsARepeatedWordOnlyOnceAcrossCase() {
+        XCTAssertEqual(Safety.findBlocked("Knife, KNIFE and a knife."), ["knife"])
+    }
+
+    func testFindBlockedReportsAMultiWordPhraseAsOneEntry() {
+        // "playing with matches" is a single blocklist entry; it must come back
+        // whole (lowercased), not split into its words or dropped.
+        XCTAssertEqual(Safety.findBlocked("The kids were Playing With Matches."), ["playing with matches"])
+    }
+
     func testFindBlockedRespectsTheSafePhraseMask() {
         XCTAssertEqual(Safety.findBlocked("She wished upon a shooting star."), [])
         XCTAssertEqual(
