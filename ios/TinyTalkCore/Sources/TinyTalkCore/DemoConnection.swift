@@ -126,6 +126,23 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
         storyPageCount = pageCount
     }
 
+    /// Cancels and clears both the in-flight live turn and the page-browsing
+    /// media chain. Caller must hold `lock`.
+    private func cancelInFlightLocked() {
+        mediaTask?.cancel()
+        mediaTask = nil
+        turnTask?.cancel()
+        turnTask = nil
+    }
+
+    /// The barge-in reset: abandons whatever was in flight, then makes
+    /// `turnId` current with an empty audio buffer. Caller must hold `lock`.
+    private func beginTurnLocked(turnId: Int) {
+        cancelInFlightLocked()
+        currentTurnId = turnId
+        audioBuffer = Data()
+    }
+
     private func currentTurn() -> Int {
         lock.withLockReturning { currentTurnId }
     }
@@ -134,12 +151,7 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
         switch message {
         case .speechStart(let turnId):
             lock.withLock {
-                mediaTask?.cancel()
-                mediaTask = nil
-                turnTask?.cancel()
-                turnTask = nil
-                currentTurnId = turnId
-                audioBuffer = Data()
+                beginTurnLocked(turnId: turnId)
             }
         case .speechEnd:
             let (turnId, pcm) = lock.withLockReturning { (currentTurnId, audioBuffer) }
@@ -150,22 +162,14 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
             lock.withLock { turnTask = task }
         case .interrupt(let turnId):
             lock.withLock {
-                mediaTask?.cancel()
-                mediaTask = nil
-                turnTask?.cancel()
-                turnTask = nil
-                currentTurnId = turnId
-                audioBuffer = Data()
+                beginTurnLocked(turnId: turnId)
             }
         case .objectSeen(let label):
             let tracker = lock.withLockReturning { objectTracker }
             tracker.recordSeen(label: label)
         case .newStory:
             lock.withLock {
-                mediaTask?.cancel()
-                mediaTask = nil
-                turnTask?.cancel()
-                turnTask = nil
+                cancelInFlightLocked()
                 conversation = DemoConversation()
                 beginStoryLocked()
                 objectTracker = ObjectTracker()
@@ -193,12 +197,7 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
         case .concludeStory(let turnId):
             // Same as a barge-in first: whatever was in flight is abandoned.
             lock.withLock {
-                mediaTask?.cancel()
-                mediaTask = nil
-                turnTask?.cancel()
-                turnTask = nil
-                currentTurnId = turnId
-                audioBuffer = Data()
+                beginTurnLocked(turnId: turnId)
             }
             let task = Task { [weak self] in
                 guard let self else { return }
@@ -233,7 +232,12 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
     /// never interleave (the server guarantees that by handling one message
     /// at a time to completion); and AVSpeechTts shares one
     /// AVSpeechSynthesizer across every synthesize() call, so two
-    /// overlapping ones would cut each other off.
+    /// overlapping ones would cut each other off. Every cancel site sets
+    /// `mediaTask` to nil, so a media request issued immediately after a
+    /// barge-in does not chain behind the still-terminating cancelled one;
+    /// that one's late `pageAudioDone` is discarded or ignored by
+    /// SessionCoordinator (its page-audio marker handling), which is why
+    /// that is safe.
     private func startMediaTask(_ work: @escaping @Sendable () async -> Void) {
         lock.withLock {
             let previous = mediaTask
@@ -296,8 +300,7 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
 
     public func close() {
         lock.lock()
-        mediaTask?.cancel(); mediaTask = nil
-        turnTask?.cancel(); turnTask = nil
+        cancelInFlightLocked()
         lock.unlock()
         continuation.finish()
     }
