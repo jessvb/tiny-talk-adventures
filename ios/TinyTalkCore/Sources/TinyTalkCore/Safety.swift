@@ -56,11 +56,27 @@ public enum Safety {
         return try! NSRegularExpression(pattern: "\\b(?:\(escaped))\\b", options: .caseInsensitive)
     }()
 
-    public static func isSafe(_ text: String) -> Bool {
+    /// Every distinct blocked word/phrase matched in `text`, lowercased, in
+    /// the order each first appears -- mirrors safety.py's find_blocked().
+    /// Lets a caller (StorybookWriter's safety-retry loop, DemoConnection's
+    /// forced-conclude retry) tell the model specifically what to avoid,
+    /// not just that something was wrong. The safe-phrase mask runs first,
+    /// exactly as in the Python original.
+    public static func findBlocked(_ text: String) -> [String] {
         let fullRange = NSRange(text.startIndex..., in: text)
         let masked = safePattern.stringByReplacingMatches(in: text, range: fullRange, withTemplate: "")
         let maskedRange = NSRange(masked.startIndex..., in: masked)
-        return blockedPattern.firstMatch(in: masked, range: maskedRange) == nil
+        var found: [String] = []
+        for match in blockedPattern.matches(in: masked, range: maskedRange) {
+            guard let range = Range(match.range, in: masked) else { continue }
+            let term = String(masked[range]).lowercased()
+            if !found.contains(term) { found.append(term) }
+        }
+        return found
+    }
+
+    public static func isSafe(_ text: String) -> Bool {
+        findBlocked(text).isEmpty
     }
 
     public static func filterReply(_ text: String) -> String {
