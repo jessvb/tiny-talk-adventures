@@ -574,6 +574,15 @@ final class AppModel: ObservableObject {
         // now only the real-server path did this, so the Settings steppers
         // silently did nothing away from home).
         Task { await coordinator.updateSettings(targetTurns: storyTurnCount, pageCount: storybookPageCount) }
+        // Same as connect(): fetch the Library now. This seeds the End-screen
+        // baseline (hasEstablishedLibraryBaseline) and keeps Landing's "Read
+        // Stories" accurate from a cold launch. Without it, the FIRST list of
+        // an away-from-home session would be the one a just-concluded story
+        // triggers, the poll loop would treat it as the baseline and skip
+        // navigating, and The End would never appear for that story.
+        // DemoConnection answers this locally from the LocalStoryStore -- no
+        // network call.
+        Task { await coordinator.listStories() }
         // A storybook build interrupted by the app being backgrounded or
         // killed leaves its story "pending" forever -- pick any such story
         // back up now.
