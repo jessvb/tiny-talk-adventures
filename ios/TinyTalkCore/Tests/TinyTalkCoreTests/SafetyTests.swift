@@ -134,4 +134,53 @@ final class SafetyTests: XCTestCase {
         XCTAssertTrue(Safety.isSafe("The race had begun at last."))
         XCTAssertTrue(Safety.isSafe("She was a knifemaker's daughter."))
     }
+
+    // MARK: - findBlocked (mirrors test_safety.py's find_blocked tests)
+
+    func testFindBlockedReturnsEmptyForSafeText() {
+        XCTAssertEqual(Safety.findBlocked("The fox ran through the sunny meadow."), [])
+    }
+
+    func testFindBlockedNamesTheMatchedWord() {
+        // The storybook safety-retry needs to tell the model specifically
+        // what to avoid -- a bare true/false from isSafe() isn't enough.
+        XCTAssertEqual(Safety.findBlocked("He picked up the knife."), ["knife"])
+    }
+
+    func testFindBlockedNamesEveryDistinctMatchInOrder() {
+        XCTAssertEqual(Safety.findBlocked("There was blood on the knife."), ["blood", "knife"])
+    }
+
+    func testFindBlockedListsARepeatedWordOnlyOnce() {
+        XCTAssertEqual(Safety.findBlocked("A knife, another knife, and one more knife."), ["knife"])
+    }
+
+    func testFindBlockedLowercasesWhatItReports() {
+        XCTAssertEqual(Safety.findBlocked("The hunter had a GUN."), ["gun"])
+    }
+
+    func testFindBlockedListsARepeatedWordOnlyOnceAcrossCase() {
+        XCTAssertEqual(Safety.findBlocked("Knife, KNIFE and a knife."), ["knife"])
+    }
+
+    func testFindBlockedReportsAMultiWordPhraseAsOneEntry() {
+        // "playing with matches" is a single blocklist entry; it must come back
+        // whole (lowercased), not split into its words or dropped.
+        XCTAssertEqual(Safety.findBlocked("The kids were Playing With Matches."), ["playing with matches"])
+    }
+
+    func testFindBlockedRespectsTheSafePhraseMask() {
+        XCTAssertEqual(Safety.findBlocked("She wished upon a shooting star."), [])
+        XCTAssertEqual(
+            Safety.findBlocked("He wished on a shooting star while shooting arrows at the target."),
+            ["shooting"]
+        )
+    }
+
+    func testIsSafeIsConsistentWithFindBlocked() {
+        // isSafe() must stay a thin wrapper -- no separate matching logic
+        // that could drift from what findBlocked() reports.
+        XCTAssertEqual(Safety.isSafe("He picked up the knife."), Safety.findBlocked("He picked up the knife.").isEmpty)
+        XCTAssertEqual(Safety.isSafe("A gentle story."), Safety.findBlocked("A gentle story.").isEmpty)
+    }
 }

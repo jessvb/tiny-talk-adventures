@@ -72,6 +72,53 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(sharedFactsJSON, [["fox", "Foxes have whiskers on their legs too."]])
     }
 
+    func testSyncDemoStoriesCarriesTheFinishedStorybookWhenThereIsOne() throws {
+        let story = PendingDemoStoryPayload(
+            id: "story-1",
+            createdAt: "2026-09-19T12:00:00Z",
+            turns: [PendingDemoStoryTurn(speaker: "child", text: "hi", interrupted: false)],
+            sharedFacts: [["fox", "Foxes are clever."]],
+            storybook: DemoSyncStorybook(
+                title: #"The "Brave" Fox"#,
+                pages: [
+                    DemoSyncPage(text: "Page one.", imageJPEG: Data([0xFF, 0xD8, 0xFF])),
+                    DemoSyncPage(text: "Page two.", imageJPEG: nil),
+                ],
+                illustrationsStatus: .partial
+            )
+        )
+
+        let encoded = ClientMessage.syncDemoStories(stories: [story]).encode()
+
+        let data = try XCTUnwrap(encoded.data(using: .utf8))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let storyJSON = try XCTUnwrap((json["stories"] as? [[String: Any]])?.first)
+        let storybook = try XCTUnwrap(storyJSON["storybook"] as? [String: Any])
+        XCTAssertEqual(storybook["title"] as? String, #"The "Brave" Fox"#)
+        XCTAssertEqual(storybook["illustrations_status"] as? String, "partial")
+        let pages = try XCTUnwrap(storybook["pages"] as? [[String: Any]])
+        XCTAssertEqual(pages.count, 2)
+        XCTAssertEqual(pages[0]["text"] as? String, "Page one.")
+        XCTAssertEqual(pages[0]["image"] as? String, Data([0xFF, 0xD8, 0xFF]).base64EncodedString())
+        XCTAssertEqual(pages[1]["text"] as? String, "Page two.")
+        XCTAssertNil(pages[1]["image"], "a page with no picture must omit the key, not send null")
+        XCTAssertNil(storybook["epilogue"], "the server derives the epilogue from shared_facts")
+    }
+
+    func testSyncDemoStoriesOmitsTheStorybookKeyForATranscriptOnlyStory() throws {
+        let story = PendingDemoStoryPayload(
+            id: "story-1", createdAt: "2026-09-19T12:00:00Z",
+            turns: [PendingDemoStoryTurn(speaker: "child", text: "hi", interrupted: false)],
+            sharedFacts: []
+        )
+        let encoded = ClientMessage.syncDemoStories(stories: [story]).encode()
+        let data = try XCTUnwrap(encoded.data(using: .utf8))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let storyJSON = try XCTUnwrap((json["stories"] as? [[String: Any]])?.first)
+        XCTAssertNil(storyJSON["storybook"], "an older server must see exactly today's payload shape")
+        XCTAssertEqual(Set(storyJSON.keys), Set(["id", "created_at", "turns", "shared_facts"]))
+    }
+
     func testSyncDemoStoriesEncodesEmptyStoriesArray() throws {
         let encoded = ClientMessage.syncDemoStories(stories: []).encode()
         let data = try XCTUnwrap(encoded.data(using: .utf8))

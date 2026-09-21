@@ -134,6 +134,10 @@ final class AppModel: ObservableObject {
     private var audioEngine: RealAudioEngine?
     private let objectRecognizer = VisionObjectRecognizer()
     private let pendingDemoStore = PendingDemoStore()
+    /// The on-phone storybooks for stories made away from home -- shared by
+    /// the demo connection (which builds them) and the real-server connect
+    /// path (which uploads them at sync time). See DemoStoryLibrary.
+    private let localStoryStore = LocalStoryStore()
     private var runLoop: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
     /// Which turn_id's transcript/reply has already been appended to
@@ -269,12 +273,39 @@ final class AppModel: ObservableObject {
     /// disconnectUserInitiated(), which the "Home" menu item already
     /// calls from the same screens this can fire from).
     func setAwayFromHomeEnabled(_ enabled: Bool) {
-        let changingWhileConnected = enabled != awayFromHomeEnabled && isConnected
+        let isSwitching = enabled != awayFromHomeEnabled
+        let changingWhileConnected = isSwitching && isConnected
         awayFromHomeEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "awayFromHomeEnabled")
         if changingWhileConnected {
             disconnect()
         }
+        if isSwitching {
+            resetLibraryStateForBackendSwitch()
+        }
+    }
+
+    /// The story library lives on a different backend after a switch (the
+    /// home Mac's, or this phone's own), so everything cached from the OLD
+    /// one must go -- otherwise Library would show the other backend's
+    /// stale cards, and tapping one would open a Reading screen whose
+    /// story this backend has never heard of.
+    ///
+    /// Includes the End-screen baseline (hasEstablishedLibraryBaseline,
+    /// lastAcknowledgedConcludedStoryId), which disconnect() deliberately
+    /// does NOT reset within one backend (see hasEstablishedLibraryBaseline's
+    /// doc comment). Across a backend switch it must be: the first story
+    /// list from the NEW backend would otherwise present a "newest story"
+    /// different from the OLD backend's acknowledged id, and hijack
+    /// navigation to The End for an old, unrelated story (the issue #36
+    /// pattern).
+    private func resetLibraryStateForBackendSwitch() {
+        libraryStories = []
+        selectedStory = nil
+        pageImages = [:]
+        pendingStoryDetailFetchId = nil
+        hasEstablishedLibraryBaseline = false
+        lastAcknowledgedConcludedStoryId = nil
     }
 
     /// Settings' voice picker calls this. Unlike setAwayFromHomeEnabled(),
@@ -423,11 +454,17 @@ final class AppModel: ObservableObject {
         }
 
         isConnected = true
-        let pending = pendingDemoStore.loadAll()
+        // Each pending transcript, plus its finished storybook (title, pages,
+        // pictures) when one was built away from home -- so the Mac keeps
+        // what the child already saw instead of redoing (or losing) it. A
+        // story with no finished storybook syncs transcript-only, exactly as
+        // before.
+        let pending = DemoStoryLibrary.syncPayloads(store: localStoryStore, pending: pendingDemoStore.loadAll())
         if !pending.isEmpty {
             do {
                 try await coordinator.syncDemoStories(pending)
                 pendingDemoStore.clear()
+                localStoryStore.remove(ids: pending.map(\.id))
             } catch {
                 // Best effort, same reasoning as sendObjectSeen -- left
                 // for the next successful reconnect to retry; nothing
@@ -472,11 +509,16 @@ final class AppModel: ObservableObject {
         ttsClient.onDebugEvent = { [weak self] line in
             Task { @MainActor in self?.appendAudioDebugEvent(line) }
         }
+        // One Groq client shared by the live conversation and the storybook
+        // rewrite, so both use the same key (and the same free-tier budget).
+        let chatClient = GroqChatClient(apiKey: groqKey)
+        let library = DemoStoryLibrary(store: localStoryStore, writer: StorybookWriter(chat: chatClient))
         let connection = DemoConnection(
-            chatClient: GroqChatClient(apiKey: groqKey),
+            chatClient: chatClient,
             sttClient: GroqWhisperClient(apiKey: groqKey),
             ttsClient: ttsClient,
             animalFactTracker: AnimalFactTracker(fetcher: AnimalFactsAPIClient(apiKey: animalFactsKey)),
+            library: library,
             onStoryCompleted: { [weak self] payload in
                 self?.pendingDemoStore.save(payload)
             }
@@ -527,6 +569,24 @@ final class AppModel: ObservableObject {
         }
 
         isConnected = true
+        // Same as connect(): send the parent's story-length settings now, so
+        // even the very first story of this connection uses them (until
+        // now only the real-server path did this, so the Settings steppers
+        // silently did nothing away from home).
+        Task { await coordinator.updateSettings(targetTurns: storyTurnCount, pageCount: storybookPageCount) }
+        // Same as connect(): fetch the Library now. This seeds the End-screen
+        // baseline (hasEstablishedLibraryBaseline) and keeps Landing's "Read
+        // Stories" accurate from a cold launch. Without it, the FIRST list of
+        // an away-from-home session would be the one a just-concluded story
+        // triggers, the poll loop would treat it as the baseline and skip
+        // navigating, and The End would never appear for that story.
+        // DemoConnection answers this locally from the LocalStoryStore -- no
+        // network call.
+        Task { await coordinator.listStories() }
+        // A storybook build interrupted by the app being backgrounded or
+        // killed leaves its story "pending" forever -- pick any such story
+        // back up now.
+        Task { await library.resumeInterruptedBuilds() }
         startPollingState()
     }
 
@@ -947,6 +1007,15 @@ final class AppModel: ObservableObject {
                 // @Sendable closure even when (as here) it only ever runs
                 // synchronously on this same task.
                 let shouldStop: Bool = await MainActor.run {
+                    // This iteration read the PREVIOUS coordinator's state
+                    // before a disconnect() or backend switch replaced or
+                    // nil'd self.coordinator; applying it now would re-seed
+                    // libraryStories and the End-screen baseline from the
+                    // backend we just left (see
+                    // resetLibraryStateForBackendSwitch()). Returning true
+                    // ends this now-orphaned poll task, which disconnect()
+                    // already cancelled.
+                    guard self.coordinator === coordinator else { return true }
                     self.state = currentState
                     self.latencyHistory = history
                     self.lastTranscript = transcript

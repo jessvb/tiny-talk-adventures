@@ -219,6 +219,20 @@ def test_decode_sync_demo_stories():
     )
 
 
+def test_decode_sync_demo_stories_passes_an_optional_storybook_through_untouched():
+    # The server accepts any story dict, so the optional `storybook` key
+    # needs no protocol change -- it must simply survive decoding intact for
+    # synced_storybook to validate (decoding itself validates nothing here).
+    storybook = {"title": "Pip", "pages": [{"text": "Once.", "image": "AAAA"}], "illustrations_status": "done"}
+    raw = json.dumps({
+        "type": "sync_demo_stories",
+        "stories": [{"id": "abc", "created_at": "2026-09-19T12:00:00Z", "turns": [], "storybook": storybook}],
+    })
+    message = decode_client_message(raw)
+    assert isinstance(message, SyncDemoStories)
+    assert message.stories[0]["storybook"] == storybook
+
+
 def test_decode_sync_demo_stories_rejects_non_list_stories():
     raw = json.dumps({"type": "sync_demo_stories", "stories": "not-a-list"})
     with pytest.raises(ProtocolError):
