@@ -25,16 +25,16 @@ final class IllustrationPassTests: XCTestCase {
 
     // MARK: - happy path
 
-    func testEveryPageGetsAPictureAndTheStatusIsDone() async {
+    func testEveryPageGetsAPictureAndTheStatusIsDone() async throws {
         let backend = FakeImageBackend(results: [.success(fullSize)])
         let result = await pass(chat: sceneChat(), backend: backend).illustrate(pages: pages)
 
         XCTAssertEqual(result.status, .done)
         XCTAssertEqual(result.images.count, 3)
         for image in result.images {
-            let data = try! XCTUnwrap(image)
+            let data = try XCTUnwrap(image)
             XCTAssertTrue(TestImages.isJPEG(data), "pictures are stored as JPEG")
-            let size = try! XCTUnwrap(TestImages.pixelSize(of: data))
+            let size = try XCTUnwrap(TestImages.pixelSize(of: data))
             XCTAssertLessThanOrEqual(max(size.width, size.height), 512, "and downscaled to at most 512 px")
         }
     }
