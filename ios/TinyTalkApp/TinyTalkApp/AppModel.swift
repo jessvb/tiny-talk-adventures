@@ -74,7 +74,24 @@ final class AppModel: ObservableObject {
     @Published var state: SessionState = .idle
     @Published var lastTranscript: String = ""
     @Published var lastReply: String = ""
-    @Published var lastErrorMessage: String?
+    /// The story screen's red banner and the rules for when it goes away
+    /// (issue #48) -- see ErrorBanner. Views and every failure path in this
+    /// file go through lastErrorMessage below.
+    @Published private(set) var errorBanner = ErrorBanner()
+    /// Setting a message shows it; setting nil dismisses it (StoryView's and
+    /// LibraryView's tap on the banner). Deliberately not a plain stored
+    /// property: the poll loop's own copy of the coordinator's error
+    /// (errorBanner.observe()) must not undo a dismissal on the next tick.
+    var lastErrorMessage: String? {
+        get { errorBanner.message }
+        set {
+            if let newValue {
+                errorBanner.show(newValue)
+            } else {
+                errorBanner.dismiss()
+            }
+        }
+    }
     @Published var latencyHistory: [InterruptLatency] = []
     @Published var isConnected = false
     @Published var isMicMuted = false
@@ -207,12 +224,6 @@ final class AppModel: ObservableObject {
     /// is exactly the one that's supposed to detect a real conclusion
     /// that happened while backgrounded.
     private var hasEstablishedLibraryBaseline = false
-    /// The last value of coordinator.lastErrorMessage this poll loop
-    /// observed (including nil) -- see its use in startPollingState()'s
-    /// error handling. Lets that code detect the EDGE where a new error
-    /// first appears, rather than reacting to "an error exists" as if it
-    /// were a fresh event on every single poll tick.
-    private var lastObservedCoordinatorErrorMessage: String?
     /// isRewriting from the PREVIOUS poll tick -- lets the poll loop
     /// detect the true->false edge (rewriting_done just arrived) rather
     /// than re-fetching on every tick while it happens to be false.
@@ -619,6 +630,12 @@ final class AppModel: ObservableObject {
         debugLog = []
         if !keepingTurnHistory {
             turnHistory.clear()
+            // Same exits, same blank slate: a banner about the story just
+            // left has nothing to do with the next one (issue #48). The
+            // keeping-history callers must NOT clear it -- they set the
+            // banner themselves just before calling this ("disconnected
+            // from server", a failed capture).
+            errorBanner.dismiss()
         }
         // A torn-down coordinator can never deliver on either pending
         // request -- see their doc comments. lastAcknowledgedConcludedStoryId
@@ -647,6 +664,11 @@ final class AppModel: ObservableObject {
     /// discards the reply as belonging to a turn_id it no longer
     /// recognizes.
     func connectResumingIfPending() async {
+        // Whatever the banner said ("disconnected from server", a failed
+        // earlier attempt, a timeout) is stale once a reconnect starts (issue
+        // #48); a failed attempt shows its own. Clearing it here, in the one
+        // funnel, covers every reconnect path.
+        errorBanner.connectAttemptStarted()
         let resumingTurnId = pendingResumeTurnId
         pendingResumeTurnId = nil
         // The single funnel every reconnect goes through, so the one place
@@ -686,10 +708,9 @@ final class AppModel: ObservableObject {
         // Landing's) is already mid-flight -- let it finish rather than
         // start a duplicate; this tap is dropped.
         guard coordinator == nil else { return false }
-        // The "disconnected from server" banner from the drop that got us
-        // here is about to be stale either way; a failed attempt sets its
-        // own.
-        lastErrorMessage = nil
+        // (connectResumingIfPending() takes down the "disconnected from
+        // server" banner from the drop that got us here; a failed attempt
+        // sets its own.)
         pendingResumeTurnId = nil
         await connectResumingIfPending()
         guard isConnected else {
@@ -724,6 +745,10 @@ final class AppModel: ObservableObject {
     func startNewStory() async {
         guard await ensureConnected(), let coordinator else { return }
         turnHistory.clear()
+        // A new story is a fresh start (issue #48) -- the coordinator drops
+        // its own error in newStory() too, but only this makes the banner go
+        // now rather than on the next poll tick, and covers a client-side one.
+        errorBanner.dismiss()
         await coordinator.newStory()
     }
 
@@ -1189,39 +1214,33 @@ final class AppModel: ObservableObject {
                     }
                     self.previousIsRewriting = rewriting
 
-                    // Only overwrite with a real server error -- a nil here
-                    // just means "no server error yet," and must not erase
-                    // a client-side error (e.g. audio capture failing to
-                    // start) that connect() already surfaced.
-                    // coordinator.lastErrorMessage is a STICKY latest
-                    // value (cleared only when a new story starts
-                    // server-side), not a one-shot event -- reacting to
-                    // "errorMessage != nil" unconditionally on every
-                    // ~100ms poll tick would clear pendingStoryDetailFetchId
-                    // over and over for the rest of the story after a
-                    // single error, permanently discarding any later
-                    // Library-tap fetch's real response the instant it
-                    // arrived (it could never match a flag that keeps
-                    // getting nulled out). React only the one tick the
-                    // value actually changes.
-                    if errorMessage != self.lastObservedCoordinatorErrorMessage {
-                        if errorMessage != nil {
-                            // A pending story-detail fetch can never be
-                            // resolved by an error frame (no story_detail
-                            // will follow it) -- clear it so a stale,
-                            // permanently-unresolvable fetch doesn't block
-                            // every future Library tap or The End
-                            // auto-navigation. Only done on the edge where
-                            // this specific error first appears, not on
-                            // every later tick it's still the current
-                            // sticky value.
-                            self.pendingStoryDetailFetchId = nil
-                        }
+                    // coordinator.lastErrorMessage is a STICKY latest value
+                    // (cleared when a new turn or story begins), not a
+                    // one-shot event -- reacting to "errorMessage != nil"
+                    // unconditionally on every ~100ms poll tick would clear
+                    // pendingStoryDetailFetchId over and over for the rest
+                    // of the story after a single error, permanently
+                    // discarding any later Library-tap fetch's real
+                    // response the instant it arrived (it could never match
+                    // a flag that keeps getting nulled out), and would undo
+                    // every dismissal of the banner (issue #48).
+                    // ErrorBanner.observe() reports only the one tick the
+                    // value actually changes to a new error; a nil that was
+                    // already nil leaves a client-side error (e.g. audio
+                    // capture failing to start) that connect() already
+                    // surfaced alone.
+                    if self.errorBanner.observe(coordinatorError: errorMessage) {
+                        // A pending story-detail fetch can never be
+                        // resolved by an error frame (no story_detail
+                        // will follow it) -- clear it so a stale,
+                        // permanently-unresolvable fetch doesn't block
+                        // every future Library tap or The End
+                        // auto-navigation. Only done on the edge where
+                        // this specific error first appears, not on
+                        // every later tick it's still the current
+                        // sticky value.
+                        self.pendingStoryDetailFetchId = nil
                     }
-                    if let errorMessage {
-                        self.lastErrorMessage = errorMessage
-                    }
-                    self.lastObservedCoordinatorErrorMessage = errorMessage
                     // The connection died: consumeServerEvents() saw
                     // `.closed` and walked the coordinator's own state back
                     // to .idle, but nothing else about that is visible to

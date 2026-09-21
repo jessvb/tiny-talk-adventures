@@ -104,6 +104,10 @@ public actor SessionCoordinator {
     /// appeared backed up by exactly one turn.
     public private(set) var lastTranscriptTurnId: Int?
     public private(set) var lastReplyTurnId: Int?
+    /// The latest error worth showing, for the same poll-loop UI. Sticky
+    /// until it goes stale: cleared when a new turn begins (beginNewTurn())
+    /// or a new story starts (newStory()) -- so a UI can tell a repeat of
+    /// the same text apart from the old value still sitting there.
     public private(set) var lastErrorMessage: String?
     /// Flips to true the moment consumeServerEvents() sees the connection
     /// close. A poll-loop UI (e.g. AppModel) has no other way to learn
@@ -250,7 +254,11 @@ public actor SessionCoordinator {
     /// genuinely finished playing. Reset to false at the start of every
     /// new turn (handleSpeechEnd, resume, concludeStory) so a stale true
     /// left over from an earlier, ordinary turn can never combine with a
-    /// later, unrelated rewritingStarted.
+    /// later, unrelated rewritingStarted. Also set by
+    /// abandonTurnForConcludedStory(): a concluding reply the child talked
+    /// over never reaches its own turnEnd handling (that turn's task was
+    /// cancelled, or its turn_end discarded as stale), but its audio is
+    /// just as over.
     private var currentTurnPlaybackFinished = false
 
     /// A bounded, most-recent-last log of this coordinator's highest-value
@@ -711,6 +719,56 @@ public actor SessionCoordinator {
         readyToShowTheEnd = true
     }
 
+    /// Ends whatever turn is in flight because the story it belonged to has
+    /// concluded (rewriting_started seen) -- issue #47. From that moment the
+    /// server is in its REWRITING gate and silently drops everything the
+    /// child says (session.py: "interrupt ignored -- a storybook rewrite is
+    /// still in progress"), so a turn started around the conclusion never
+    /// gets a reply: its waiting ditty would loop over The End until the
+    /// timeout. Used both when the child talks over the concluding reply
+    /// after the fact (handleSpeechAfterConclusion()) and when
+    /// rewriting_started reveals that a barge-in already replaced the
+    /// concluding turn (consumeServerEvents()).
+    ///
+    /// Counts the concluding turn's playback as finished: the child talked
+    /// over its audio (already stopped by that barge-in, or stopped by the
+    /// caller here), and with that turn's task cancelled -- or its turn_end
+    /// discarded as stale -- nothing else would ever set the flag, so The
+    /// End would never become reachable.
+    private func abandonTurnForConcludedStory() async {
+        stopWaitingDitty()
+        turnContinuation?.finish()
+        turnContinuation = nil
+        turnTask?.cancel()
+        turnTask = nil
+        // Same unconditional "abandon whatever this was" transition
+        // newStory() uses: legal from every state, always lands in .idle.
+        _ = try? machine.handle(.disconnected)
+        // Auto-muted for a .waitingForReply that will now never finish (see
+        // isMuted's doc comment); the UI re-mutes by screen as needed.
+        await setMuted(false)
+        currentTurnPlaybackFinished = true
+        maybeSignalReadyToShowTheEnd()
+    }
+
+    /// The child started talking while the story is over (isRewriting) --
+    /// see abandonTurnForConcludedStory() for why the server would drop
+    /// everything they said. Deliberately NOT a new utterance: no
+    /// speech_start, no interrupt, no turn, no ditty -- the client never
+    /// sends speech the server is going to discard. If the concluding reply
+    /// is still playing, talking over it stops it and lets The End appear;
+    /// otherwise there is nothing to do (a fresh reconnect during a rewrite
+    /// lands here too, with nothing in flight -- and must not fabricate a
+    /// concluding turn's "playback finished").
+    private func handleSpeechAfterConclusion() async {
+        guard machine.state != .idle else { return }
+        logDebug("SessionCoordinator: speech while the story is concluded -- stopping the concluding reply instead of starting an utterance (state=\(machine.state))")
+        let id = latencyLogger.recordVADFire()
+        audio.stopPlaybackImmediately()
+        latencyLogger.recordPlaybackStopped(for: id)
+        await abandonTurnForConcludedStory()
+    }
+
     private func consumeVADEvents() async {
         for await event in vad.events() {
             switch event {
@@ -734,6 +792,11 @@ public actor SessionCoordinator {
         // audio on it. Starts false: audio can't legitimately arrive before
         // any text event has established which turn it belongs to.
         var isCurrentTurnAudio = false
+        // The turn_id of the most recent turn_end seen, matching or not.
+        // rewriting_started always immediately follows the CONCLUDING turn's
+        // turn_end on the wire, so this names the turn that concluded the
+        // story -- see the .rewritingStarted case below.
+        var lastTurnEndTurnId: Int?
         for await event in connection.events() {
             if case .closed = event {
                 // This is the real receive-side disconnect path -- runTurn()'s
@@ -850,10 +913,31 @@ public actor SessionCoordinator {
             // through turnContinuation/runTurn() like turn-scoped
             // events. Must be checked before the turn_id-extraction
             // switch below, which would otherwise have no case for them.
+            if case .message(.turnEnd(let turnId)) = event {
+                // Recorded before the stale-turn discard below on purpose:
+                // a concluding turn_end that lost the race with a barge-in
+                // is still the fact rewriting_started needs.
+                lastTurnEndTurnId = turnId
+            }
             switch event {
             case .message(.rewritingStarted):
                 isRewriting = true
                 sawRewritingStarted = true
+                // The concluding turn is no longer the current one: the
+                // child talked over it before this arrived, so what is in
+                // flight now is their barge-in utterance -- and the server
+                // (already REWRITING when it got that interrupt) ignored it.
+                // Without this The End never appeared (issue #47): the
+                // concluding turn's task was cancelled, its turn_end was
+                // discarded as stale or its flag reset by the new utterance,
+                // and nothing ever set currentTurnPlaybackFinished again.
+                // Only fires when a turn_end WAS seen: a rewriting_started
+                // on a fresh reconnect (nothing concluded on this
+                // coordinator) leaves whatever is in flight alone.
+                if let concludingTurnId = lastTurnEndTurnId, concludingTurnId != currentTurnId {
+                    logDebug("SessionCoordinator: story concluded in turn \(concludingTurnId) but turn \(currentTurnId) is current -- abandoning it (state=\(machine.state))")
+                    await abandonTurnForConcludedStory()
+                }
                 maybeSignalReadyToShowTheEnd()
                 continue
             case .message(.rewritingDone):
@@ -964,7 +1048,24 @@ public actor SessionCoordinator {
         }
     }
 
+    /// Every path that starts a new turn -- a fresh utterance, a barge-in,
+    /// "Finish this story" -- takes its id here. Also drops lastErrorMessage
+    /// (issue #48): an error from an earlier turn is stale the moment the
+    /// child moves on (the "say something to wake them up" message has just
+    /// been answered), and AppModel's poll loop shows a coordinator error
+    /// only when its value CHANGES -- so a repeat of the very same text
+    /// (timing out twice in a row) is only visible if it went back to nil in
+    /// between.
+    private func beginNewTurn() {
+        currentTurnId += 1
+        lastErrorMessage = nil
+    }
+
     private func handleSpeechStart() async {
+        if isRewriting {
+            await handleSpeechAfterConclusion()
+            return
+        }
         if machine.state == .waitingForReply || machine.state == .speaking {
             await interrupt()
             return
@@ -975,7 +1076,7 @@ public actor SessionCoordinator {
         // .listening at this point, so the id must be settled before
         // anything else can suspend and let a stale/concurrent read of it
         // through.
-        currentTurnId += 1
+        beginNewTurn()
         // Must be set before the control frame's own await below -- see
         // isFlushing's and flushPreRoll()'s doc comments. machine.state is
         // already .listening at this point (machine.handle() above flipped
@@ -1110,7 +1211,7 @@ public actor SessionCoordinator {
         _ = try? machine.handle(.conclude)
         // Same reasoning as handleSpeechStart()/interrupt(): must be
         // assigned before the control frame's own await below.
-        currentTurnId += 1
+        beginNewTurn()
         await setMuted(true)
         do {
             try await connection.send(.concludeStory(turnId: currentTurnId))
@@ -1445,11 +1546,11 @@ public actor SessionCoordinator {
         turnTask?.cancel()
         turnTask = nil
         _ = try? machine.handle(.interrupt)
-        // Same reasoning as handleSpeechStart()'s currentTurnId += 1: must
-        // be assigned before the control frame's own await below, so
+        // Same reasoning as handleSpeechStart()'s beginNewTurn(): must be
+        // assigned before the control frame's own await below, so
         // consumeServerEvents() can't observe a stale value while this is
         // suspended sending it.
-        currentTurnId += 1
+        beginNewTurn()
         // See the matching comment in handleSpeechStart(): must be set
         // before the control frame's own await below, for the same reason.
         isFlushing = true
