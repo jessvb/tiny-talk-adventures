@@ -470,6 +470,7 @@ final class AppModel: ObservableObject {
                 // for the next successful reconnect to retry; nothing
                 // is lost, since PendingDemoStore was not cleared.
                 print("AppModel: failed to sync demo stories: \(error)")
+                appendAudioDebugEvent("[\(DebugTimestamp.now())] demo story sync failed: \(error)")
             }
         }
         // The server's per-session settings default to its own config
