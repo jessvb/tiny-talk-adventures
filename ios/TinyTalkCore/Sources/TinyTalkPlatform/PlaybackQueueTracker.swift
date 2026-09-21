@@ -20,10 +20,11 @@ import Foundation
 /// buffer will really finish -- and it lives here, not in AudioEngine.swift,
 /// so it can be unit-tested with a fake clock (that file is iOS-only).
 final class PlaybackQueueTracker: @unchecked Sendable {
-    /// The hang-guard never fires sooner than this after scheduling, however
-    /// short the buffer -- and never sooner than this much after the moment
-    /// the buffer is EXPECTED to finish. See hangGuardSeconds(playbackFinishesIn:).
+    /// A hang-guard never fires sooner than this after scheduling, however
+    /// short the buffer. See hangGuardSeconds(playbackFinishesIn:).
     static let hangGuardFloorSeconds: TimeInterval = 3
+    /// How long after a buffer is EXPECTED to finish its hang-guard waits
+    /// for the real completion before giving up on it.
     static let hangGuardGraceSeconds: TimeInterval = 2
 
     private let lock = NSLock()
