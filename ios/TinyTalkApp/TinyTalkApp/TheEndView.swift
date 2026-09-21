@@ -121,26 +121,29 @@ struct TheEndView: View {
     }
 
     private func bookCover(for detail: SavedStoryDetail) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(detail.title ?? "Untitled")
-                .font(TTA.Typography.display(26))
-                .foregroundColor(TTA.Palette.cream)
+        // A nil title means the rewrite hasn't produced one yet (.pending)
+        // or never will (.failed) -- see SavedStoryDetail. The stand-in is
+        // set smaller and softer than a real title so it reads as "not
+        // yet", not as the book's actual name.
+        let title = detail.title
+
+        return VStack(alignment: .leading, spacing: 0) {
+            Text(title ?? placeholderTitle(for: detail.rewriteStatus))
+                .font(TTA.Typography.display(title == nil ? 22 : 26))
+                .foregroundColor(TTA.Palette.cream.opacity(title == nil ? 0.75 : 1))
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             Spacer(minLength: 12)
 
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(TTA.Palette.cream.opacity(0.16))
-                .frame(height: 86)
-                .overlay(
-                    Text("cover art")
-                        .font(.system(size: 9.5, design: .monospaced))
-                        .foregroundColor(Color(hex: 0xffeacf))
-                )
+            coverArtPlaceholder(for: detail.rewriteStatus)
 
             Spacer(minLength: 12)
 
-            Text("by \(childName) & Elsie · \(detail.pages.count) pages")
+            // .pending/.failed details carry no pages, so a count would read
+            // "0 pages" on the cover.
+            Text(detail.pages.isEmpty
+                 ? "by \(childName) & Elsie"
+                 : "by \(childName) & Elsie · \(detail.pages.count) pages")
                 .font(TTA.Typography.story(12.5))
                 .foregroundColor(Color(hex: 0xffe9b8))
         }
@@ -156,6 +159,57 @@ struct TheEndView: View {
                 .frame(width: 9)
         }
         .shadow(color: .black.opacity(0.45), radius: 18, y: 10)
+    }
+
+    /// Cover-title stand-in while detail.title is nil. .pending promises a
+    /// title because one really is on its way; .failed must not, so it (and
+    /// the never-in-practice .done-with-no-title case -- storybook.py's
+    /// _parse_rewrite() rejects an empty title) falls back to a plain,
+    /// warm "Your Story" instead.
+    private func placeholderTitle(for status: RewriteStatus) -> String {
+        switch status {
+        case .pending: return "Title Coming Soon"
+        case .failed, .done: return "Your Story"
+        }
+    }
+
+    /// Stand-in for cover art. There is no cover-art pipeline (only per-page
+    /// illustrations, see ReadingView), so this is a soft, blurred wash of
+    /// palette colors rather than a labeled debug box. Only .pending claims
+    /// anything is being painted: the rewrite window (and so this screen's
+    /// .pending state) also covers the page-illustration pass, see
+    /// illustrations.py. .failed dims the wash; .done leaves it wordless
+    /// rather than promising a cover that isn't coming.
+    private func coverArtPlaceholder(for status: RewriteStatus) -> some View {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(TTA.Palette.cream.opacity(0.16))
+            .frame(height: 86)
+            .overlay(
+                ZStack {
+                    Circle().fill(TTA.Palette.gold).frame(width: 64, height: 64).offset(x: -48, y: -12)
+                    Circle().fill(TTA.Palette.teal).frame(width: 58, height: 58).offset(x: 44, y: 14)
+                    Circle().fill(TTA.Palette.cream).frame(width: 46, height: 46).offset(x: 0, y: 26)
+                }
+                .blur(radius: 12)
+                .opacity(status == .failed ? 0.2 : 0.55)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                if status == .pending {
+                    VStack(spacing: 5) {
+                        Image(systemName: "paintpalette.fill")
+                            .font(.system(size: 20))
+                        Text("Elsie's painting the pictures…")
+                            .font(TTA.Typography.story(12.5, italic: true))
+                            .multilineTextAlignment(.center)
+                    }
+                    .foregroundColor(Color(hex: 0xffeacf))
+                    // Keeps the cream text legible where it crosses the wash's
+                    // lightest blob.
+                    .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
+                    .padding(.horizontal, 10)
+                }
+            }
     }
 
     /// Same copy LibraryView's statusCaption already uses for
@@ -188,4 +242,25 @@ struct TheEndView: View {
             .scaleEffect(sparkle ? 1.3 : 0.8)
             .animation(.easeInOut(duration: 2.4).repeatForever(autoreverses: true).delay(delay), value: sparkle)
     }
+}
+
+// One preview per rewrite status, against MockStories' fixtures, so the
+// cover's placeholder states can be eyeballed in Xcode without waiting on
+// a real story to conclude.
+#Preview("Done") {
+    let model = AppModel()
+    model.selectedStory = MockStories.pip
+    return TheEndView(model: model)
+}
+
+#Preview("Pending") {
+    let model = AppModel()
+    model.selectedStory = MockStories.stillWriting
+    return TheEndView(model: model)
+}
+
+#Preview("Failed") {
+    let model = AppModel()
+    model.selectedStory = MockStories.couldNotFinish
+    return TheEndView(model: model)
 }

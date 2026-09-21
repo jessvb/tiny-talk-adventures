@@ -8,6 +8,7 @@ agent is mid-sentence.
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 import threading
 from pathlib import Path
@@ -18,6 +19,8 @@ import torch
 from . import config
 from .audio import float32_to_pcm16
 from .engines import EngineError
+
+logger = logging.getLogger(__name__)
 
 
 def _configure_espeak_from_homebrew() -> None:
@@ -67,7 +70,11 @@ def _default_pipeline_factory(lang_code: str):
             "and `brew install espeak-ng`"
         ) from exc
     _configure_espeak_from_homebrew()
-    return KPipeline(lang_code=lang_code, device=config.KOKORO_DEVICE)
+    pipeline = KPipeline(lang_code=lang_code, device=config.KOKORO_DEVICE)
+    # What the loaded model reports, not just what was asked for -- the one
+    # line that confirms on real hardware which backend is actually live.
+    logger.info("tts: Kokoro pipeline loaded on device=%s", pipeline.model.device)
+    return pipeline
 
 
 class KokoroTts:
@@ -87,6 +94,13 @@ class KokoroTts:
         # A real OS thread lock, not asyncio.Lock -- see synthesize()'s
         # comment on why an asyncio-level lock can't do this job.
         self._synthesis_lock = threading.Lock()
+        # Logged at construction (server startup) because the weights
+        # themselves only load on the first synthesis; the "loaded on
+        # device=" line from _default_pipeline_factory follows once they do.
+        logger.info(
+            "tts: Kokoro will run on device=%s (TINYTALK_TTS_DEVICE=cpu|mps to change)",
+            config.KOKORO_DEVICE,
+        )
 
     def _get_pipeline(self):
         # Built lazily and cached: loading weights takes seconds, and doing it
@@ -119,7 +133,39 @@ class KokoroTts:
         # not the event loop) until the first is actually, physically
         # done -- turning the crash into a bounded wait instead.
         with self._synthesis_lock:
-            return list(pipeline(text, voice=self._voice))
+            try:
+                return list(pipeline(text, voice=self._voice))
+            finally:
+                # Inside the lock, on this same worker thread, on purpose
+                # (issue #34): this used to run from synthesize()'s own
+                # `finally` on a SECOND worker thread. When a turn was
+                # cancelled mid-synthesis, that release fired at once,
+                # while the orphaned call above was still running -- and
+                # torch.mps.empty_cache() also destroys PyTorch's
+                # process-wide MPSGraph cache, i.e. the very graphs the
+                # running LSTM/embedding kernel was using. Reproduced on
+                # real hardware within ~5s of repeated barge-ins: SIGSEGV
+                # in _lstm_mps (the original report) or an ObjC "cannot
+                # form weak reference to MPSGraph" abort, never a Python
+                # traceback. Here the release can only happen once this
+                # call is done and before any other call starts.
+                self._release_mps_cache()
+
+    def _release_mps_cache(self) -> None:
+        if config.KOKORO_DEVICE != "mps":
+            return
+        # PyTorch's MPS caching allocator holds onto memory for reuse
+        # WITHIN this process rather than returning it to the OS after
+        # each call. This instance is built once and shared for the
+        # server's whole lifetime (see app.py), so without this, its
+        # cached footprint only grows across a session -- confirmed via
+        # real on-device testing (2026-08-25) as the cause of each LATER
+        # turn's Ollama call getting progressively worse than the first
+        # (Groq, which doesn't compete for local memory at all, showed no
+        # such pattern with the same session). Called from _run_pipeline's
+        # `finally` so a failed synthesis attempt still releases whatever
+        # it allocated before failing.
+        torch.mps.empty_cache()
 
     async def synthesize(self, text: str) -> AsyncIterator[bytes]:
         if not text.strip():
@@ -131,21 +177,6 @@ class KokoroTts:
             raise
         except Exception as exc:
             raise EngineError(f"Kokoro synthesis failed: {exc}") from exc
-        finally:
-            if config.KOKORO_DEVICE == "mps":
-                # PyTorch's MPS caching allocator holds onto memory for
-                # reuse WITHIN this process rather than returning it to the
-                # OS after each call. This instance is built once and
-                # shared for the server's whole lifetime (see app.py), so
-                # without this, its cached footprint only grows across a
-                # session -- confirmed via real on-device testing
-                # (2026-08-25) as the cause of each LATER turn's Ollama
-                # call getting progressively worse than the first (Groq,
-                # which doesn't compete for local memory at all, showed no
-                # such pattern with the same session). In `finally` so a
-                # failed synthesis attempt still releases whatever it
-                # allocated before failing.
-                await asyncio.to_thread(torch.mps.empty_cache)
 
         for _graphemes, _phonemes, samples in segments:
             yield float32_to_pcm16(samples)
