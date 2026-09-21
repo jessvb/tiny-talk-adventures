@@ -491,8 +491,14 @@ final class AppModel: ObservableObject {
     /// Without BOTH, storybooks are simply text-only -- silently, by design:
     /// it's an optional extra, not an error.
     private func makeIllustrator(chat: any ChatCompleting) -> (any StoryIllustrating)? {
-        guard let accountId = KeychainStore.get("cloudflareAccountId"), !accountId.isEmpty,
-              let apiToken = KeychainStore.get("cloudflareApiToken"), !apiToken.isEmpty
+        // Trimmed at READ time so values already stored are covered too: a
+        // token or account id pasted from a web page often carries a trailing
+        // space or newline, which would otherwise make every page fail
+        // silently (`invalidAccountId`, or a 401 from Cloudflare).
+        guard let accountId = KeychainStore.get("cloudflareAccountId")?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !accountId.isEmpty,
+              let apiToken = KeychainStore.get("cloudflareApiToken")?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !apiToken.isEmpty
         else { return nil }
         // Same on-screen debug log as the rest of demo mode -- a bad token
         // or an exhausted quota shows up there, never in front of the child.
