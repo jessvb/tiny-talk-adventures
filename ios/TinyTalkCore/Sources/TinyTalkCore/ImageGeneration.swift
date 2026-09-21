@@ -86,7 +86,10 @@ public final class CloudflareImageClient: ImageGenerating, @unchecked Sendable {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw ImageGenerationError.malformedResponse }
         guard (200..<300).contains(http.statusCode) else {
-            let detail = String(String(data: data, encoding: .utf8)?.prefix(200) ?? "")
+            // Cloudflare's 7003 error echoes the request path (which holds the
+            // account id), so redact the id BEFORE truncating to 200 characters.
+            let body = String(data: data, encoding: .utf8) ?? ""
+            let detail = String(body.replacingOccurrences(of: accountId, with: "<account-id>").prefix(200))
             throw ImageGenerationError.http(status: http.statusCode, detail: detail)
         }
         return try Self.decodeImage(from: data)

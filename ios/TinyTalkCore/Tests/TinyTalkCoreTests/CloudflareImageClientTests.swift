@@ -107,6 +107,23 @@ final class CloudflareImageClientTests: XCTestCase {
         }
     }
 
+    func testTheAccountIdIsRedactedFromAnHTTPErrorDetailBecauseCloudflareEchoesTheRequestPath() async {
+        StubURLProtocol.handler = { _ in
+            (400, Data("Could not route to /client/v4/accounts/acct123/ai/run/@cf/black-forest-labs/flux-1-schnell, perhaps your object identifier is invalid? (7003)".utf8))
+        }
+        do {
+            _ = try await makeClient().generate(prompt: "x", reference: nil)
+            XCTFail("expected an error")
+        } catch {
+            guard case let .http(status, detail)? = error as? ImageGenerationError else {
+                return XCTFail("expected an HTTP error, got \(error)")
+            }
+            XCTAssertEqual(status, 400)
+            XCTAssertTrue(detail.contains("<account-id>"))
+            XCTAssertFalse(detail.contains("acct123"), "the account id must never reach the debug log")
+        }
+    }
+
     func testAResponseWithNoImageIsMalformed() async {
         StubURLProtocol.handler = { _ in (200, Data(#"{"result":{},"success":false}"#.utf8)) }
         do {
