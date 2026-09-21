@@ -519,7 +519,8 @@ final class AppModel: ObservableObject {
     /// is backgrounded mid-reply -- that reply is simply lost, not
     /// replayed.
     func connectAwayFromHome() async {
-        guard let groqKey = KeychainStore.get("groqApiKey"), !groqKey.isEmpty else {
+        guard let groqKey = KeychainStore.get("groqApiKey")?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !groqKey.isEmpty else {
             lastErrorMessage = "no Groq API key saved -- add one in Settings, under Away From Home."
             return
         }
@@ -528,7 +529,8 @@ final class AppModel: ObservableObject {
             return
         }
 
-        let animalFactsKey = KeychainStore.get("animalFactsApiKey")
+        let animalFactsKey = KeychainStore.get("animalFactsApiKey")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let ttsClient = AVSpeechTts(voiceIdentifier: selectedVoiceIdentifier)
         // Same on-screen debug log as connection.onDebugEvent below --
         // see AVSpeechTts.onDebugEvent's own doc comment for why this
