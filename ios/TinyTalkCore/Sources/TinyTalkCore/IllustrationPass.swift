@@ -10,8 +10,8 @@ import Foundation
 ///
 /// Two things the home pipeline doesn't need: a fixed style directive
 /// prepended to every prompt (kept in one constant so it can be tuned
-/// on-device), and a total time budget checked before each page, so a slow
-/// cloud service can't hold The End screen hostage.
+/// on-device), and a time budget for the drawing phase, checked before each
+/// page, so a slow cloud service can't hold The End screen hostage.
 public struct IllustrationPass: StoryIllustrating {
     public static let defaultTimeBudget: TimeInterval = 60
 
@@ -67,8 +67,6 @@ public struct IllustrationPass: StoryIllustrating {
     }
 
     public func illustrate(pages: [String]) async -> IllustrationResult {
-        let startedAt = now()
-
         // Phase 1: every page's scene prompt, in one quick burst (same order
         // of work as illustrations.py).
         var scenes: [String?] = []
@@ -84,7 +82,12 @@ public struct IllustrationPass: StoryIllustrating {
             }
         }
 
-        // Phase 2: the pictures, strictly in page order.
+        // Phase 2: the pictures, strictly in page order. The time budget
+        // starts HERE: it exists so a slow image service can't hold The End
+        // hostage, and the scene sentences above come from the same chat
+        // service the storybook rewrite has just used -- a slow scene phase
+        // must not eat the drawing budget and cost every page its picture.
+        let startedAt = now()
         var images: [Data?] = []
         var firstImage: Data?
         for (index, scene) in scenes.enumerated() {

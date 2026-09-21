@@ -162,6 +162,28 @@ final class IllustrationPassTests: XCTestCase {
         XCTAssertEqual(result.status, .partial)
     }
 
+    func testASceneStageSlowerThanTheWholeBudgetDoesNotCostAnyPageItsPicture() async {
+        // The scene sentences come from the chat service, and the budget
+        // exists for the image service -- it must not start counting until
+        // drawing starts.
+        final class ClockAdvancingChatClient: ChatCompleting, @unchecked Sendable {
+            private let clock: FakeClock
+            init(clock: FakeClock) { self.clock = clock }
+            func complete(messages: [[String: String]]) async throws -> String {
+                clock.advance(100) // each scene prompt "takes" 100 s -- longer than the whole 60 s budget
+                return "a small orange fox in a meadow"
+            }
+        }
+        let clock = FakeClock()
+        let backend = FakeImageBackend(results: [.success(fullSize)])
+        let result = await pass(chat: ClockAdvancingChatClient(clock: clock), backend: backend, now: { clock.now() })
+            .illustrate(pages: pages)
+
+        XCTAssertEqual(result.status, .done)
+        XCTAssertEqual(result.images.compactMap { $0 }.count, 3)
+        XCTAssertEqual(backend.calls.count, 3, "one picture attempt per page")
+    }
+
     // MARK: - diagnostics
 
     func testFailuresAndTheFinalStatusReachTheDebugLog() async {
