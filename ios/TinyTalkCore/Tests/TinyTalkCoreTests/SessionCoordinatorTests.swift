@@ -3006,4 +3006,70 @@ final class SessionCoordinatorTests: XCTestCase {
 
         runLoop.cancel()
     }
+
+    // MARK: - Issue #48: the last error goes stale when the next turn starts
+
+    /// Drives a turn to the ditty timeout, which sets the sticky "took too
+    /// long thinking" error and lands back in .idle.
+    private func driveATurnToTheDittyTimeout(
+        coordinator: SessionCoordinator, vad: FakeVAD
+    ) async {
+        vad.fire(.speechStart)
+        await eventually { await coordinator.state == .listening }
+        vad.fire(.speechEnd)
+        await eventually { await coordinator.lastErrorMessage != nil }
+        await eventually { await coordinator.state == .idle }
+    }
+
+    /// AppModel's poll loop can only show a repeat of the SAME error text
+    /// (timing out twice in a row) if the coordinator's value goes back to
+    /// nil in between -- and the error the child was just told about ("say
+    /// something to wake them up") is stale the moment they do.
+    func testLastErrorMessageClearsWhenTheChildStartsTheNextTurn() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(
+            connection: connection, audio: audio, vad: vad,
+            waitingDittyAudio: Data([0xAA, 0xBB]), dittyTimeoutSeconds: 0.03
+        )
+        let runLoop = Task { await coordinator.start() }
+
+        await driveATurnToTheDittyTimeout(coordinator: coordinator, vad: vad)
+        var error = await coordinator.lastErrorMessage
+        XCTAssertNotNil(error, "precondition: the ditty timeout set an error")
+
+        vad.fire(.speechStart) // the child says something, as the message asked
+        await eventually { await coordinator.lastErrorMessage == nil }
+        error = await coordinator.lastErrorMessage
+        XCTAssertNil(error, "an error from the previous turn is stale once a new turn begins")
+
+        vad.fire(.speechEnd) // ...and this turn times out too, with the very same text
+        await eventually { await coordinator.lastErrorMessage != nil }
+        error = await coordinator.lastErrorMessage
+        XCTAssertNotNil(error, "a repeat of the same error must be visible again, not swallowed as 'unchanged'")
+
+        runLoop.cancel()
+    }
+
+    func testConcludeStoryClearsTheLastError() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(
+            connection: connection, audio: audio, vad: vad,
+            waitingDittyAudio: Data([0xAA, 0xBB]), dittyTimeoutSeconds: 0.03
+        )
+        let runLoop = Task { await coordinator.start() }
+
+        await driveATurnToTheDittyTimeout(coordinator: coordinator, vad: vad)
+        var error = await coordinator.lastErrorMessage
+        XCTAssertNotNil(error, "precondition: the ditty timeout set an error")
+
+        await coordinator.concludeStory() // "Finish this story" starts a turn of its own
+        error = await coordinator.lastErrorMessage
+        XCTAssertNil(error)
+
+        runLoop.cancel()
+    }
 }

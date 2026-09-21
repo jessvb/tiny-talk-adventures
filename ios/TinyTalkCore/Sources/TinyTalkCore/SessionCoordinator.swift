@@ -104,6 +104,10 @@ public actor SessionCoordinator {
     /// appeared backed up by exactly one turn.
     public private(set) var lastTranscriptTurnId: Int?
     public private(set) var lastReplyTurnId: Int?
+    /// The latest error worth showing, for the same poll-loop UI. Sticky
+    /// until it goes stale: cleared when a new turn begins (beginNewTurn())
+    /// or a new story starts (newStory()) -- so a UI can tell a repeat of
+    /// the same text apart from the old value still sitting there.
     public private(set) var lastErrorMessage: String?
     /// Flips to true the moment consumeServerEvents() sees the connection
     /// close. A poll-loop UI (e.g. AppModel) has no other way to learn
@@ -1044,6 +1048,19 @@ public actor SessionCoordinator {
         }
     }
 
+    /// Every path that starts a new turn -- a fresh utterance, a barge-in,
+    /// "Finish this story" -- takes its id here. Also drops lastErrorMessage
+    /// (issue #48): an error from an earlier turn is stale the moment the
+    /// child moves on (the "say something to wake them up" message has just
+    /// been answered), and AppModel's poll loop shows a coordinator error
+    /// only when its value CHANGES -- so a repeat of the very same text
+    /// (timing out twice in a row) is only visible if it went back to nil in
+    /// between.
+    private func beginNewTurn() {
+        currentTurnId += 1
+        lastErrorMessage = nil
+    }
+
     private func handleSpeechStart() async {
         if isRewriting {
             await handleSpeechAfterConclusion()
@@ -1059,7 +1076,7 @@ public actor SessionCoordinator {
         // .listening at this point, so the id must be settled before
         // anything else can suspend and let a stale/concurrent read of it
         // through.
-        currentTurnId += 1
+        beginNewTurn()
         // Must be set before the control frame's own await below -- see
         // isFlushing's and flushPreRoll()'s doc comments. machine.state is
         // already .listening at this point (machine.handle() above flipped
@@ -1194,7 +1211,7 @@ public actor SessionCoordinator {
         _ = try? machine.handle(.conclude)
         // Same reasoning as handleSpeechStart()/interrupt(): must be
         // assigned before the control frame's own await below.
-        currentTurnId += 1
+        beginNewTurn()
         await setMuted(true)
         do {
             try await connection.send(.concludeStory(turnId: currentTurnId))
@@ -1529,11 +1546,11 @@ public actor SessionCoordinator {
         turnTask?.cancel()
         turnTask = nil
         _ = try? machine.handle(.interrupt)
-        // Same reasoning as handleSpeechStart()'s currentTurnId += 1: must
-        // be assigned before the control frame's own await below, so
+        // Same reasoning as handleSpeechStart()'s beginNewTurn(): must be
+        // assigned before the control frame's own await below, so
         // consumeServerEvents() can't observe a stale value while this is
         // suspended sending it.
-        currentTurnId += 1
+        beginNewTurn()
         // See the matching comment in handleSpeechStart(): must be set
         // before the control frame's own await below, for the same reason.
         isFlushing = true
