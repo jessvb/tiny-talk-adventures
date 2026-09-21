@@ -36,3 +36,58 @@ enum TestImages {
         data.starts(with: [0xFF, 0xD8, 0xFF])
     }
 }
+
+/// Scripted ImageGenerating: one result per call (the last repeats), a record
+/// of every call, and an optional hook that runs on each call (used to
+/// advance a FakeClock).
+final class FakeImageBackend: ImageGenerating, @unchecked Sendable {
+    struct Call: Equatable {
+        let prompt: String
+        let reference: Data?
+    }
+
+    private let lock = NSLock()
+    private var _calls: [Call] = []
+    private let results: [Result<Data?, Error>]
+    private var _onGenerate: (@Sendable () -> Void)?
+    let supportsReference: Bool
+
+    init(supportsReference: Bool = false, results: [Result<Data?, Error>]) {
+        self.supportsReference = supportsReference
+        self.results = results
+    }
+
+    var calls: [Call] { lock.withLock { _calls } }
+
+    var onGenerate: (@Sendable () -> Void)? {
+        get { lock.withLock { _onGenerate } }
+        set { lock.withLock { _onGenerate = newValue } }
+    }
+
+    func generate(prompt: String, reference: Data?) async throws -> Data? {
+        let (result, hook): (Result<Data?, Error>, (@Sendable () -> Void)?) = lock.withLock {
+            _calls.append(Call(prompt: prompt, reference: reference))
+            return (results[min(_calls.count - 1, results.count - 1)], _onGenerate)
+        }
+        hook?()
+        return try result.get()
+    }
+}
+
+/// A clock the test moves by hand.
+final class FakeClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = Date(timeIntervalSince1970: 1_000_000)
+
+    func now() -> Date { lock.withLock { current } }
+    func advance(_ seconds: TimeInterval) { lock.withLock { current = current.addingTimeInterval(seconds) } }
+}
+
+/// Collects debug lines emitted by an @Sendable onDebugEvent hook.
+final class DebugLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _lines: [String] = []
+
+    var lines: [String] { lock.withLock { _lines } }
+    func append(_ line: String) { lock.withLock { _lines.append(line) } }
+}
