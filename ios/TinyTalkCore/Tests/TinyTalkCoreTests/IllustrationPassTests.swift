@@ -192,7 +192,8 @@ final class IllustrationPassTests: XCTestCase {
         _ = await pass(chat: sceneChat(), backend: backend, log: log).illustrate(pages: pages)
 
         XCTAssertTrue(log.lines.contains { $0.contains("page 1 failed") })
-        XCTAssertEqual(log.lines.last, "illustration: partial (2/3 pages)")
+        XCTAssertTrue(log.lines.last?.hasSuffix("illustration: partial (2/3 pages)") == true)
+        XCTAssertTrue(log.lines.allSatisfy { $0.hasPrefix("[") }, "every line must carry the timestamp prefix so the merged log sorts chronologically")
     }
 
     func testAURLErrorIsLoggedWithoutItsFailingURLSoTheAccountIdNeverReachesTheLog() async {

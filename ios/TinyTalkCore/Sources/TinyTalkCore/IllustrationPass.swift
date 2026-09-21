@@ -46,6 +46,14 @@ public struct IllustrationPass: StoryIllustrating {
         return "\(error)"
     }
 
+    /// Every debug line carries the shared "[HH:mm:ss.SSS] " prefix: AppModel
+    /// merges this log with the coordinator's and the audio engine's by plain
+    /// string sort, which only interleaves correctly when every line starts
+    /// with the timestamp (see DebugTimestamp).
+    private func debug(_ message: String) {
+        onDebugEvent?("[\(DebugTimestamp.now())] \(message)")
+    }
+
     private let chat: any ChatCompleting
     private let backend: any ImageGenerating
     private let timeBudget: TimeInterval
@@ -77,7 +85,7 @@ public struct IllustrationPass: StoryIllustrating {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 scenes.append(scene.isEmpty ? nil : scene)
             } catch {
-                onDebugEvent?("illustration: page \(index) scene prompt failed: \(Self.loggable(error))")
+                debug("illustration: page \(index) scene prompt failed: \(Self.loggable(error))")
                 scenes.append(nil)
             }
         }
@@ -96,26 +104,26 @@ public struct IllustrationPass: StoryIllustrating {
                 continue
             }
             if now().timeIntervalSince(startedAt) >= timeBudget {
-                onDebugEvent?("illustration: time budget spent -- page \(index) gets no picture")
+                debug("illustration: time budget spent -- page \(index) gets no picture")
                 images.append(nil)
                 continue
             }
             do {
                 let reference = backend.supportsReference ? firstImage : nil
                 guard let raw = try await backend.generate(prompt: Self.styleDirective + scene, reference: reference) else {
-                    onDebugEvent?("illustration: page \(index) was declined by the image backend")
+                    debug("illustration: page \(index) was declined by the image backend")
                     images.append(nil)
                     continue
                 }
                 guard let jpeg = ImageDownscaler.jpeg(from: raw) else {
-                    onDebugEvent?("illustration: page \(index) came back undecodable")
+                    debug("illustration: page \(index) came back undecodable")
                     images.append(nil)
                     continue
                 }
                 if firstImage == nil { firstImage = raw }
                 images.append(jpeg)
             } catch {
-                onDebugEvent?("illustration: page \(index) failed: \(Self.loggable(error))")
+                debug("illustration: page \(index) failed: \(Self.loggable(error))")
                 images.append(nil)
             }
         }
@@ -123,7 +131,7 @@ public struct IllustrationPass: StoryIllustrating {
         let succeeded = images.compactMap { $0 }.count
         let status: IllustrationsStatus =
             succeeded == 0 ? .failed : (succeeded == images.count ? .done : .partial)
-        onDebugEvent?("illustration: \(status.rawValue) (\(succeeded)/\(images.count) pages)")
+        debug("illustration: \(status.rawValue) (\(succeeded)/\(images.count) pages)")
         return IllustrationResult(images: images, status: status)
     }
 }
