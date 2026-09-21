@@ -2759,4 +2759,251 @@ final class SessionCoordinatorTests: XCTestCase {
 
         runLoop.cancel()
     }
+
+    // MARK: - Issue #47: talking over the concluding reply
+
+    /// Shared setup for the #47 tests: the ditty is configured (with a paced
+    /// play() so a wrongly-started loop iterates a few times instead of
+    /// spinning) because "a ditty started over The End" is half of the bug.
+    private func makeConcludedStoryFixture() -> (
+        coordinator: SessionCoordinator, connection: FakeConnection, audio: FakeAudio, vad: FakeVAD
+    ) {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        audio.autoFinishEnqueuedBuffers = false // the concluding reply is audibly playing until the test says otherwise
+        audio.playDelayNanos = 5_000_000
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(
+            connection: connection, audio: audio, vad: vad, waitingDittyAudio: Data([0xAA, 0xBB])
+        )
+        return (coordinator, connection, audio, vad)
+    }
+
+    /// One whole concluding turn in the real wire order, up to The End being
+    /// ready. Needs instant playback (autoFinishEnqueuedBuffers = true).
+    private func driveConcludingTurnToTheEnd(
+        coordinator: SessionCoordinator, connection: FakeConnection, vad: FakeVAD
+    ) async {
+        vad.fire(.speechStart)
+        await eventually { await coordinator.state == .listening }
+        vad.fire(.speechEnd)
+        await eventually { await coordinator.state == .waitingForReply }
+        try? await Task.sleep(nanoseconds: 10_000_000) // handleSpeechEnd() creates the turn's stream just after the state flip
+        connection.emit(.message(.responseText("The end.", turnId: 1)))
+        connection.emit(.audio(Data([1])))
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        connection.emit(.message(.rewritingStarted))
+        await eventually { await coordinator.readyToShowTheEnd }
+    }
+
+    /// Order A. The real wire order is audio..., turn_end, rewriting_started,
+    /// and the server synthesizes far faster than real time, so a child
+    /// talking over the concluding reply almost always does so after BOTH
+    /// have been consumed. Base behavior: the cancelled runTurn still called
+    /// noteTurnPlaybackFinished() as it unwound, so The End did appear --
+    /// but the barge-in went out as an `interrupt` the server ignores
+    /// (REWRITING), the child's utterance became a turn nobody answers, and
+    /// its waiting ditty looped over The End.
+    func testBargeInOverTheConcludingReplyAfterRewritingStartedShowsTheEndAndStartsNoUtterance() async {
+        let (coordinator, connection, audio, vad) = makeConcludedStoryFixture()
+        let runLoop = Task { await coordinator.start() }
+
+        await driveTurnToTheAudiblePlaybackTail(
+            coordinator: coordinator, connection: connection, audio: audio, vad: vad, chunk: Data([1, 2, 3])
+        )
+        connection.emit(.message(.rewritingStarted))
+        await eventually { await coordinator.isRewriting }
+        var ready = await coordinator.readyToShowTheEnd
+        XCTAssertFalse(ready, "precondition: the concluding reply is still playing")
+
+        vad.fire(.speechStart) // the child talks over the ending
+        await eventually { await coordinator.readyToShowTheEnd }
+        ready = await coordinator.readyToShowTheEnd
+        XCTAssertTrue(ready, "talking over the concluding reply must stop it and let The End appear")
+        // (FakeAudio.stopped can't say this: stopping the turn-1 ditty already set it.)
+        XCTAssertFalse(audio.hasPlaybackWaiter, "the concluding reply must stop the moment the child talks over it")
+
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 30_000_000) // room for a wrongly-started ditty to play
+        let playedAtTheEnd = audio.played.count
+        try? await Task.sleep(nanoseconds: 30_000_000)
+
+        let state = await coordinator.state
+        XCTAssertEqual(state, .idle, "no utterance may start once the story has concluded -- nothing would ever answer it")
+        XCTAssertEqual(
+            connection.sentMessages, [.speechStart(turnId: 1), .speechEnd],
+            "the server ignores everything sent during REWRITING -- an interrupt/speech_end here is a message into the void"
+        )
+        XCTAssertEqual(audio.played.count, playedAtTheEnd, "no waiting ditty may loop over The End")
+
+        runLoop.cancel()
+    }
+
+    /// Order B. The barge-in lands before the concluding turn's turn_end has
+    /// reached the client: it is sent as an ordinary interrupt (the client
+    /// cannot know yet), turn_end is then discarded as stale, and
+    /// rewriting_started arrives afterwards. Base behavior: nothing ever set
+    /// currentTurnPlaybackFinished, so readyToShowTheEnd stayed false for
+    /// good (The End never appeared) and the child's utterance became a
+    /// turn nobody answers, its ditty looping until the timeout.
+    func testBargeInBeforeTheConcludingTurnEndArrivesStillShowsTheEndOnceRewritingStarts() async {
+        let (coordinator, connection, audio, vad) = makeConcludedStoryFixture()
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        await eventually { await coordinator.state == .listening }
+        vad.fire(.speechEnd)
+        await eventually { await coordinator.state == .waitingForReply }
+        try? await Task.sleep(nanoseconds: 10_000_000) // handleSpeechEnd() creates the turn's stream just after the state flip
+        connection.emit(.message(.responseText("The end.", turnId: 1)))
+        connection.emit(.audio(Data([1, 2, 3])))
+        await eventually { await coordinator.state == .speaking }
+
+        vad.fire(.speechStart) // barge-in, before turn_end has arrived
+        await eventually { connection.sentMessages.contains(.interrupt(turnId: 2)) }
+        // What the server does next: it has already entered REWRITING (so it
+        // ignored that interrupt) and its concluding turn_end and
+        // rewriting_started are already on the wire.
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        connection.emit(.message(.rewritingStarted))
+
+        await eventually { await coordinator.readyToShowTheEnd }
+        var ready = await coordinator.readyToShowTheEnd
+        XCTAssertTrue(ready, "the concluding turn was cut off by the barge-in; its stale turn_end must not leave The End unreachable")
+        var state = await coordinator.state
+        XCTAssertEqual(state, .idle, "the barge-in utterance can never be answered once the story has concluded")
+
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        let playedAtTheEnd = audio.played.count
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        state = await coordinator.state
+        XCTAssertEqual(state, .idle)
+        XCTAssertEqual(
+            connection.sentMessages, [.speechStart(turnId: 1), .speechEnd, .interrupt(turnId: 2)],
+            "the abandoned utterance must not be finished toward a server that ignores it"
+        )
+        XCTAssertEqual(audio.played.count, playedAtTheEnd, "no waiting ditty may loop over The End")
+        ready = await coordinator.readyToShowTheEnd
+        XCTAssertTrue(ready)
+
+        runLoop.cancel()
+    }
+
+    /// The other interleaving of the same race: turn_end was already
+    /// consumed, the barge-in went out as an ordinary interrupt, and the
+    /// child's whole utterance was already finished (speech_end sent, ditty
+    /// looping, currentTurnPlaybackFinished reset by that new turn) when
+    /// rewriting_started finally arrived.
+    func testRewritingStartedAfterABargeInUtteranceWasAlreadySentAbandonsItAndShowsTheEnd() async {
+        let (coordinator, connection, audio, vad) = makeConcludedStoryFixture()
+        let runLoop = Task { await coordinator.start() }
+
+        await driveTurnToTheAudiblePlaybackTail(
+            coordinator: coordinator, connection: connection, audio: audio, vad: vad, chunk: Data([1, 2, 3])
+        )
+        vad.fire(.speechStart) // barge-in, before rewriting_started has arrived
+        await eventually { await coordinator.state == .listening }
+        vad.fire(.speechEnd)
+        await eventually { await coordinator.state == .waitingForReply }
+        try? await Task.sleep(nanoseconds: 20_000_000) // the new turn's ditty is looping
+        var ready = await coordinator.readyToShowTheEnd
+        XCTAssertFalse(ready, "precondition: rewriting_started has not arrived yet")
+
+        connection.emit(.message(.rewritingStarted))
+        await eventually { await coordinator.readyToShowTheEnd }
+
+        ready = await coordinator.readyToShowTheEnd
+        XCTAssertTrue(ready)
+        let state = await coordinator.state
+        XCTAssertEqual(state, .idle, "the turn the server is going to ignore must be abandoned, not left waiting for a reply")
+        let playedAtTheEnd = audio.played.count
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(audio.played.count, playedAtTheEnd, "the ditty for that abandoned turn must stop")
+
+        runLoop.cancel()
+    }
+
+    /// The client half of issue #32 for speech: once rewriting_started has
+    /// arrived the server drops every speech_start/audio/speech_end, so the
+    /// client must not send them (and must not then sit in .waitingForReply
+    /// with a ditty). This is the plain case -- the concluding reply already
+    /// finished playing, The End has not been navigated to yet.
+    func testSpeechAfterTheStoryConcludedIsNotSentToTheServer() async {
+        let (coordinator, connection, audio, vad) = makeConcludedStoryFixture()
+        audio.autoFinishEnqueuedBuffers = true // the concluding reply plays out instantly
+        let runLoop = Task { await coordinator.start() }
+
+        await driveConcludingTurnToTheEnd(coordinator: coordinator, connection: connection, vad: vad)
+        let state = await coordinator.state
+        XCTAssertEqual(state, .idle, "precondition: the concluding reply has finished playing")
+
+        vad.fire(.speechStart)
+        vad.fire(.speechEnd)
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        let playedAfterSpeech = audio.played.count
+        try? await Task.sleep(nanoseconds: 30_000_000)
+
+        let stateAfterSpeech = await coordinator.state
+        XCTAssertEqual(stateAfterSpeech, .idle)
+        XCTAssertEqual(connection.sentMessages, [.speechStart(turnId: 1), .speechEnd], "nothing the child says after the conclusion may reach the server")
+        XCTAssertEqual(audio.played.count, playedAfterSpeech, "no ditty for an utterance that was never started")
+
+        runLoop.cancel()
+    }
+
+    /// Guards the other direction: the suppression above must end with the
+    /// rewrite, or a child who is still on the story screen after
+    /// rewriting_done (the server is IDLE again) would be ignored for good.
+    func testSpeechIsSentAgainOnceTheRewriteIsDone() async {
+        let (coordinator, connection, audio, vad) = makeConcludedStoryFixture()
+        audio.autoFinishEnqueuedBuffers = true
+        let runLoop = Task { await coordinator.start() }
+
+        await driveConcludingTurnToTheEnd(coordinator: coordinator, connection: connection, vad: vad)
+        connection.emit(.message(.rewritingDone))
+        await eventually { await coordinator.isRewriting == false }
+
+        vad.fire(.speechStart)
+        await eventually { await coordinator.state == .listening }
+
+        let state = await coordinator.state
+        XCTAssertEqual(state, .listening, "speech must work again once the rewrite is done")
+        XCTAssertEqual(connection.sentMessages.last, .speechStart(turnId: 2))
+
+        runLoop.cancel()
+    }
+
+    /// Guards against the new "abandon it" rule over-firing: in the real
+    /// wire order (turn_end, then rewriting_started) the two can be
+    /// consumed back to back while runTurn() has barely started on the
+    /// reply. That concluding turn is still the CURRENT turn and must play
+    /// out untouched.
+    func testConcludingReplyIsNotAbandonedWhenTurnEndAndRewritingStartedArriveBackToBack() async {
+        let (coordinator, connection, audio, vad) = makeConcludedStoryFixture()
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        await eventually { await coordinator.state == .listening }
+        vad.fire(.speechEnd)
+        await eventually { await coordinator.state == .waitingForReply }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        connection.emit(.message(.responseText("The end.", turnId: 1)))
+        connection.emit(.audio(Data([1, 2, 3])))
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        connection.emit(.message(.rewritingStarted))
+        await eventually { audio.hasPlaybackWaiter }
+
+        var ready = await coordinator.readyToShowTheEnd
+        XCTAssertFalse(ready, "the reply is still playing")
+        let state = await coordinator.state
+        XCTAssertEqual(state, .speaking, "the concluding turn must not be abandoned")
+
+        audio.finishOldestEnqueuedBuffer()
+        await eventually { await coordinator.readyToShowTheEnd }
+        ready = await coordinator.readyToShowTheEnd
+        XCTAssertTrue(ready)
+
+        runLoop.cancel()
+    }
 }
