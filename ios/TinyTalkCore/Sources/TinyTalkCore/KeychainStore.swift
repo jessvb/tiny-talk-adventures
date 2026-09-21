@@ -1,8 +1,9 @@
 import Foundation
 import Security
 
-/// Minimal Keychain wrapper for the two away-from-home API keys
-/// (Groq, API Ninjas) -- generic-password items, one per named key.
+/// Minimal Keychain wrapper for the four away-from-home credentials (Groq,
+/// API Ninjas, Cloudflare account id, Cloudflare API token) --
+/// generic-password items, one per named key.
 public enum KeychainStore {
     public static func set(_ value: String, forKey key: String) {
         let data = Data(value.utf8)

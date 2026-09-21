@@ -74,7 +74,7 @@ public final class CloudflareImageClient: ImageGenerating, @unchecked Sendable {
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        // URLRequest's default is 60 s -- the whole illustration pass's time
+        // URLRequest's default is 60 s -- the whole drawing phase's time
         // budget -- and IllustrationPass can only check that budget BEFORE
         // each page, so one stalled connection could hold The End for a full
         // minute. FLUX.1 [schnell] normally answers in a few seconds; a page
