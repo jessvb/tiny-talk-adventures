@@ -137,6 +137,23 @@ final class IllustrationPassTests: XCTestCase {
         XCTAssertEqual(result.status, .partial)
     }
 
+    func testAWhitespaceOnlySceneSentenceLeavesThatPagePictureLessAndIsLogged() async {
+        let log = DebugLog()
+        let chat = ScriptedChatClient("   ", "the small orange fox meets an owl", "the small orange fox goes home")
+        let backend = FakeImageBackend(results: [.success(fullSize)])
+        let result = await pass(chat: chat, backend: backend, log: log).illustrate(pages: pages)
+
+        XCTAssertNil(result.images[0])
+        XCTAssertNotNil(result.images[1])
+        XCTAssertNotNil(result.images[2])
+        XCTAssertEqual(backend.calls.map(\.prompt), [
+            IllustrationPass.styleDirective + "the small orange fox meets an owl",
+            IllustrationPass.styleDirective + "the small orange fox goes home",
+        ], "the backend is never called for the page with no scene")
+        XCTAssertTrue(log.lines.contains { $0.contains("page 0 scene prompt came back empty") })
+        XCTAssertEqual(result.status, .partial)
+    }
+
     func testAStoryWithNoPagesIsFailedNotDone() async {
         let backend = FakeImageBackend(results: [.success(fullSize)])
         let result = await pass(chat: sceneChat(), backend: backend).illustrate(pages: [])

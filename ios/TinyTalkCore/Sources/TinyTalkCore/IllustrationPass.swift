@@ -83,7 +83,12 @@ public struct IllustrationPass: StoryIllustrating {
                 let scene = try await chat
                     .complete(messages: [["role": "user", "content": Self.sceneRequest(pageText: page)]])
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                scenes.append(scene.isEmpty ? nil : scene)
+                if scene.isEmpty {
+                    debug("illustration: page \(index) scene prompt came back empty")
+                    scenes.append(nil)
+                } else {
+                    scenes.append(scene)
+                }
             } catch {
                 debug("illustration: page \(index) scene prompt failed: \(Self.loggable(error))")
                 scenes.append(nil)
