@@ -485,6 +485,26 @@ final class AppModel: ObservableObject {
         startPollingState()
     }
 
+    /// Storybook pictures away from home need a free Cloudflare account
+    /// (an account id plus an API token, entered in Settings' hidden
+    /// away-from-home card and kept in the Keychain like the Groq key).
+    /// Without BOTH, storybooks are simply text-only -- silently, by design:
+    /// it's an optional extra, not an error.
+    private func makeIllustrator(chat: any ChatCompleting) -> (any StoryIllustrating)? {
+        guard let accountId = KeychainStore.get("cloudflareAccountId"), !accountId.isEmpty,
+              let apiToken = KeychainStore.get("cloudflareApiToken"), !apiToken.isEmpty
+        else { return nil }
+        // Same on-screen debug log as the rest of demo mode -- a bad token
+        // or an exhausted quota shows up there, never in front of the child.
+        return IllustrationPass(
+            chat: chat,
+            backend: CloudflareImageClient(accountId: accountId, apiToken: apiToken),
+            onDebugEvent: { [weak self] line in
+                Task { @MainActor in self?.appendAudioDebugEvent(line) }
+            }
+        )
+    }
+
     /// Away-from-home counterpart to connect() -- builds a DemoConnection
     /// against Groq instead of a WebSocketServerConnection against the
     /// Mac. See the design spec's disclosed simplification: unlike the
@@ -512,7 +532,11 @@ final class AppModel: ObservableObject {
         // One Groq client shared by the live conversation and the storybook
         // rewrite, so both use the same key (and the same free-tier budget).
         let chatClient = GroqChatClient(apiKey: groqKey)
-        let library = DemoStoryLibrary(store: localStoryStore, writer: StorybookWriter(chat: chatClient))
+        let library = DemoStoryLibrary(
+            store: localStoryStore,
+            writer: StorybookWriter(chat: chatClient),
+            illustrator: makeIllustrator(chat: chatClient)
+        )
         let connection = DemoConnection(
             chatClient: chatClient,
             sttClient: GroqWhisperClient(apiKey: groqKey),
