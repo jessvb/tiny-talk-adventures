@@ -35,6 +35,17 @@ public struct IllustrationPass: StoryIllustrating {
         "Page text: \(pageText)"
     }
 
+    /// A URLError's default description embeds the failing URL, and the
+    /// Cloudflare request URL contains the account id -- log only its code and
+    /// message so a credential can never reach the debug log. Every other
+    /// error (ImageGenerationError included) keeps its own description.
+    private static func loggable(_ error: Error) -> String {
+        if let urlError = error as? URLError {
+            return "URLError \(urlError.code.rawValue): \(urlError.localizedDescription)"
+        }
+        return "\(error)"
+    }
+
     private let chat: any ChatCompleting
     private let backend: any ImageGenerating
     private let timeBudget: TimeInterval
@@ -68,7 +79,7 @@ public struct IllustrationPass: StoryIllustrating {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 scenes.append(scene.isEmpty ? nil : scene)
             } catch {
-                onDebugEvent?("illustration: page \(index) scene prompt failed: \(error)")
+                onDebugEvent?("illustration: page \(index) scene prompt failed: \(Self.loggable(error))")
                 scenes.append(nil)
             }
         }
@@ -101,7 +112,7 @@ public struct IllustrationPass: StoryIllustrating {
                 if firstImage == nil { firstImage = raw }
                 images.append(jpeg)
             } catch {
-                onDebugEvent?("illustration: page \(index) failed: \(error)")
+                onDebugEvent?("illustration: page \(index) failed: \(Self.loggable(error))")
                 images.append(nil)
             }
         }

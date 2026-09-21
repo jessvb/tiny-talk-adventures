@@ -172,4 +172,16 @@ final class IllustrationPassTests: XCTestCase {
         XCTAssertTrue(log.lines.contains { $0.contains("page 1 failed") })
         XCTAssertEqual(log.lines.last, "illustration: partial (2/3 pages)")
     }
+
+    func testAURLErrorIsLoggedWithoutItsFailingURLSoTheAccountIdNeverReachesTheLog() async {
+        let log = DebugLog()
+        let timedOut = URLError(.timedOut, userInfo: [
+            NSURLErrorFailingURLStringErrorKey: "https://api.cloudflare.com/client/v4/accounts/SECRETACCT/ai/run/@cf/black-forest-labs/flux-1-schnell",
+        ])
+        let backend = FakeImageBackend(results: [.success(fullSize), .failure(timedOut), .success(fullSize)])
+        _ = await pass(chat: sceneChat(), backend: backend, log: log).illustrate(pages: pages)
+
+        XCTAssertTrue(log.lines.contains { $0.contains("page 1 failed") && $0.contains("URLError -1001") })
+        XCTAssertFalse(log.lines.contains { $0.contains("SECRETACCT") }, "a URLError's description embeds the Cloudflare URL, which contains the account id")
+    }
 }
