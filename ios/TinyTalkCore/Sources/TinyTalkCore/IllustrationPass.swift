@@ -27,16 +27,38 @@ public struct IllustrationPass: StoryIllustrating {
         "A gentle, colorful children's picture-book illustration in a soft " +
         "watercolor style, friendly and child-appropriate. "
 
-    /// illustrations.py's prompt-extraction template, plus one sentence asking
-    /// the model to name the main character the same way on every page
-    /// (FLUX.1 [schnell] has no reference image to keep a character
-    /// consistent, so consistency has to come from the words).
-    static func sceneRequest(pageText: String) -> String {
-        "Describe this storybook page as a short visual scene for an " +
+    /// illustrations.py's prompt-extraction template. Character consistency
+    /// can't come from the model "remembering" earlier pages -- each page's
+    /// scene prompt below is an independent, stateless call, so nothing
+    /// carries between them except what illustrate(pages:) explicitly
+    /// passes in. Once the FIRST page's scene description succeeds, its
+    /// exact text is carried forward as `priorDescription` and given to
+    /// every later page as a real anchor to match, instead of a generic
+    /// example the model had nothing genuine to be consistent with.
+    /// (On-device testing, 2026-09-22: an earlier version asked the model
+    /// to reuse "the same short description... for example, 'a small
+    /// orange fox'" on every page. With no real memory of its own past
+    /// answers, the model had nothing else that stayed constant across the
+    /// per-page calls, so it echoed that example verbatim from page 1
+    /// onward -- fox illustrations in stories that never mentioned one.
+    /// FLUX.1 [schnell] has no reference image, so a real prior-page anchor
+    /// is the only consistency lever available here.)
+    static func sceneRequest(pageText: String, priorDescription: String?) -> String {
+        let consistency: String
+        if let priorDescription {
+            consistency = "For character consistency, the main character was already " +
+                "described, on an earlier page of this same story, as: " +
+                "\"\(priorDescription)\". Describe the same character the same way here, " +
+                "even though the setting or action may be different. "
+        } else {
+            consistency = "Describe the main character specifically enough (species, " +
+                "colour, size) that this exact description could be reused, unchanged, " +
+                "on a later page. "
+        }
+        return "Describe this storybook page as a short visual scene for an " +
         "illustrator: setting, characters, action, and mood, in one " +
         "sentence, no more than 25 words. Do not mention that this is from " +
-        "a story. Always refer to the main character by the same short " +
-        "description on every page (for example, \"a small orange fox\"). " +
+        "a story. " + consistency +
         "Reply with ONLY the scene description, no other text.\n\n" +
         "Page text: \(pageText)"
     }
@@ -82,18 +104,23 @@ public struct IllustrationPass: StoryIllustrating {
 
     public func illustrate(pages: [String]) async -> IllustrationResult {
         // Phase 1: every page's scene prompt, in one quick burst (same order
-        // of work as illustrations.py).
+        // of work as illustrations.py). `anchorDescription` is the first
+        // successful scene description, reused verbatim in every later
+        // page's prompt so the model has a real anchor for "same character"
+        // instead of a fixed example (see sceneRequest's doc comment).
         var scenes: [String?] = []
+        var anchorDescription: String?
         for (index, page) in pages.enumerated() {
             do {
                 let scene = try await chat
-                    .complete(messages: [["role": "user", "content": Self.sceneRequest(pageText: page)]])
+                    .complete(messages: [["role": "user", "content": Self.sceneRequest(pageText: page, priorDescription: anchorDescription)]])
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 if scene.isEmpty {
                     debug("illustration: page \(index) scene prompt came back empty")
                     scenes.append(nil)
                 } else {
                     scenes.append(scene)
+                    if anchorDescription == nil { anchorDescription = scene }
                 }
             } catch {
                 debug("illustration: page \(index) scene prompt failed: \(Self.loggable(error))")
