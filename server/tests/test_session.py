@@ -2053,3 +2053,107 @@ async def test_handle_sync_demo_stories_does_not_touch_the_rewriting_gate(tmp_pa
 
     # Verify no rewriting_done was sent (which would only happen if _run_rewrite was called)
     assert "rewriting_done" not in transport.types()
+
+
+def make_two_engine_session(transport, *, ollama=None, groq=None, llm_backend="ollama"):
+    return SessionRunner(
+        transport=transport,
+        stt=FakeStt(),
+        llm=ollama or FakeLlm(),
+        tts=FakeTts(),
+        system_prompt="be a kind storyteller",
+        groq_llm=groq,
+        llm_backend=llm_backend,
+    )
+
+
+async def test_default_session_uses_the_local_engine(transport):
+    ollama = FakeLlm()
+    session = make_two_engine_session(transport, ollama=ollama, groq=FakeLlm())
+    assert session._story_llm is ollama
+    assert session._story_llm_name == "ollama"
+
+
+async def test_startup_preference_groq_is_used_when_available(transport):
+    groq = FakeLlm()
+    session = make_two_engine_session(transport, groq=groq, llm_backend="groq")
+    await run_full_turn(session)
+    assert session._story_llm is groq
+    assert len(groq.calls) == 1
+
+
+async def test_update_settings_between_stories_switches_the_next_storys_engine(transport):
+    ollama, groq = FakeLlm(), FakeLlm()
+    session = make_two_engine_session(transport, ollama=ollama, groq=groq)
+    await session.handle_text(
+        '{"type": "update_settings", "target_turns": 7, "page_count": 5, "llm_backend": "groq"}'
+    )
+    await run_full_turn(session)
+    assert len(groq.calls) == 1
+    assert ollama.calls == []
+
+
+async def test_update_settings_mid_story_keeps_the_current_storys_engine(transport):
+    ollama, groq = FakeLlm(), FakeLlm()
+    session = make_two_engine_session(transport, ollama=ollama, groq=groq)
+    await run_full_turn(session)  # story has started on ollama
+    await session.handle_text(
+        '{"type": "update_settings", "target_turns": 7, "page_count": 5, "llm_backend": "groq"}'
+    )
+    await run_full_turn(session)
+    assert len(ollama.calls) == 2
+    assert groq.calls == []
+    assert session._llm_backend == "groq"
+
+
+async def test_update_settings_new_story_after_mid_story_switch_uses_the_new_engine(transport):
+    ollama, groq = FakeLlm(), FakeLlm()
+    session = make_two_engine_session(transport, ollama=ollama, groq=groq)
+    await run_full_turn(session)
+    await session.handle_update_settings(7, 5, llm_backend="groq")
+    await session.handle_new_story()
+    assert session._story_llm is groq
+
+
+async def test_groq_requested_without_a_groq_engine_falls_back_to_ollama(transport):
+    ollama = FakeLlm()
+    session = make_two_engine_session(transport, ollama=ollama, groq=None)
+    await session.handle_text(
+        '{"type": "update_settings", "target_turns": 7, "page_count": 5, "llm_backend": "groq"}'
+    )
+    assert session._story_llm is ollama
+    assert transport.messages_of_type("llm_backend")[-1] == {
+        "type": "llm_backend",
+        "requested": "groq",
+        "active": "ollama",
+        "groq_available": False,
+    }
+
+
+async def test_update_settings_with_llm_backend_replies_with_status(transport):
+    session = make_two_engine_session(transport, groq=FakeLlm())
+    await session.handle_text(
+        '{"type": "update_settings", "target_turns": 7, "page_count": 5, "llm_backend": "groq"}'
+    )
+    assert transport.messages_of_type("llm_backend")[-1] == {
+        "type": "llm_backend",
+        "requested": "groq",
+        "active": "groq",
+        "groq_available": True,
+    }
+
+
+async def test_update_settings_without_llm_backend_sends_no_status_and_keeps_preference(transport):
+    session = make_two_engine_session(transport, groq=FakeLlm(), llm_backend="groq")
+    await session.handle_text(
+        '{"type": "update_settings", "target_turns": 7, "page_count": 5}'
+    )
+    assert transport.messages_of_type("llm_backend") == []
+    assert session._llm_backend == "groq"
+
+
+async def test_groq_story_replies_still_pass_the_safety_filter(transport):
+    groq = FakeLlm(chunks=["He picked up the knife."])
+    session = make_two_engine_session(transport, groq=groq, llm_backend="groq")
+    await run_full_turn(session)
+    assert transport.messages_of_type("response_text")[0]["text"] == SAFE_FALLBACK
