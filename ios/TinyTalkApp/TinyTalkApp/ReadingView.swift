@@ -4,8 +4,7 @@ import UIKit
 
 /// Paginated storybook reader (design 1a's "Reading"). Reached via a
 /// Library card tap (AppModel.openStory()) or The End's "Read it now"
-/// button (see TheEndView), plus Settings' "Preview: Reading" developer
-/// button against MockStories.pip. The 🔊 replay button uses the real
+/// button (see TheEndView). The 🔊 replay button uses the real
 /// synthesize_page wire round trip (AppModel.replayPageAudio(), and
 /// stopPageAudio() on page change/disappear) -- see
 /// SessionCoordinator.swift's pendingPageAudioRequest.

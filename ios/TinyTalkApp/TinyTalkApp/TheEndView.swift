@@ -4,8 +4,7 @@ import TinyTalkCore
 /// Shown right after a story naturally concludes (design 1a's "The End"),
 /// auto-navigated to by AppModel once a concluding turn's audio finishes
 /// playing and the server's rewriting_started/story_detail signals arrive
-/// (see AppModel's readyToShowTheEnd handling). Also still reachable via
-/// Settings' preview buttons against mock data.
+/// (see AppModel's readyToShowTheEnd handling).
 struct TheEndView: View {
     @ObservedObject var model: AppModel
     var childName: String = "you"
