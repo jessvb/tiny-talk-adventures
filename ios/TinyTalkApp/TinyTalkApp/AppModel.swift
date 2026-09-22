@@ -906,6 +906,41 @@ final class AppModel: ObservableObject {
         Task { await coordinator.listStories() }
     }
 
+    /// Landing's cold-launch fix for issue #41: without this, libraryStories
+    /// starts empty and is only ever populated as a side effect of a full
+    /// connect(), which requires mic permission and starts audio capture
+    /// before it ever reaches listStories() -- so "Read Stories" stayed
+    /// greyed out on every fresh launch even when the server already had
+    /// saved stories. Deliberately bypasses connect() entirely rather than
+    /// making it faster: away from home this reads the local, file-backed
+    /// store directly (no network at all); at home it opens a bare
+    /// WebSocketServerConnection -- no RealAudioEngine, no VAD, no
+    /// SessionCoordinator -- since the server's list_stories handler is
+    /// already passive-on-connect and needs none of that (see
+    /// peekStoryList's doc comment). No-ops once a real session exists
+    /// (coordinator's own listStories() calls already keep libraryStories
+    /// current from there); LandingView's onAppear calls this every time
+    /// Landing appears, so a story finished on another screen and then
+    /// returned to picks it up too, same as refreshLibrary() above.
+    func peekLibrary() {
+        guard coordinator == nil else { return }
+        if awayFromHomeEnabled {
+            libraryStories = localStoryStore.summaries()
+            return
+        }
+        guard let url = URL(string: serverAddress) else { return }
+        Task { [weak self] in
+            let connection = WebSocketServerConnection(url: url)
+            guard let stories = await peekStoryList(via: connection) else { return }
+            // Re-checked after the round trip: a real connect() may have
+            // started (and started populating libraryStories itself) while
+            // this was in flight -- a late, possibly-stale peek result must
+            // never clobber it.
+            guard let self, self.coordinator == nil else { return }
+            self.libraryStories = stories
+        }
+    }
+
     /// What Settings' story-length steppers call on every change -- see
     /// storyTurnCount's doc comment. Persists immediately regardless of
     /// connection state; sends to the server immediately only if already

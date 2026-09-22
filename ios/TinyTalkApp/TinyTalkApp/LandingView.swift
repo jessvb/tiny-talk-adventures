@@ -2,8 +2,9 @@ import SwiftUI
 
 /// Home screen (design 1a). "Read Stories" is a real button once
 /// model.libraryStories is non-empty (see AppModel.connect()'s
-/// listStories() trigger) -- otherwise shows the same disabled-look empty
-/// state as before.
+/// listStories() trigger, and peekLibrary() below for the cold-launch
+/// case where no connection exists yet) -- otherwise shows the same
+/// disabled-look empty state as before.
 struct LandingView: View {
     @ObservedObject var model: AppModel
 
@@ -81,6 +82,9 @@ struct LandingView: View {
                 .padding(.horizontal, 26)
                 .padding(.bottom, 30)
             }
+        }
+        .onAppear {
+            model.peekLibrary()
         }
     }
 

@@ -253,8 +253,12 @@ final class FakeConnection: ServerConnecting, @unchecked Sendable {
     /// test-only finish() helper above, but this is what production
     /// teardown code (SessionCoordinator.close()) actually calls.
     func close() {
+        lock.withLock { _closeCallCount += 1 }
         continuation.finish()
     }
+
+    private var _closeCallCount = 0
+    var closeCallCount: Int { lock.withLock { _closeCallCount } }
 }
 
 final class FakeVAD: VoiceActivityDetecting, @unchecked Sendable {
