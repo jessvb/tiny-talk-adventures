@@ -57,7 +57,7 @@ public final class AVSpeechTts: NSObject, SpeechSynthesizing, @unchecked Sendabl
                     .map { "name=\($0.name) quality=\($0.quality.rawValue) lang=\($0.language) id=\($0.identifier)" }
                     .joined(separator: " | ")
                 onDebugEvent(
-                    "AVSpeechTts: resolved name=\(resolvedVoice?.name ?? "nil") "
+                    "[\(DebugTimestamp.now())] AVSpeechTts: resolved name=\(resolvedVoice?.name ?? "nil") "
                     + "quality=\(resolvedVoice?.quality.rawValue ?? -1) id=\(resolvedVoice?.identifier ?? "nil") "
                     + "-- Matilda/en-AU candidates: \(candidates.isEmpty ? "NONE FOUND" : candidates)"
                 )
