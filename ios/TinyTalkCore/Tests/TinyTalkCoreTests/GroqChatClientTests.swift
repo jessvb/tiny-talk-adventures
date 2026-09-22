@@ -8,6 +8,25 @@ final class GroqChatClientTests: XCTestCase {
         return URLSession(configuration: config)
     }
 
+    /// URLProtocol hands the handler the request with its body moved into
+    /// httpBodyStream, so read it from there.
+    private func bodyObject(of request: URLRequest) -> [String: Any]? {
+        var data = request.httpBody
+        if data == nil, let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var collected = Data()
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while stream.hasBytesAvailable {
+                let read = stream.read(&buffer, maxLength: buffer.count)
+                if read <= 0 { break }
+                collected.append(buffer, count: read)
+            }
+            data = collected
+        }
+        return data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+    }
+
     func testCompleteReturnsTheAssistantMessageContent() async throws {
         StubURLProtocol.handler = { request in
             XCTAssertEqual(request.url?.absoluteString, "https://api.groq.com/openai/v1/chat/completions")
@@ -44,5 +63,33 @@ final class GroqChatClientTests: XCTestCase {
         } catch {
             XCTFail("wrong error type: \(error)")
         }
+    }
+
+    // MARK: - reasoning_effort
+
+    func testReasoningEffortIsOmittedByDefault() async throws {
+        var captured: URLRequest?
+        StubURLProtocol.handler = { request in
+            captured = request
+            return (200, #"{"choices":[{"message":{"role":"assistant","content":"hi"}}]}"#.data(using: .utf8)!)
+        }
+        let client = GroqChatClient(apiKey: "test-key", session: makeSession())
+        _ = try await client.complete(messages: [["role": "user", "content": "hi"]])
+
+        let body = try XCTUnwrap(bodyObject(of: try XCTUnwrap(captured)))
+        XCTAssertNil(body["reasoning_effort"], "the live conversation and storybook rewrite must see an unchanged request body")
+    }
+
+    func testReasoningEffortIsSentWhenRequested() async throws {
+        var captured: URLRequest?
+        StubURLProtocol.handler = { request in
+            captured = request
+            return (200, #"{"choices":[{"message":{"role":"assistant","content":"hi"}}]}"#.data(using: .utf8)!)
+        }
+        let client = GroqChatClient(apiKey: "test-key", reasoningEffort: "low", session: makeSession())
+        _ = try await client.complete(messages: [["role": "user", "content": "hi"]])
+
+        let body = try XCTUnwrap(bodyObject(of: try XCTUnwrap(captured)))
+        XCTAssertEqual(body["reasoning_effort"] as? String, "low")
     }
 }

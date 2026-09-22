@@ -25,6 +25,8 @@ struct SettingsView: View {
     @State private var showAwayFromHomeCard = false
     @State private var groqApiKey: String = KeychainStore.get("groqApiKey") ?? ""
     @State private var animalFactsApiKey: String = KeychainStore.get("animalFactsApiKey") ?? ""
+    @State private var cloudflareAccountId: String = KeychainStore.get("cloudflareAccountId") ?? ""
+    @State private var cloudflareApiToken: String = KeychainStore.get("cloudflareApiToken") ?? ""
     /// Voice picker opens as its own sheet (same pattern as
     /// showDebugLogSheet below), not an inline Picker(.pickerStyle(.menu))
     /// -- confirmed on-device (2026-09-14) that .menu's UIMenu rendering
@@ -279,6 +281,36 @@ struct SettingsView: View {
                             KeychainStore.delete("animalFactsApiKey")
                         } else {
                             KeychainStore.set(newValue, forKey: "animalFactsApiKey")
+                        }
+                    }
+
+                Text("Optional -- pictures for away-from-home storybooks. Needs a free Cloudflare account: its account id and an API token (Workers AI). Without both, storybooks are text-only.")
+                    .font(TTA.Typography.body(12.5))
+                    .foregroundColor(TTA.Palette.inkSoft)
+
+                SecureField("Cloudflare account id (optional -- pictures)", text: $cloudflareAccountId)
+                    .font(.system(.body, design: .monospaced))
+                    .padding(11)
+                    .background(TTA.Palette.paper)
+                    .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .onChange(of: cloudflareAccountId) { newValue in
+                        if newValue.isEmpty {
+                            KeychainStore.delete("cloudflareAccountId")
+                        } else {
+                            KeychainStore.set(newValue, forKey: "cloudflareAccountId")
+                        }
+                    }
+
+                SecureField("Cloudflare API token (optional -- pictures)", text: $cloudflareApiToken)
+                    .font(.system(.body, design: .monospaced))
+                    .padding(11)
+                    .background(TTA.Palette.paper)
+                    .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .onChange(of: cloudflareApiToken) { newValue in
+                        if newValue.isEmpty {
+                            KeychainStore.delete("cloudflareApiToken")
+                        } else {
+                            KeychainStore.set(newValue, forKey: "cloudflareApiToken")
                         }
                     }
 

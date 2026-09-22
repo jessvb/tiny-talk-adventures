@@ -464,6 +464,7 @@ final class AppModel: ObservableObject {
                 // for the next successful reconnect to retry; nothing
                 // is lost, since PendingDemoStore was not cleared.
                 print("AppModel: failed to sync demo stories: \(error)")
+                appendAudioDebugEvent("[\(DebugTimestamp.now())] demo story sync failed: \(error)")
             }
         }
         // The server's per-session settings default to its own config
@@ -479,6 +480,32 @@ final class AppModel: ObservableObject {
         startPollingState()
     }
 
+    /// Storybook pictures away from home need a free Cloudflare account
+    /// (an account id plus an API token, entered in Settings' hidden
+    /// away-from-home card and kept in the Keychain like the Groq key).
+    /// Without BOTH, storybooks are simply text-only -- silently, by design:
+    /// it's an optional extra, not an error.
+    private func makeIllustrator(chat: any ChatCompleting) -> (any StoryIllustrating)? {
+        // Trimmed at READ time so values already stored are covered too: a
+        // token or account id pasted from a web page often carries a trailing
+        // space or newline, which would otherwise make every page fail
+        // silently (`invalidAccountId`, or a 401 from Cloudflare).
+        guard let accountId = KeychainStore.get("cloudflareAccountId")?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !accountId.isEmpty,
+              let apiToken = KeychainStore.get("cloudflareApiToken")?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !apiToken.isEmpty
+        else { return nil }
+        // Same on-screen debug log as the rest of demo mode -- a bad token
+        // or an exhausted quota shows up there, never in front of the child.
+        return IllustrationPass(
+            chat: chat,
+            backend: CloudflareImageClient(accountId: accountId, apiToken: apiToken),
+            onDebugEvent: { [weak self] line in
+                Task { @MainActor in self?.appendAudioDebugEvent(line) }
+            }
+        )
+    }
+
     /// Away-from-home counterpart to connect() -- builds a DemoConnection
     /// against Groq instead of a WebSocketServerConnection against the
     /// Mac. See the design spec's disclosed simplification: unlike the
@@ -486,7 +513,8 @@ final class AppModel: ObservableObject {
     /// is backgrounded mid-reply -- that reply is simply lost, not
     /// replayed.
     func connectAwayFromHome() async {
-        guard let groqKey = KeychainStore.get("groqApiKey"), !groqKey.isEmpty else {
+        guard let groqKey = KeychainStore.get("groqApiKey")?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !groqKey.isEmpty else {
             lastErrorMessage = "no Groq API key saved -- add one in Settings, under Away From Home."
             return
         }
@@ -495,7 +523,8 @@ final class AppModel: ObservableObject {
             return
         }
 
-        let animalFactsKey = KeychainStore.get("animalFactsApiKey")
+        let animalFactsKey = KeychainStore.get("animalFactsApiKey")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let ttsClient = AVSpeechTts(voiceIdentifier: selectedVoiceIdentifier)
         // Same on-screen debug log as connection.onDebugEvent below --
         // see AVSpeechTts.onDebugEvent's own doc comment for why this
@@ -503,10 +532,20 @@ final class AppModel: ObservableObject {
         ttsClient.onDebugEvent = { [weak self] line in
             Task { @MainActor in self?.appendAudioDebugEvent(line) }
         }
-        // One Groq client shared by the live conversation and the storybook
-        // rewrite, so both use the same key (and the same free-tier budget).
+        // One Groq client for the live conversation and the storybook
+        // rewrite. Illustration's scene prompts get a SEPARATE client, same
+        // key (so they share the same free-tier budget), but with
+        // reasoning_effort "low" -- see GroqChatClient's doc comment for
+        // why: at the default effort, that specific prompt shape (matching
+        // an earlier page's description) was observed on-device spending
+        // its whole token budget on hidden reasoning and returning no
+        // visible text at all.
         let chatClient = GroqChatClient(apiKey: groqKey)
-        let library = DemoStoryLibrary(store: localStoryStore, writer: StorybookWriter(chat: chatClient))
+        let library = DemoStoryLibrary(
+            store: localStoryStore,
+            writer: StorybookWriter(chat: chatClient),
+            illustrator: makeIllustrator(chat: GroqChatClient(apiKey: groqKey, reasoningEffort: "low"))
+        )
         let connection = DemoConnection(
             chatClient: chatClient,
             sttClient: GroqWhisperClient(apiKey: groqKey),
