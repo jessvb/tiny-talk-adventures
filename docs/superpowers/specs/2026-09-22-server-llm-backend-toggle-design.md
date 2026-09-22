@@ -208,9 +208,11 @@ its reveal gesture. It gains, above the away-from-home controls:
 The existing Groq API key field and away-from-home toggle stay as they
 are, with a small subheading so the two sections read as separate.
 
-**`StoryView` status line:** home mode shows `"connected · <address> ·
-Groq"` when the server's reported `active` is `"groq"`; otherwise
-unchanged.
+**`StoryView` status line:** unchanged. (Considered adding "· Groq",
+but the only signal the phone has is `active`, which describes the *next*
+story — right after a mid-story switch it would mislabel the story in
+progress. The hidden card plus the server's `story llm:` log line are
+enough.)
 
 ## Error handling
 
@@ -247,7 +249,7 @@ unchanged.
    `update_settings: … llm_backend=groq (active=groq)`; card shows
    "Mac will use: Groq".
 3. Start a new story. Server log shows `story llm: groq`; the first reply
-   arrives noticeably faster; status line shows "· Groq".
+   arrives noticeably faster.
 4. Mid-story, switch back to Mac (local). Current story keeps going on
    Groq (log shows no new `story llm` line) and its storybook/illustrations
    complete normally.
