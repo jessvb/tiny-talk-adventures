@@ -1,15 +1,12 @@
 import Foundation
 import TinyTalkCore
 
-/// Fixture data reached only via Settings' "COMING SOON" preview button
-/// for the Reading screen (`MockStories.pip`), never shown in the real
-/// onboarding->story flow -- see this project's own "no fabricated
-/// toggles that don't do anything" convention in SettingsView.swift:
-/// this is a developer preview of a real, working screen, not a fake
-/// feature claimed to a child user. The Library and The End screens now
-/// run on the real server API (`list_stories`/`get_story`), so the
-/// fixtures that stood in for it (`librarySummaries`, `detail(forId:)`)
-/// were deleted once nothing called them.
+/// Fixture data for SwiftUI `#Preview`s only (see TheEndView.swift),
+/// never shown in the running app. Library, Reading and The End all run
+/// on the real server API (`list_stories`/`get_story`); the Settings
+/// "COMING SOON" preview card that used to reach these fixtures was
+/// removed (#62), as were the fixtures that stood in for the API
+/// (`librarySummaries`, `detail(forId:)`) once nothing called them.
 /// Pip's title/pages/epilogue are transcribed verbatim from the Claude
 /// Design canvas's own "1a" interactive prototype (project
 /// d19c0d00-d971-4dc6-ac5b-1a06aaf11025); the other details below are
