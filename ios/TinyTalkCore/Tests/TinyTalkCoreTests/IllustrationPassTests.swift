@@ -197,6 +197,15 @@ final class IllustrationPassTests: XCTestCase {
         XCTAssertEqual(result.status, .partial)
     }
 
+    func testASuccessfulScenePromptIsLoggedForTuning() async {
+        let log = DebugLog()
+        _ = await pass(chat: sceneChat(), backend: FakeImageBackend(results: [.success(fullSize)]), log: log).illustrate(pages: pages)
+
+        XCTAssertTrue(log.lines.contains { $0.contains("page 0 scene prompt: a small orange fox in a meadow") })
+        XCTAssertTrue(log.lines.contains { $0.contains("page 1 scene prompt: the small orange fox meets an owl") })
+        XCTAssertTrue(log.lines.contains { $0.contains("page 2 scene prompt: the small orange fox goes home") })
+    }
+
     func testAStoryWithNoPagesIsFailedNotDone() async {
         let backend = FakeImageBackend(results: [.success(fullSize)])
         let result = await pass(chat: sceneChat(), backend: backend).illustrate(pages: [])

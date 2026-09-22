@@ -119,6 +119,7 @@ public struct IllustrationPass: StoryIllustrating {
                     debug("illustration: page \(index) scene prompt came back empty")
                     scenes.append(nil)
                 } else {
+                    debug("illustration: page \(index) scene prompt: \(scene)")
                     scenes.append(scene)
                     if anchorDescription == nil { anchorDescription = scene }
                 }
