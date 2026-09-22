@@ -151,6 +151,10 @@ final class AppModel: ObservableObject {
     private let localStoryStore = LocalStoryStore()
     private var runLoop: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
+    /// Diagnostics only (issues #39/#49): poll-loop ticks that actually
+    /// applied coordinator state since the last logMicHealth() -- 0 means
+    /// the UI (mute icon, debug log) stopped mirroring the coordinator.
+    private var pollTicksSinceMicHealthCheck = 0
     /// Ordered pipe from the audio tap's real-time callback into the
     /// coordinator actor. Kept as a stream (not a per-buffer `Task { await
     /// coordinator.captureAudio(pcm) }`) because separate unstructured
@@ -358,6 +362,19 @@ final class AppModel: ObservableObject {
         screen = .landing
     }
 
+    /// Same result as the `try? RealAudioEngine()` it replaced (nil on
+    /// failure, caller shows its generic banner), except the thrown error
+    /// (e.g. sessionConfigurationFailed's underlying AVAudioSession error)
+    /// now reaches the on-screen debug log instead of vanishing -- issue #39.
+    private func makeAudioEngineLoggingFailure() -> RealAudioEngine? {
+        do {
+            return try RealAudioEngine()
+        } catch {
+            appendAudioDebugEvent("[\(DebugTimestamp.now())] AppModel: RealAudioEngine() init threw: \(error)")
+            return nil
+        }
+    }
+
     func connect(resumingTurnId: Int? = nil) async {
         UserDefaults.standard.set(serverAddress, forKey: "serverAddress")
         guard let url = URL(string: serverAddress) else {
@@ -371,7 +388,7 @@ final class AppModel: ObservableObject {
         }
 
         let connection = WebSocketServerConnection(url: url)
-        guard let audio = try? RealAudioEngine() else {
+        guard let audio = makeAudioEngineLoggingFailure() else {
             lastErrorMessage = "failed to configure audio session"
             return
         }
@@ -572,7 +589,7 @@ final class AppModel: ObservableObject {
             Task { @MainActor in self?.appendAudioDebugEvent(line) }
         }
 
-        guard let audio = try? RealAudioEngine() else {
+        guard let audio = makeAudioEngineLoggingFailure() else {
             lastErrorMessage = "failed to configure audio session"
             return
         }
@@ -790,7 +807,13 @@ final class AppModel: ObservableObject {
     /// server" banner -- connect() can't tell earlier, since the WebSocket
     /// opens asynchronously.)
     func startNewStory() async {
-        guard await ensureConnected(), let coordinator else { return }
+        let wasConnected = isConnected
+        guard await ensureConnected(), let coordinator else {
+            // Issue #49 diagnostics: this used to return silently.
+            appendAudioDebugEvent("[\(DebugTimestamp.now())] AppModel: startNewStory -- no live session, nothing sent (isConnected=\(isConnected) coordinator=\(self.coordinator == nil ? "nil" : "set"))")
+            return
+        }
+        await logMicHealth("startNewStory (\(wasConnected ? "already connected" : "just reconnected"))")
         turnHistory.clear()
         // A new story is a fresh start (issue #48) -- the coordinator drops
         // its own error in newStory() too, but only this makes the banner go
@@ -817,7 +840,32 @@ final class AppModel: ObservableObject {
     func toggleMute() {
         let coordinatorToUpdate = coordinator
         let newValue = !isMicMuted
+        // Issue #49 diagnostics: pairs with SessionCoordinator's own
+        // "setMuted: isMuted a -> b" line -- a tap with no matching change
+        // there (or one soon reverted) is what lead 2 predicts.
+        appendAudioDebugEvent("[\(DebugTimestamp.now())] AppModel: mute button tapped on screen=\(screen): isMicMuted=\(isMicMuted) -> requesting setMuted(\(newValue))\(coordinatorToUpdate == nil ? " -- NO coordinator, ignored" : "")")
         Task { await coordinatorToUpdate?.setMuted(newValue) }
+        // A dead-looking mic is exactly when the household taps this, so
+        // the same snapshot as New Story's is taken here too.
+        Task { await self.logMicHealth("mute button tap") }
+    }
+
+    /// Issues #39/#49 diagnostics, log only: one line of AppModel/
+    /// coordinator mic state plus RealAudioEngine's own capture snapshot
+    /// (engine running, tap installed, buffers since the last check).
+    /// Distinguishes "the engine delivers nothing" (engine buffers 0) from
+    /// "audio arrives but is muted/dropped" (coordinator chunks rising,
+    /// isMuted=true) from "the UI stopped mirroring the coordinator"
+    /// (pollTicksSinceLastCheck=0).
+    private func logMicHealth(_ reason: String) async {
+        guard let coordinator else { return }
+        let coordinatorMuted = await coordinator.isMuted
+        let coordinatorState = await coordinator.state
+        let chunks = await coordinator.capturedChunkCount
+        let pollTicks = pollTicksSinceMicHealthCheck
+        pollTicksSinceMicHealthCheck = 0
+        appendAudioDebugEvent("[\(DebugTimestamp.now())] AppModel: mic health at \(reason): screen=\(screen) isMicMuted(UI)=\(isMicMuted) coordinator.isMuted=\(coordinatorMuted) state=\(coordinatorState) coordinatorChunks=\(chunks) pollTicksSinceLastCheck=\(pollTicks) audioEngine=\(audioEngine == nil ? "nil" : "set")")
+        audioEngine?.logCaptureSnapshot("mic health at \(reason)")
     }
 
     /// What ReadingView calls (once per visible page) to fetch that page's
@@ -1178,6 +1226,7 @@ final class AppModel: ObservableObject {
                     // ends this now-orphaned poll task, which disconnect()
                     // already cancelled.
                     guard self.coordinator === coordinator else { return true }
+                    self.pollTicksSinceMicHealthCheck += 1
                     self.state = currentState
                     self.latencyHistory = history
                     self.lastTranscript = transcript
