@@ -1496,6 +1496,22 @@ public actor SessionCoordinator {
     /// across ordinary turns, matching the server's own choice not to
     /// reset turn_id numbering either.
     public func newStory() async {
+        // issue #32: a rewrite still genuinely in progress means the
+        // server's own REWRITING gate will silently ignore the
+        // new_story message below (session.py's handle_new_story()) --
+        // resetting isRewriting/readyToShowTheEnd here anyway would lie
+        // to the rest of this coordinator (in particular
+        // handleSpeechStart()'s isRewriting guard, added for #47) about
+        // that, letting a turn through that the server will just as
+        // silently drop, reintroducing the original hang. Leaving
+        // everything untouched means the caller's UI keeps showing
+        // whatever it already shows for isRewriting == true (StoryView's
+        // "Elsie is finishing your storybook..." busy state) instead of
+        // pretending a new story started.
+        guard !isRewriting else {
+            logDebug("SessionCoordinator: newStory ignored -- a storybook rewrite is still in progress")
+            return
+        }
         stopWaitingDitty()
         audio.stopPlaybackImmediately()
         turnContinuation?.finish()
@@ -1513,9 +1529,9 @@ public actor SessionCoordinator {
         lastReplyTurnId = nil
         lastErrorMessage = nil
         // A fresh story means a fresh conclusion-tracking cycle -- these
-        // should already all be at their defaults in practice (the
-        // REWRITING gate means a new story can't start until the
-        // previous one's rewrite has finished), but reset defensively
+        // are already all at their defaults here (the guard above
+        // returns early whenever isRewriting is true, which is the only
+        // way any of them could be non-default), but reset explicitly
         // rather than trust that invariant silently. latestStoryList/
         // latestStoryDetail are NOT reset here -- they're about browsing
         // past stories, unrelated to the live one just abandoned.

@@ -128,6 +128,16 @@ struct StoryView: View {
                 errorBanner(error)
                     .padding(.horizontal, 16)
                     .padding(.top, 16)
+            } else if model.isRewriting {
+                // issue #32 follow-up: the header's stateLabel already said
+                // this, but on-device testing found it too easy to miss (a
+                // one-line label in an 11.5pt subtitle) -- a child landing
+                // here via "New Story" needs it to be obvious at a glance
+                // that talking won't do anything right now, not just
+                // technically true somewhere on screen.
+                rewritingBanner
+                    .padding(.horizontal, 16)
+                    .padding(.top, 16)
             }
             ScrollViewReader { proxy in
                 ScrollView {
@@ -171,6 +181,19 @@ struct StoryView: View {
             .background(TTA.Palette.alert)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .onTapGesture { model.lastErrorMessage = nil }
+    }
+
+    /// Friendly (not alarming) sibling of errorBanner() -- tealSurface/teal
+    /// is the same "informational" pairing SettingsView already uses,
+    /// rather than introducing a new color for this one case.
+    private var rewritingBanner: some View {
+        Text("✨ Elsie is putting the finishing touches on your last story! She'll be ready to start a new one again soon.")
+            .font(TTA.Typography.body(13, weight: .semibold))
+            .foregroundColor(TTA.Palette.teal)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(TTA.Palette.tealSurface)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     private func bubble(for turn: StoryTurn) -> some View {
@@ -287,11 +310,23 @@ struct StoryView: View {
                     .foregroundColor(TTA.Palette.inkSoft)
                     .padding(.top, 54)
 
-                menuRow("New Story", systemImage: "pencil") {
+                // Both gated on isRewriting for the same reason: the server
+                // silently ignores new_story/conclude_story while its own
+                // REWRITING gate is up (session.py), and issue #32 found
+                // that letting the tap through anyway -- rather than
+                // showing why it can't work -- reproduces the silent hang
+                // one step later.
+                menuRow(
+                    "New Story", systemImage: "pencil",
+                    disabled: model.isRewriting, disabledSubtitle: "Elsie's still busy!"
+                ) {
                     menuOpen = false
                     Task { await model.startNewStory() }
                 }
-                menuRow("Finish this story", systemImage: "book.closed.fill") {
+                menuRow(
+                    "Finish this story", systemImage: "book.closed.fill",
+                    disabled: model.isRewriting, disabledSubtitle: "Elsie's still busy!"
+                ) {
                     menuOpen = false
                     Task { await model.finishStory() }
                 }
@@ -337,17 +372,30 @@ struct StoryView: View {
         }
     }
 
-    private func menuRow(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+    private func menuRow(
+        _ title: String, systemImage: String,
+        disabled: Bool = false, disabledSubtitle: String? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .font(TTA.Typography.display(17))
-                .foregroundColor(TTA.Palette.ink)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(14)
-                .background(TTA.Palette.cream)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(TTA.Palette.wood.opacity(0.25)))
+            VStack(alignment: .leading, spacing: 2) {
+                Label(title, systemImage: systemImage)
+                    .font(TTA.Typography.display(17))
+                if disabled, let disabledSubtitle {
+                    Text(disabledSubtitle)
+                        .font(TTA.Typography.body(12))
+                        .padding(.leading, 30) // roughly under the label's text, past its icon
+                }
+            }
+            .foregroundColor(TTA.Palette.ink)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(TTA.Palette.cream)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(TTA.Palette.wood.opacity(0.25)))
         }
+        .disabled(disabled)
+        .opacity(disabled ? 0.55 : 1.0)
     }
 }
 
