@@ -1,6 +1,16 @@
 import XCTest
 @testable import TinyTalkPlatform
 
+/// Records onDebugEvent lines -- lock-protected since the hook can fire
+/// from a synthesizer callback, mirroring CaptureDiagnosticsTests.swift's
+/// WatchdogCalls pattern in this same test target.
+private final class DebugEventBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    func append(_ line: String) { lock.withLock { lines.append(line) } }
+    var all: [String] { lock.withLock { lines } }
+}
+
 final class AVSpeechTtsTests: XCTestCase {
     func testSynthesizeProducesNonEmptyPCM16Data() async {
         let tts = AVSpeechTts()
@@ -24,6 +34,23 @@ final class AVSpeechTtsTests: XCTestCase {
             chunks.append(chunk)
         }
         XCTAssertTrue(chunks.allSatisfy { $0.isEmpty == false } || chunks.isEmpty)
+    }
+
+    /// Issue #56 item 3: this line previously had no timestamp prefix,
+    /// unlike every other source AppModel.mergedDebugLog() merges by plain
+    /// string sort -- an unprefixed line clumps out of chronological order
+    /// once merged. See DebugTimestamp's doc comment for the format every
+    /// other source already follows.
+    func testResolvedVoiceDebugLineIsTimestamped() async {
+        let tts = AVSpeechTts()
+        let box = DebugEventBox()
+        tts.onDebugEvent = { box.append($0) }
+        for await _ in tts.synthesize("Hello there.") {}
+        let resolvedLines = box.all.filter { $0.contains("AVSpeechTts: resolved name=") }
+        XCTAssertFalse(resolvedLines.isEmpty)
+        for line in resolvedLines {
+            XCTAssertTrue(line.hasPrefix("["), "expected a [HH:mm:ss.SSS] timestamp prefix, got: \(line)")
+        }
     }
 
     func testAvailableEnglishVoicesAreAllEnglishWithNoDuplicatesAndSortedByName() {

@@ -8,6 +8,40 @@ final class GroqWhisperClientTests: XCTestCase {
         return URLSession(configuration: config)
     }
 
+    /// URLProtocol hands the handler the request with its body moved into
+    /// httpBodyStream, so read it from there.
+    private func bodyData(of request: URLRequest) -> Data {
+        if let data = request.httpBody { return data }
+        guard let stream = request.httpBodyStream else { return Data() }
+        stream.open()
+        defer { stream.close() }
+        var collected = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while stream.hasBytesAvailable {
+            let read = stream.read(&buffer, maxLength: buffer.count)
+            if read <= 0 { break }
+            collected.append(buffer, count: read)
+        }
+        return collected
+    }
+
+    func testTranscribeSendsLanguageLockedToEnglish() async throws {
+        // The multipart body's audio part is raw PCM/WAV bytes, not valid
+        // UTF-8, so this searches for the field as bytes rather than
+        // decoding the whole body as a String.
+        StubURLProtocol.handler = { request in
+            let raw = self.bodyData(of: request)
+            let expected = Data("Content-Disposition: form-data; name=\"language\"\r\n\r\nen\r\n".utf8)
+            XCTAssertNotNil(
+                raw.range(of: expected),
+                "expected a multipart 'language' field set to 'en'"
+            )
+            return (200, #"{"text":"tell me a story about a fox"}"#.data(using: .utf8)!)
+        }
+        let client = GroqWhisperClient(apiKey: "test-key", session: makeSession())
+        _ = try await client.transcribe(Data(repeating: 0, count: 4_800))
+    }
+
     func testTranscribeReturnsTheTextField() async throws {
         StubURLProtocol.handler = { request in
             XCTAssertEqual(request.url?.absoluteString, "https://api.groq.com/openai/v1/audio/transcriptions")

@@ -56,6 +56,12 @@ final class AppModel: ObservableObject {
             guard screen != oldValue else { return }
             let shouldBeMuted = screen != .creating
             let coordinatorToMute = coordinator
+            // Issue #49 diagnostics: which of the ~15 `screen = ...` call
+            // sites this doc comment describes drove a given mute/unmute,
+            // so a captured log can tell "this screen change asked to
+            // unmute" apart from a stale unmute that was never actually
+            // asked for.
+            appendAudioDebugEvent("[\(DebugTimestamp.now())] AppModel: screen \(oldValue) -> \(screen), setMuted(\(shouldBeMuted))")
             Task { await coordinatorToMute?.setMuted(shouldBeMuted) }
         }
     }
@@ -1101,11 +1107,15 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Appends one of RealAudioEngine's own diagnostic lines (already
-    /// timestamped, see onDebugEvent's doc comment) and refreshes the
-    /// merged debugLog. Capped independently at the same size as
-    /// SessionCoordinator.debugLog for the same reason (bounded memory for
-    /// a log that's read live, not archived).
+    /// Appends one already-timestamped diagnostic line (see DebugTimestamp)
+    /// and refreshes the merged debugLog. Despite the name, no longer just
+    /// RealAudioEngine's own lines: also carries DemoConnection's, AVSpeechTts's
+    /// voice-resolution line, IllustrationPass's, a failed demo-story sync,
+    /// and AppModel's own screen-driven mute decisions (see `screen`'s
+    /// didSet and the poll loop's self-heal) -- every non-coordinator debug
+    /// source in the app funnels through here. Capped independently at the
+    /// same size as SessionCoordinator.debugLog for the same reason (bounded
+    /// memory for a log that's read live, not archived).
     private func appendAudioDebugEvent(_ line: String) {
         audioDebugLog.append(line)
         if audioDebugLog.count > 50 {
@@ -1184,6 +1194,14 @@ final class AppModel: ObservableObject {
                     // tick, means a lost race self-corrects within one tick
                     // instead of staying lost until the next screen change.
                     if self.screen != .creating, !muted {
+                        // Issue #49 diagnostics: a captured log line for
+                        // every tick this self-heal actually fires, so a
+                        // repro can distinguish "the mute was stale and got
+                        // caught here" (this line present, but the mic
+                        // still dead afterward -- rules out lead 2) from
+                        // "isMicMuted was true the whole time" (this line
+                        // absent -- points at lead 1/3 instead).
+                        self.appendAudioDebugEvent("[\(DebugTimestamp.now())] AppModel: poll loop found isMicMuted=false on screen=\(self.screen) -- reasserting setMuted(true)")
                         Task { await coordinator.setMuted(true) }
                     }
                     self.currentTurnId = turnId
