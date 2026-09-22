@@ -538,13 +538,19 @@ final class AppModel: ObservableObject {
         ttsClient.onDebugEvent = { [weak self] line in
             Task { @MainActor in self?.appendAudioDebugEvent(line) }
         }
-        // One Groq client shared by the live conversation and the storybook
-        // rewrite, so both use the same key (and the same free-tier budget).
+        // One Groq client for the live conversation and the storybook
+        // rewrite. Illustration's scene prompts get a SEPARATE client, same
+        // key (so they share the same free-tier budget), but with
+        // reasoning_effort "low" -- see GroqChatClient's doc comment for
+        // why: at the default effort, that specific prompt shape (matching
+        // an earlier page's description) was observed on-device spending
+        // its whole token budget on hidden reasoning and returning no
+        // visible text at all.
         let chatClient = GroqChatClient(apiKey: groqKey)
         let library = DemoStoryLibrary(
             store: localStoryStore,
             writer: StorybookWriter(chat: chatClient),
-            illustrator: makeIllustrator(chat: chatClient)
+            illustrator: makeIllustrator(chat: GroqChatClient(apiKey: groqKey, reasoningEffort: "low"))
         )
         let connection = DemoConnection(
             chatClient: chatClient,
