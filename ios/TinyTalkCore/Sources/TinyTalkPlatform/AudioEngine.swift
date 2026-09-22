@@ -254,26 +254,41 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     /// the counts if so. Never restarts or otherwise touches capture.
     /// stopCapturing() cancels it. Holds `self` weakly: this Task must not
     /// itself keep an old engine alive.
-    private func startZeroBufferWatchdog() {
+    ///
+    /// Issue #49: also armed after every successful rebuildCaptureTap()
+    /// (`trigger` names which), counting only buffers since that rebuild --
+    /// a rebuild that "succeeds" but leaves a dead tap was otherwise
+    /// invisible. A later arm replaces (cancels) an earlier pending one.
+    private func startZeroBufferWatchdog(after trigger: String = "startCapturing()") {
         let diagnostics = captureDiagnostics
+        let baseline = diagnostics.counts.buffersReceived
         let seconds = String(format: "%.1f", Double(Self.zeroBufferWatchdogNanos) / 1_000_000_000)
         let task = Task { [weak self] in
             await CaptureWatchdog.run(
                 after: Self.zeroBufferWatchdogNanos,
                 diagnostics: diagnostics,
+                baselineBuffers: baseline,
                 onZeroBuffers: { _ in
                     guard let self else { return }
                     self.emitDiagnostic(self.captureSnapshot(
-                        "WARNING watchdog: ZERO tap buffers \(seconds)s after startCapturing() succeeded -- mic capture is silently dead (log only, nothing restarted)"
+                        "WARNING watchdog: ZERO tap buffers \(seconds)s after \(trigger) succeeded -- mic capture is silently dead (log only, nothing restarted)"
                     ).formatted)
                 },
                 onBuffersFlowing: { _ in
                     guard let self else { return }
-                    self.emitDiagnostic(self.captureSnapshot("watchdog ok: tap buffers are arriving \(seconds)s after startCapturing()").formatted)
+                    self.emitDiagnostic(self.captureSnapshot("watchdog ok: tap buffers are arriving \(seconds)s after \(trigger)").formatted)
                 }
             )
         }
         diagnostics.replaceWatchdog(with: task)
+    }
+
+    /// Issue #49 diagnostics: emits a capture-state snapshot on demand
+    /// (AppModel calls this from New Story), with how many tap buffers
+    /// arrived since the previous on-demand check. Log only.
+    public func logCaptureSnapshot(_ reason: String) {
+        let sinceLast = captureDiagnostics.buffersSinceLastCheck()
+        emitDiagnostic(captureSnapshot("\(reason) [buffersSinceLastCheck=\(sinceLast)]").formatted)
     }
 
     /// Starts mic capture. `onAudioCaptured` is invoked with 24kHz mono
@@ -506,12 +521,14 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             // below) only ever logged the FAILURE case -- "succeeded" was
             // silent, so there was no way to confirm from the log alone that
             // a rebuild actually left a tap installed and the engine
-            // running. Note this does NOT close the separate gap the issue
-            // also flags: the zero-buffer watchdog only starts from
-            // startCapturing(), not from here, so a rebuild that "succeeds"
-            // by this line's own measure can still silently deliver zero
-            // buffers afterward.
+            // running. A rebuild that "succeeds" by this line's own measure
+            // can still silently deliver zero buffers afterward, hence the
+            // watchdog re-arm below (skipped once stopCapturing() has run,
+            // so a rebuild racing teardown can't cry wolf).
             emitDiagnostic(captureSnapshot("rebuildCaptureTap: succeeded").formatted)
+            if !captureDiagnostics.wasStopped {
+                startZeroBufferWatchdog(after: "rebuildCaptureTap()")
+            }
         } catch {
             // Issue #39 diagnostics: was a bare print(). A failed rebuild
             // leaves NO tap installed -- a silent, permanent mic death if no

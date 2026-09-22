@@ -45,7 +45,20 @@ final class CaptureDiagnostics: @unchecked Sendable {
     private var stopped = false
     private var watchdog: Task<Void, Never>?
 
+    private var buffersAtLastCheck = 0
+
     var counts: Counts { lock.withLock { current } }
+
+    /// Buffers received since the previous call (or since init, the first
+    /// time) -- for on-demand checks like AppModel's New Story snapshot
+    /// (issue #49), where "has the tap delivered anything lately?" matters
+    /// more than the engine's lifetime total.
+    func buffersSinceLastCheck() -> Int {
+        lock.withLock {
+            defer { buffersAtLastCheck = current.buffersReceived }
+            return current.buffersReceived - buffersAtLastCheck
+        }
+    }
 
     /// Real-time tap callback: a buffer reached the app, before conversion.
     func bufferArrived() {
@@ -119,9 +132,16 @@ enum CaptureWatchdog {
     /// as of that moment. A healthy report is deliberate, not just an absent
     /// warning: reading the on-screen log mid-session, "no warning" alone
     /// can't distinguish "capture is fine" from "the watchdog never ran".
+    ///
+    /// `baselineBuffers` (issue #49): buffersReceived when the watchdog was
+    /// armed -- 0 from startCapturing(), the current count when armed after
+    /// a rebuildCaptureTap(). Counts are cumulative per engine, so buffers
+    /// the OLD tap delivered before a rebuild must not make a dead rebuilt
+    /// tap look healthy.
     static func run(
         after delayNanos: UInt64,
         diagnostics: CaptureDiagnostics,
+        baselineBuffers: Int = 0,
         onZeroBuffers: (CaptureDiagnostics.Counts) -> Void,
         onBuffersFlowing: (CaptureDiagnostics.Counts) -> Void
     ) async {
@@ -131,7 +151,7 @@ enum CaptureWatchdog {
             return
         }
         let counts = diagnostics.counts
-        if counts.buffersReceived == 0 {
+        if counts.buffersReceived <= baselineBuffers {
             onZeroBuffers(counts)
         } else {
             onBuffersFlowing(counts)
