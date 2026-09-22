@@ -2046,6 +2046,28 @@ final class SessionCoordinatorTests: XCTestCase {
         runLoop.cancel()
     }
 
+    /// Issue #49 diagnostics: only actual mute changes are logged (AppModel's
+    /// poll loop can re-assert the same value every tick), and the first
+    /// captured chunk is logged once and counted even while muted.
+    func testMuteChangesAndFirstCapturedChunkAreLoggedOnce() async {
+        let coordinator = SessionCoordinator(connection: FakeConnection(), audio: FakeAudio(), vad: FakeVAD())
+
+        await coordinator.setMuted(true)
+        await coordinator.setMuted(true)
+        await coordinator.setMuted(false)
+        await coordinator.captureAudio(Data([1]))
+        await coordinator.setMuted(true)
+        await coordinator.captureAudio(Data([2]))
+
+        let log = await coordinator.debugLog
+        XCTAssertEqual(log.filter { $0.contains("setMuted: isMuted false -> true") }.count, 2)
+        XCTAssertEqual(log.filter { $0.contains("setMuted: isMuted true -> false") }.count, 1)
+        XCTAssertEqual(log.filter { $0.contains("captureAudio: first mic chunk received (isMuted=false") }.count, 1)
+        XCTAssertEqual(log.filter { $0.contains("first mic chunk") }.count, 1)
+        let chunks = await coordinator.capturedChunkCount
+        XCTAssertEqual(chunks, 2, "muted chunks still count -- they reached the coordinator")
+    }
+
     /// Follow-up feature request: muting mid-utterance must actually stop
     /// listening, not leave the state machine stuck in .listening forever
     /// (which is what would happen without this -- captureAudio() stops
