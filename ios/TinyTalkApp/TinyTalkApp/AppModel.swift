@@ -1072,11 +1072,15 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Appends one of RealAudioEngine's own diagnostic lines (already
-    /// timestamped, see onDebugEvent's doc comment) and refreshes the
-    /// merged debugLog. Capped independently at the same size as
-    /// SessionCoordinator.debugLog for the same reason (bounded memory for
-    /// a log that's read live, not archived).
+    /// Appends one already-timestamped diagnostic line (see DebugTimestamp)
+    /// and refreshes the merged debugLog. Despite the name, no longer just
+    /// RealAudioEngine's own lines: also carries DemoConnection's, AVSpeechTts's
+    /// voice-resolution line, IllustrationPass's, a failed demo-story sync,
+    /// and AppModel's own screen-driven mute decisions (see `screen`'s
+    /// didSet and the poll loop's self-heal) -- every non-coordinator debug
+    /// source in the app funnels through here. Capped independently at the
+    /// same size as SessionCoordinator.debugLog for the same reason (bounded
+    /// memory for a log that's read live, not archived).
     private func appendAudioDebugEvent(_ line: String) {
         audioDebugLog.append(line)
         if audioDebugLog.count > 50 {
