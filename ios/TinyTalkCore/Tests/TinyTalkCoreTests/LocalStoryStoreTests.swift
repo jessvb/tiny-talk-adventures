@@ -109,4 +109,29 @@ final class LocalStoryStoreTests: XCTestCase {
         try Data("not json".utf8).write(to: directory.appendingPathComponent("bad.json"))
         XCTAssertEqual(store.loadAll().map(\.id), ["good"])
     }
+
+    func testSummariesMapsEachStoryToItsSummaryFields() {
+        let store = makeStore()
+        var story = makeStory(id: "abc12345", createdAt: "2026-09-19T12:00:00Z")
+        story.title = "Pip the Fox"
+        story.pages = [LocalStoryPage(text: "Page one."), LocalStoryPage(text: "Page two.")]
+        story.rewriteStatus = .done
+        store.save(story)
+
+        let summaries = store.summaries()
+
+        XCTAssertEqual(summaries, [
+            SavedStorySummary(
+                id: "abc12345",
+                title: "Pip the Fox",
+                createdAt: ISO8601DateFormatter().date(from: "2026-09-19T12:00:00Z")!,
+                pageCount: 2,
+                rewriteStatus: .done
+            ),
+        ])
+    }
+
+    func testSummariesIsEmptyWhenNothingIsSaved() {
+        XCTAssertEqual(makeStore().summaries(), [])
+    }
 }

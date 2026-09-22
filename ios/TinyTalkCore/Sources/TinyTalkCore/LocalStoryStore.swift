@@ -126,6 +126,23 @@ public final class LocalStoryStore: @unchecked Sendable {
         return stories.sorted { $0.createdAt > $1.createdAt }
     }
 
+    /// loadAll() mapped to what the Library/Landing screens actually
+    /// display -- the same shape a real server's list_stories sends over
+    /// the wire (see Protocol.swift's decodeStorySummary), so callers can't
+    /// tell a local story apart from a synced one.
+    public func summaries() -> [SavedStorySummary] {
+        let formatter = ISO8601DateFormatter()
+        return loadAll().map { story in
+            SavedStorySummary(
+                id: story.id,
+                title: story.title,
+                createdAt: formatter.date(from: story.createdAt) ?? Date(),
+                pageCount: story.pages.count,
+                rewriteStatus: story.rewriteStatus
+            )
+        }
+    }
+
     public func saveImage(_ data: Data, id: String, pageIndex: Int) {
         guard isSafeId(id), pageIndex >= 0 else { return }
         lock.lock(); defer { lock.unlock() }

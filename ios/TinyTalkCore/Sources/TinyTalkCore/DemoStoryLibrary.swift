@@ -52,18 +52,7 @@ public struct DemoStoryLibrary: Sendable {
     }
 
     /// Newest first -- what a `story_list` event carries.
-    public func list() -> [SavedStorySummary] {
-        let formatter = ISO8601DateFormatter()
-        return store.loadAll().map { story in
-            SavedStorySummary(
-                id: story.id,
-                title: story.title,
-                createdAt: formatter.date(from: story.createdAt) ?? Date(),
-                pageCount: story.pages.count,
-                rewriteStatus: story.rewriteStatus
-            )
-        }
-    }
+    public func list() -> [SavedStorySummary] { store.summaries() }
 
     /// What a `story_detail` event carries; nil for an unknown id.
     public func detail(id: String) -> SavedStoryDetail? {
