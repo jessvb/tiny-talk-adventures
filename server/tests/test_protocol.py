@@ -19,6 +19,7 @@ from tinytalk.protocol import (
     decode_client_message,
     encode_arc_stage,
     encode_error,
+    encode_llm_backend,
     encode_page_audio_done,
     encode_page_image_done,
     encode_response_text,
@@ -243,3 +244,40 @@ def test_decode_sync_demo_stories_rejects_non_dict_entries():
     raw = json.dumps({"type": "sync_demo_stories", "stories": ["not-a-dict"]})
     with pytest.raises(ProtocolError):
         decode_client_message(raw)
+
+
+def test_decode_update_settings_with_llm_backend():
+    assert decode_client_message(
+        '{"type": "update_settings", "target_turns": 7, "page_count": 5, "llm_backend": "groq"}'
+    ) == UpdateSettings(target_turns=7, page_count=5, llm_backend="groq")
+
+
+def test_decode_update_settings_without_llm_backend_leaves_it_none():
+    message = decode_client_message(
+        '{"type": "update_settings", "target_turns": 7, "page_count": 5}'
+    )
+    assert message == UpdateSettings(target_turns=7, page_count=5)
+    assert message.llm_backend is None
+
+
+def test_decode_rejects_update_settings_unknown_llm_backend():
+    with pytest.raises(ProtocolError, match="llm_backend"):
+        decode_client_message(
+            '{"type": "update_settings", "target_turns": 7, "page_count": 5, "llm_backend": "gpt"}'
+        )
+
+
+def test_decode_rejects_update_settings_non_string_llm_backend():
+    with pytest.raises(ProtocolError, match="llm_backend"):
+        decode_client_message(
+            '{"type": "update_settings", "target_turns": 7, "page_count": 5, "llm_backend": 1}'
+        )
+
+
+def test_encode_llm_backend():
+    assert json.loads(encode_llm_backend("groq", "ollama", False)) == {
+        "type": "llm_backend",
+        "requested": "groq",
+        "active": "ollama",
+        "groq_available": False,
+    }
