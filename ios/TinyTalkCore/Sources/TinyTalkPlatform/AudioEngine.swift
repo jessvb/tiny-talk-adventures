@@ -459,6 +459,13 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     }
 
     private func rebuildCaptureTap() {
+        // Issue #49 diagnostics: tap-installed/engine.isRunning state right
+        // as a rebuild begins, before any teardown below runs -- e.g. the
+        // Reading screen playing page audio through this same engine can
+        // trigger the AVAudioEngineConfigurationChange that leads here, and
+        // this line is what lets a captured log tell that path apart from a
+        // route change or voice-processing's own graph rebuild.
+        emitDiagnostic(captureSnapshot("rebuildCaptureTap: begin").formatted)
         // engine.stop() stops the WHOLE engine graph, not just the input
         // side being rebuilt here -- if playerNode is mid-buffer when this
         // fires, that playback is interrupted too. Logged so a real-device
@@ -495,6 +502,16 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         captureDiagnostics.setTapInstalled(false)
         do {
             try installCaptureTapAndStart()
+            // Issue #49 diagnostics: the earlier fix (see the catch branch
+            // below) only ever logged the FAILURE case -- "succeeded" was
+            // silent, so there was no way to confirm from the log alone that
+            // a rebuild actually left a tap installed and the engine
+            // running. Note this does NOT close the separate gap the issue
+            // also flags: the zero-buffer watchdog only starts from
+            // startCapturing(), not from here, so a rebuild that "succeeds"
+            // by this line's own measure can still silently deliver zero
+            // buffers afterward.
+            emitDiagnostic(captureSnapshot("rebuildCaptureTap: succeeded").formatted)
         } catch {
             // Issue #39 diagnostics: was a bare print(). A failed rebuild
             // leaves NO tap installed -- a silent, permanent mic death if no
