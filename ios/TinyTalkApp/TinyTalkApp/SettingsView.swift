@@ -36,6 +36,14 @@ struct SettingsView: View {
     /// speechVoices() entry) -- well past what UIMenu handles reliably;
     /// a List-based sheet has no such limit.
     @State private var showVoicePickerSheet = false
+    /// Issue #56 item 2: the Cloudflare account id is a 32-character
+    /// string with no natural error-checking of its own (unlike an API key,
+    /// nothing rejects a mistyped one until the first illustration call
+    /// fails) -- masked entry alone gives no way to proofread it before
+    /// that first failure. Off by default, matching every other field in
+    /// this card staying masked; a household that wants to check what they
+    /// typed reveals it deliberately via the eye button next to the field.
+    @State private var showCloudflareAccountId = false
 
     var body: some View {
         ZStack {
@@ -288,18 +296,33 @@ struct SettingsView: View {
                     .font(TTA.Typography.body(12.5))
                     .foregroundColor(TTA.Palette.inkSoft)
 
-                SecureField("Cloudflare account id (optional -- pictures)", text: $cloudflareAccountId)
-                    .font(.system(.body, design: .monospaced))
-                    .padding(11)
-                    .background(TTA.Palette.paper)
-                    .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-                    .onChange(of: cloudflareAccountId) { newValue in
-                        if newValue.isEmpty {
-                            KeychainStore.delete("cloudflareAccountId")
+                HStack(spacing: 8) {
+                    Group {
+                        if showCloudflareAccountId {
+                            TextField("Cloudflare account id (optional -- pictures)", text: $cloudflareAccountId)
                         } else {
-                            KeychainStore.set(newValue, forKey: "cloudflareAccountId")
+                            SecureField("Cloudflare account id (optional -- pictures)", text: $cloudflareAccountId)
                         }
                     }
+                    .font(.system(.body, design: .monospaced))
+
+                    Button {
+                        showCloudflareAccountId.toggle()
+                    } label: {
+                        Image(systemName: showCloudflareAccountId ? "eye.slash" : "eye")
+                            .foregroundColor(TTA.Palette.inkSoft)
+                    }
+                }
+                .padding(11)
+                .background(TTA.Palette.paper)
+                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .onChange(of: cloudflareAccountId) { newValue in
+                    if newValue.isEmpty {
+                        KeychainStore.delete("cloudflareAccountId")
+                    } else {
+                        KeychainStore.set(newValue, forKey: "cloudflareAccountId")
+                    }
+                }
 
                 SecureField("Cloudflare API token (optional -- pictures)", text: $cloudflareApiToken)
                     .font(.system(.body, design: .monospaced))
