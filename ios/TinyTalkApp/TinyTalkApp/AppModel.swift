@@ -187,20 +187,22 @@ final class AppModel: ObservableObject {
     /// the user chose themselves must never be silently overridden by an
     /// auto-resume on their next manual reconnect.
     private var pendingResumeTurnId: Int?
-    /// True once this coordinator's readyToShowTheEnd has been seen and
-    /// listStories() requested for it -- guards against asking twice on
-    /// every 100ms poll tick while waiting for the response. Reset on
-    /// disconnect() (a torn-down coordinator can never deliver a pending
-    /// request), NOT on startNewStory() (readyToShowTheEnd only ever
-    /// fires once per coordinator regardless).
-    private var pendingTheEndLookup = false
+    /// Guards the listStories() request that The End's navigation waits on:
+    /// one per concluded story, not one per 100ms poll tick -- see
+    /// TheEndLookup. Re-arms by itself when the coordinator's
+    /// readyToShowTheEnd drops back to false (New Story on the SAME
+    /// coordinator: it used to be cleared only on disconnect, so a second
+    /// story's conclusion never asked and The End never appeared), and is
+    /// reset explicitly on disconnect() (a torn-down coordinator can never
+    /// deliver a pending request).
+    private var theEndLookup = TheEndLookup()
     /// Set the instant a story-detail fetch is kicked off -- either
     /// automatically (a story just concluded, see the readyToShowTheEnd
     /// handling below) or manually (a Library card tap, see openStory()
     /// below) -- and cleared once the matching storyDetail arrives. Guards
     /// against starting a second fetch while one is already in flight (see
     /// both call sites). Reset on disconnect() for the same reason as
-    /// pendingTheEndLookup: a torn-down coordinator can never deliver on it.
+    /// theEndLookup: a torn-down coordinator can never deliver on it.
     private var pendingStoryDetailFetchId: String?
     /// The story_id The End screen has already been shown for, this app
     /// lifetime -- deliberately NOT reset on disconnect(): its whole
@@ -640,7 +642,7 @@ final class AppModel: ObservableObject {
         // A torn-down coordinator can never deliver on either pending
         // request -- see their doc comments. lastAcknowledgedConcludedStoryId
         // is deliberately NOT reset here.
-        pendingTheEndLookup = false
+        theEndLookup.reset()
         pendingStoryDetailFetchId = nil
         isRewriting = false
         previousIsRewriting = false
@@ -749,6 +751,11 @@ final class AppModel: ObservableObject {
         // its own error in newStory() too, but only this makes the banner go
         // now rather than on the next poll tick, and covers a client-side one.
         errorBanner.dismiss()
+        // A new story is a new conclusion-tracking cycle: The End must be
+        // able to fire again for it. The poll loop re-arms this on its own
+        // when it sees readyToShowTheEnd drop, but only if it happens to poll
+        // during the gap; doing it here doesn't depend on that.
+        theEndLookup.reset()
         await coordinator.newStory()
     }
 
@@ -1132,8 +1139,9 @@ final class AppModel: ObservableObject {
                     // combined (see SessionCoordinator.readyToShowTheEnd's
                     // doc comment) -- kick off the lookup exactly once
                     // per coordinator.
-                    if readyToShowTheEnd, !self.pendingTheEndLookup {
-                        self.pendingTheEndLookup = true
+                    // Fed EVERY tick, false included: the false ticks are what
+                    // re-arm it for a second story on this same coordinator.
+                    if self.theEndLookup.shouldRequest(readyToShowTheEnd: readyToShowTheEnd) {
                         Task { await coordinator.listStories() }
                     }
 
