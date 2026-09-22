@@ -68,6 +68,11 @@ public final class GroqWhisperClient: SpeechTranscribing, @unchecked Sendable {
         appendUTF8("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
         appendUTF8("\(model)\r\n")
         appendUTF8("--\(boundary)\r\n")
+        // Without this, Whisper auto-detects language, so a stray non-English
+        // word can flip the whole transcript into that language.
+        appendUTF8("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
+        appendUTF8("en\r\n")
+        appendUTF8("--\(boundary)\r\n")
         appendUTF8("Content-Disposition: form-data; name=\"file\"; filename=\"utterance.wav\"\r\n")
         appendUTF8("Content-Type: audio/wav\r\n\r\n")
         body.append(wav)
