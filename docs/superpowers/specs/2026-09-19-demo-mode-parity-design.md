@@ -210,7 +210,7 @@ generation fails simply has no picture; the pass continues. Status:
 `done` if every page has an image, `partial` if some do, `failed` if none.
 Two additions the home pipeline doesn't need: a fixed style directive
 (child-appropriate storybook illustration, kept in one constant so it can be
-tuned on-device) prepended to every prompt, and a total time budget
+tuned on-device) prepended to every prompt, and a drawing-phase time budget
 (default 60 s) checked before each page so a slow Cloudflare can't hold The
 End hostage; pages not reached have no picture and the status reflects it.
 
