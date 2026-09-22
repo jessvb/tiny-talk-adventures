@@ -3007,6 +3007,58 @@ final class SessionCoordinatorTests: XCTestCase {
         runLoop.cancel()
     }
 
+    /// The "New Story" half of issue #32 (the speech half is covered by
+    /// testSpeechAfterTheStoryConcludedIsNotSentToTheServer above): tapping
+    /// New Story while a rewrite is genuinely still in progress must not
+    /// pretend it succeeded. Before this fix, newStory() unconditionally
+    /// reset isRewriting/readyToShowTheEnd to false and sent .newStory
+    /// regardless of server reality -- the server's own REWRITING gate
+    /// (session.py's handle_new_story()) silently ignores that message, so
+    /// the client was left believing a fresh story had started while the
+    /// server was still finishing the old one. The next utterance then hit
+    /// the server's silent speech_start no-op with nothing to catch it
+    /// locally (handleSpeechStart()'s isRewriting guard sees isRewriting ==
+    /// false), reproducing the original silent hang.
+    func testNewStoryDuringRewriteDoesNotResetStateOrSendNewStory() async {
+        let (coordinator, connection, audio, vad) = makeConcludedStoryFixture()
+        audio.autoFinishEnqueuedBuffers = true
+        let runLoop = Task { await coordinator.start() }
+
+        await driveConcludingTurnToTheEnd(coordinator: coordinator, connection: connection, vad: vad)
+        let sentBeforeTap = connection.sentMessages
+
+        await coordinator.newStory()
+
+        let rewriting = await coordinator.isRewriting
+        XCTAssertTrue(rewriting, "a New Story tap must not pretend a still-running rewrite has finished")
+        let ready = await coordinator.readyToShowTheEnd
+        XCTAssertTrue(ready, "The End's readiness must survive a New Story tap the server is going to ignore")
+        XCTAssertEqual(connection.sentMessages, sentBeforeTap, "no .newStory may be sent while the server would just ignore it")
+
+        runLoop.cancel()
+    }
+
+    /// Guards the other direction, mirroring testSpeechIsSentAgainOnceTheRewriteIsDone:
+    /// the suppression above must end with the rewrite, or New Story would
+    /// stay broken for good even after the server is genuinely IDLE again.
+    func testNewStoryWorksAgainOnceTheRewriteIsDone() async {
+        let (coordinator, connection, audio, vad) = makeConcludedStoryFixture()
+        audio.autoFinishEnqueuedBuffers = true
+        let runLoop = Task { await coordinator.start() }
+
+        await driveConcludingTurnToTheEnd(coordinator: coordinator, connection: connection, vad: vad)
+        connection.emit(.message(.rewritingDone))
+        await eventually { await coordinator.isRewriting == false }
+
+        await coordinator.newStory()
+
+        XCTAssertEqual(connection.sentMessages.last, .newStory, "New Story must work again once the rewrite is done")
+        let ready = await coordinator.readyToShowTheEnd
+        XCTAssertFalse(ready, "a genuinely fresh story must reset The End's readiness")
+
+        runLoop.cancel()
+    }
+
     // MARK: - Issue #48: the last error goes stale when the next turn starts
 
     /// Drives a turn to the ditty timeout, which sets the sticky "took too

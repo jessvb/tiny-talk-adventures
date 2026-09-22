@@ -72,6 +72,13 @@ final class TheEndLookupTests: XCTestCase {
         var ready = await coordinator.readyToShowTheEnd
         XCTAssertTrue(ready, "story 1 concluded")
 
+        // Story 1's background rewrite must actually finish server-side
+        // before a second one can genuinely begin (issue #32: the server's
+        // own REWRITING gate silently ignores new_story otherwise) --
+        // rewritingDone here stands in for that ~3.5min real-hardware wait.
+        connection.emit(.message(.rewritingDone))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
         // New Story on the same coordinator, no disconnect in between.
         await coordinator.newStory()
         ready = await coordinator.readyToShowTheEnd
