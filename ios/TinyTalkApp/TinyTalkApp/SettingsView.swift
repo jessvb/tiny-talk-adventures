@@ -322,7 +322,14 @@ struct SettingsView: View {
                     )
                 )
                 .foregroundColor(TTA.Palette.inkSoft)
-                .disabled(groqApiKey.isEmpty)
+                // Issue #56 item 5: a whitespace-only key (e.g. a stray
+                // space pasted in and never cleared) used to leave the
+                // toggle enabled -- tapping it now shows a clear "no Groq
+                // API key saved" message instead of a silent per-turn 401
+                // (fixed during Phase 2), but the toggle's own visual state
+                // still claimed a key was there. Trimmed the same way
+                // connectAwayFromHome() trims before checking .isEmpty.
+                .disabled(groqApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .tint(TTA.Palette.wood)
 
                 if model.awayFromHomeEnabled {
