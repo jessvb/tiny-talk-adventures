@@ -13,7 +13,13 @@ import Foundation
 /// on-device), and a time budget for the drawing phase, checked before each
 /// page, so a slow cloud service can't hold The End screen hostage.
 public struct IllustrationPass: StoryIllustrating {
-    public static let defaultTimeBudget: TimeInterval = 60
+    // Two 45 s per-request timeouts back to back (a page 0 cold start, then
+    // a still-warming page 1) already spend 90 s; 120 s leaves room for a
+    // third attempt once Cloudflare is warm. Raised from 60 s after
+    // on-device testing (2026-09-22) showed the original budget could
+    // expire before a single picture succeeded. See ImageGeneration.swift's
+    // timeoutInterval comment for the observed evidence.
+    public static let defaultTimeBudget: TimeInterval = 120
 
     /// Prepended to every scene prompt. Tune this on-device -- it is the main
     /// lever for keeping the storybook's pictures looking like one book.

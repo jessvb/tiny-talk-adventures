@@ -74,12 +74,15 @@ public final class CloudflareImageClient: ImageGenerating, @unchecked Sendable {
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        // URLRequest's default is 60 s -- the whole drawing phase's time
-        // budget -- and IllustrationPass can only check that budget BEFORE
-        // each page, so one stalled connection could hold The End for a full
-        // minute. FLUX.1 [schnell] normally answers in a few seconds; a page
-        // that times out simply gets no picture.
-        request.timeoutInterval = 30
+        // FLUX.1 [schnell] normally answers in a few seconds, but real
+        // on-device testing (2026-09-22) showed two consecutive requests
+        // both run out the clock at exactly 30 s (URLError -1001) -- most
+        // likely a Workers AI cold start, which public reports put well
+        // into this range for image models. 45 s gives headroom above that
+        // while IllustrationPass's own time budget (checked BEFORE each
+        // page, not mid-request) still bounds the total wait. A page that
+        // times out simply gets no picture.
+        request.timeoutInterval = 45
         let body: [String: Any] = ["prompt": String(prompt.prefix(Self.maxPromptCharacters)), "steps": steps]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 

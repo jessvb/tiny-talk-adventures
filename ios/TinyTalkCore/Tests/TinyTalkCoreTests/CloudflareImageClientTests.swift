@@ -52,7 +52,7 @@ final class CloudflareImageClientTests: XCTestCase {
         XCTAssertEqual(request.httpMethod, "POST")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-token")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
-        XCTAssertEqual(request.timeoutInterval, 30)
+        XCTAssertEqual(request.timeoutInterval, 45)
         let body = try XCTUnwrap(bodyObject(of: request))
         XCTAssertEqual(body["prompt"] as? String, "a small orange fox")
         XCTAssertEqual(body["steps"] as? Int, 4)
