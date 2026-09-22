@@ -642,9 +642,11 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     /// playing -- see AudioPlaying.enqueue(_:)'s doc comment and
     /// PlaybackQueueTracker's doc comment for why. Mirrors play(_:)'s
     /// structure almost exactly (same ensureEngineRunning() guard, same
-    /// per-buffer PlaybackCompletionGate + duration-scaled hang-guard
-    /// timeout race -- see hangGuardTimeoutNanos(forBufferFrameLength:) --
-    /// same .dataPlayedBack completion type) -- the only difference is that
+    /// per-buffer PlaybackCompletionGate + hang-guard timeout race -- its
+    /// timeout comes from PlaybackQueueTracker.bufferEnqueued(), not
+    /// hangGuardTimeoutNanos(forBufferFrameLength:), since it must allow
+    /// for the buffers queued ahead -- same .dataPlayedBack completion
+    /// type) -- the only difference is that
     /// this does not wrap scheduling in a continuation that waits for
     /// that race to resolve; it fires the schedule and the buffer's own
     /// timeout fallback, then returns.
@@ -668,7 +670,12 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             print("RealAudioEngine: engine never started -- dropping this enqueue() call rather than hanging forever")
             return
         }
-        let generation = playbackQueueTracker.bufferEnqueued()
+        // The hang-guard timeout comes from the tracker, not from this
+        // buffer's own duration alone: it has to account for the buffers
+        // already queued ahead of this one -- see bufferEnqueued() (issue #29).
+        let (generation, hangGuardSeconds) = playbackQueueTracker.bufferEnqueued(
+            durationSeconds: Double(buffer.frameLength) / Self.wireSampleRate
+        )
         let gate = PlaybackCompletionGate()
         playerNode.scheduleBuffer(buffer, at: nil, options: [], completionCallbackType: .dataPlayedBack) { [weak self] _ in
             if gate.tryResume() {
@@ -679,7 +686,7 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         // why guarding this with `if !playerNode.isPlaying` was actively
         // harmful on real hardware.
         playerNode.play()
-        let timeoutNanos = Self.hangGuardTimeoutNanos(forBufferFrameLength: buffer.frameLength)
+        let timeoutNanos = UInt64(hangGuardSeconds * 1_000_000_000)
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: timeoutNanos)
             if gate.tryResume() {
@@ -698,21 +705,22 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     /// takes longer than that -- confirmed on-device (2026-09-14) as
     /// several consecutive "did not fire within 3s" debug-log lines in a
     /// single reply, with no backgrounding/reconnect in between, which is
-    /// this issue's own stated confirmation bar. Worse under this file's
-    /// enqueue()/waitForPlaybackToFinish() pipelining (added after #29 was
-    /// filed): enqueue() no longer waits for one buffer before scheduling
-    /// the next, so a single stall-inducing reconfiguration (e.g.
-    /// rebuildCaptureTap()'s engine.stop()) can now strand MANY buffers at
-    /// once instead of just the one mid-render -- a larger blast radius
-    /// for the same underlying bug. Scaling the timeout to the buffer's
-    /// own duration (plus a fixed grace period for the genuine
+    /// this issue's own stated confirmation bar. Scaling the timeout to the
+    /// buffer's own duration (plus a fixed grace period for the genuine
     /// engine-stopped-mid-render case this timeout also exists for) fixes
-    /// both without weakening the original hang-guard: the 3s floor keeps
+    /// that without weakening the original hang-guard: the 3s floor keeps
     /// short/empty buffers covered exactly as before.
+    ///
+    /// Only right for a buffer that starts playing at once, which is
+    /// play()'s case -- it awaits each buffer before scheduling the next.
+    /// enqueue() schedules a whole reply's buffers back to back, so a buffer
+    /// behind others starts later and needs a deadline that allows for the
+    /// queue ahead of it (the second half of #29):
+    /// PlaybackQueueTracker.bufferEnqueued() computes that, from the same
+    /// floor and grace.
     private static func hangGuardTimeoutNanos(forBufferFrameLength frameLength: AVAudioFrameCount) -> UInt64 {
         let bufferDurationSeconds = Double(frameLength) / Self.wireSampleRate
-        let grace = 2.0
-        return UInt64(max(3.0, bufferDurationSeconds + grace) * 1_000_000_000)
+        return UInt64(PlaybackQueueTracker.hangGuardSeconds(playbackFinishesIn: bufferDurationSeconds) * 1_000_000_000)
     }
 
     private static func formatTimeoutSeconds(_ nanos: UInt64) -> String {
