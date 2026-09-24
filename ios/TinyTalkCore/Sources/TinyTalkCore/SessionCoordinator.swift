@@ -1580,6 +1580,34 @@ public actor SessionCoordinator {
         try? await connection.send(.newStory)
     }
 
+    /// Issue #69: the wire half of newStory() only, for a brand-new
+    /// coordinator whose connection was opened to start a blank story.
+    /// The server keeps one session for its whole lifetime, so a new
+    /// connection alone doesn't reset its conversation or story arc -- Home
+    /// mid-story -> Create a Story showed a blank screen while the server
+    /// carried on with the abandoned story.
+    ///
+    /// Deliberately none of newStory()'s client-side teardown: a fresh
+    /// coordinator has nothing to tear down, and the caller runs this
+    /// before mic capture has configured the audio engine, when
+    /// stopPlaybackImmediately() must not touch it yet (see AppModel.
+    /// connect()'s note on play() before startCapturing()). Awaited before
+    /// capture starts, so new_story is on the wire ahead of any speech_start
+    /// -- the server handles one connection's frames in order. No
+    /// isRewriting guard either: the server ignores new_story during its own
+    /// REWRITING gate, and a concluding story resets itself anyway.
+    public func startFreshServerStory() async {
+        logDebug("SessionCoordinator: fresh connection for a new story -- sending new_story")
+        do {
+            try await connection.send(.newStory)
+        } catch {
+            // Best effort, like newStory()'s own send: a connection that
+            // can't carry this can't carry the story either, and the poll
+            // loop's "disconnected" handling reports that.
+            logDebug("SessionCoordinator: new_story send failed: \(error)")
+        }
+    }
+
     private func interrupt() async {
         stopWaitingDitty()
         let id = latencyLogger.recordVADFire()

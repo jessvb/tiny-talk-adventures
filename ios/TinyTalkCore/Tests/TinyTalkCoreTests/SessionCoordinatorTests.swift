@@ -1275,6 +1275,50 @@ final class SessionCoordinatorTests: XCTestCase {
         runLoop.cancel()
     }
 
+    /// Issue #69: Home mid-story -> Create a Story opened a fresh connection,
+    /// but the server's one long-lived session still held the abandoned
+    /// story's conversation and arc. The fresh connection's reset is ONLY
+    /// the wire message: it runs before mic capture has started, so none of
+    /// newStory()'s client-side teardown (stopping playback, unmuting) may
+    /// touch the audio engine yet -- and a fresh coordinator has nothing to
+    /// tear down anyway.
+    func testStartFreshServerStorySendsOnlyNewStoryAndLeavesAudioAlone() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+
+        await coordinator.startFreshServerStory()
+
+        XCTAssertEqual(connection.sentMessages, [.newStory])
+        XCTAssertFalse(audio.stopped, "must not touch playback before capture has configured the engine")
+        let state = await coordinator.state
+        XCTAssertEqual(state, .idle)
+        let muted = await coordinator.isMuted
+        XCTAssertFalse(muted)
+    }
+
+    /// The reset must reach the server before the child's first utterance
+    /// can: the server processes one connection's frames in order, so
+    /// new_story ahead of speech_start means the first turn already sees
+    /// the INTRO stage.
+    func testStartFreshServerStoryIsSentAheadOfTheFirstSpeechStart() async {
+        let connection = FakeConnection()
+        let audio = FakeAudio()
+        let vad = FakeVAD()
+        let coordinator = SessionCoordinator(connection: connection, audio: audio, vad: vad)
+        await coordinator.startFreshServerStory()
+        let runLoop = Task { await coordinator.start() }
+
+        vad.fire(.speechStart)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        XCTAssertEqual(connection.sentMessages.first, .newStory)
+        XCTAssertTrue(connection.sentMessages.contains(.speechStart(turnId: 1)))
+
+        runLoop.cancel()
+    }
+
     /// A subsequent turn after newStory() must work completely normally --
     /// same regression concern as testInterruptThenNewTurnCompletesNormally,
     /// applied to the new reset path instead of interrupt.
