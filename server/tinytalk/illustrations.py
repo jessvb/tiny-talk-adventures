@@ -70,12 +70,18 @@ async def _release_ollama_memory(*, transport: httpx.BaseTransport | None = None
     directly competing with Stable Diffusion for the same 16GB unified
     memory and triggering severe swap thrashing (measured: per-step
     generation time jumped from ~18s to ~217s, a 12x cliff, partway
-    through a single image). No-op for a non-Ollama LlmEngine (e.g.
-    GroqLlm, a cloud API with no local memory to release). A failure
-    here is only a missed optimization, never a correctness problem --
-    logged, not raised."""
-    if config.LLM_BACKEND != "ollama":
-        return
+    through a single image).
+
+    Deliberately unconditional -- since the phone's per-story LLM choice
+    (issue #25) can now differ from config.LLM_BACKEND's startup
+    preference, this server may have built its Ollama engine even though
+    the *story that was just illustrated* ran on Groq, or vice versa.
+    Asking Ollama to unload when it's idle is harmless (a no-op reply
+    from Ollama if it was never loaded, and if it's genuinely still
+    warm, freeing it before the compute-heavy image-generation phase
+    always helps): gating this on any backend flag risks skipping a
+    real release. A failure here is only a missed optimization, never a
+    correctness problem -- logged, not raised."""
     try:
         async with httpx.AsyncClient(timeout=10.0, transport=transport) as client:
             await client.post(
