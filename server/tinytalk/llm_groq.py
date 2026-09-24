@@ -1,15 +1,16 @@
 """LLM backend: Groq's hosted, OpenAI-compatible chat completions API.
 
-For A/B-testing whether LLM generation speed is the actual bottleneck in
-reply latency -- swappable with OllamaLlm via TINYTALK_LLM_BACKEND=groq,
-same LlmEngine interface, no other code changes needed. Groq's inference
-hardware (LPUs, not GPUs) is routinely far faster than local Metal/GPU
-inference for models in this class, and its free tier is generous enough
-for interactive testing.
+Originally added for A/B-testing whether LLM generation speed is the
+actual bottleneck in reply latency. Now also a parent-chosen option for
+real stories (issue #25): built only when GROQ_API_KEY is set, and used
+for a story only when the parent picks it on the phone (default stays
+local Ollama). Groq's inference hardware (LPUs, not GPUs) is routinely far
+faster than local Metal/GPU inference for models in this class.
 
-Not intended for real use with a child: this sends conversation text to a
-third party, which conflicts with CLAUDE.md's privacy-first constraint.
-Testing-only, by the household's own explicit choice.
+Privacy trade-off, chosen explicitly by the household: with Groq selected,
+story conversation text (transcribed child speech and Elsie's replies)
+goes to Groq's servers. Audio never leaves the Mac -- STT and TTS stay
+local regardless.
 
 Groq streams Server-Sent Events in the same shape as OpenAI's Chat
 Completions streaming API: lines prefixed "data: ", one JSON object per

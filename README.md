@@ -233,6 +233,17 @@ item) — that's fine, nothing more to do here. Confirm with
 cd server && source .venv/bin/activate && python -m tinytalk.app
 ```
 
+To let a parent switch stories to Groq's cloud LLM from the phone (hidden
+"Elsie's Brain" card in Settings — long-press "UNDER THE HOOD"), start the
+server with a free Groq key from https://console.groq.com/keys instead:
+
+```bash
+cd server && source .venv/bin/activate && GROQ_API_KEY=gsk_your_key_here python -m tinytalk.app
+```
+
+Without `GROQ_API_KEY` everything stays local and the phone's card says so.
+With Groq picked, story text (not audio) goes to Groq's servers.
+
 **Terminal 3 — the CLI test client** (stands in for the phone). Record a
 test utterance, then run a full turn, then try a barge-in interrupt:
 
