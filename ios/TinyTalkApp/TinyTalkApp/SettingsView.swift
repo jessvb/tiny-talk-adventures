@@ -257,9 +257,43 @@ struct SettingsView: View {
     private var awayFromHomeCard: some View {
         if showAwayFromHomeCard {
             VStack(alignment: .leading, spacing: 10) {
-                Text("AWAY FROM HOME")
+                Text("ELSIE'S BRAIN")
                     .font(TTA.Typography.display(12))
                     .tracking(1.5)
+                    .foregroundColor(TTA.Palette.inkSoft)
+
+                Text("At home, Elsie thinks with:")
+                    .font(TTA.Typography.body(12.5, weight: .medium))
+                    .foregroundColor(TTA.Palette.inkSoft)
+
+                Picker(
+                    "At home, Elsie thinks with",
+                    selection: Binding(
+                        get: { model.llmBackend },
+                        set: { model.setLlmBackend($0) }
+                    )
+                ) {
+                    Text("Mac (local)").tag("ollama")
+                    Text("Groq cloud").tag("groq")
+                }
+                .pickerStyle(.segmented)
+
+                Text("Applies from the next story. With Groq, story text goes to Groq's cloud; listening and voices stay on your Mac. Needs GROQ_API_KEY set on the Mac.")
+                    .font(TTA.Typography.body(12.5))
+                    .foregroundColor(TTA.Palette.inkSoft)
+
+                if model.isConnected, !model.awayFromHomeEnabled, let status = model.serverLlmStatus {
+                    Text(llmStatusText(status))
+                        .font(TTA.Typography.body(11.5))
+                        .foregroundColor(
+                            status.requested != status.active ? TTA.Palette.alert : TTA.Palette.inkSoft
+                        )
+                }
+
+                Divider().padding(.vertical, 4)
+
+                Text("Away from home")
+                    .font(TTA.Typography.body(12.5, weight: .medium))
                     .foregroundColor(TTA.Palette.inkSoft)
 
                 Text("For demos only, away from the home WiFi: speech and story go through Groq's cloud AI instead of your Mac. Needs a free Groq API key.")
@@ -371,6 +405,14 @@ struct SettingsView: View {
             .background(TTA.Palette.cream)
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
+    }
+
+    private func llmStatusText(_ status: LlmBackendStatus) -> String {
+        let active = status.active == "groq" ? "Groq cloud" : "Mac (local)"
+        if status.requested == "groq" && !status.groqAvailable {
+            return "Mac will use: \(active) -- no Groq key set on the Mac"
+        }
+        return "Mac will use: \(active)"
     }
 
     /// AVSpeechTts.resolveVoice() already picks Matilda by default (see
