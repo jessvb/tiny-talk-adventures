@@ -56,7 +56,13 @@ OLLAMA_THINK = os.environ.get("TINYTALK_OLLAMA_THINK", "false").strip().lower() 
 
 # "ollama" (default, local/private) or "groq" (hosted, for A/B-testing
 # whether LLM speed is the actual latency bottleneck -- see llm_groq.py's
-# module docstring). Swappable with no other code changes.
+# module docstring). This is only the STARTUP preference: a connected
+# phone sends its own persisted choice in update_settings (issue #25),
+# and that overrides this for every story from then on. This env var
+# still matters for the brief window before any phone has connected,
+# and for older phone builds and tools/test_client.py, which never send
+# a choice at all. Groq also needs GROQ_API_KEY set, or the server
+# silently falls back to Ollama regardless of which backend is asked for.
 LLM_BACKEND = os.environ.get("TINYTALK_LLM_BACKEND", "ollama")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_HOST = os.environ.get("GROQ_HOST", "https://api.groq.com")

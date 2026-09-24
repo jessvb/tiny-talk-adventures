@@ -344,8 +344,8 @@ async def serve() -> None:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
     logger.info(
-        "listening on ws://%s:%s (default llm_backend=%s, ollama model=%s, "
-        "think=%s, groq=%s)",
+        "listening on ws://%s:%s (startup llm preference=%s (phone's choice "
+        "overrides), ollama model=%s, think=%s, groq=%s)",
         config.SERVER_HOST,
         config.SERVER_PORT,
         config.LLM_BACKEND,
