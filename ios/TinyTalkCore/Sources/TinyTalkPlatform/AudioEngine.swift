@@ -67,7 +67,45 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     /// formatter matters here specifically (this fires from a notification
     /// callback and a scheduleBuffer completion, not from a fixed thread).
     public var onDebugEvent: (@Sendable (String) -> Void)?
+    /// Issues #39/#49: called (at most once per dead spell, from a
+    /// background Task) when the capture health monitor has used up its
+    /// in-engine recovery attempts and the tap is still delivering nothing
+    /// -- see CaptureRecovery.swift. The one cure known to work on-device
+    /// is a full reconnect (a fresh RealAudioEngine), which only the owner
+    /// (AppModel) can do; nil just means the give-up is logged.
+    public var onCaptureLost: (@Sendable (String) -> Void)?
     private let playbackQueueTracker = PlaybackQueueTracker()
+
+    /// Serializes everything that installs/removes the tap or starts/stops
+    /// the engine for capture: startCapturing()'s attempts, rebuildCaptureTap()
+    /// (fired from AVAudioEngineConfigurationChange on whatever thread posts
+    /// it, and now also from the health monitor's Task), stopCapturing(), and
+    /// ensureEngineRunning()'s start. Two of those interleaving could install
+    /// a second tap on bus 0 (an uncatchable NSException) or restart an
+    /// engine stopCapturing() just stopped. Recursive in case AVAudioEngine
+    /// ever posts its configuration-change notification synchronously from
+    /// inside our own stop()/start() on this thread -- rebuildCaptureTap()'s
+    /// isRebuilding guard then turns that nested call into a no-op instead
+    /// of a deadlock.
+    private let captureLock = NSRecursiveLock()
+    /// Set (under captureLock) by stopCapturing() and never cleared: one
+    /// capture session per instance, matching how AppModel uses this (a
+    /// fresh RealAudioEngine per connect). Issue #39's hypothesis 1 is two
+    /// engines holding the shared input hardware at once; before this, a
+    /// torn-down instance could restart itself -- a late play()/enqueue()
+    /// from the old coordinator (close() runs asynchronously after
+    /// stopCapturing()) went through ensureEngineRunning(), and a
+    /// startCapturing() still in its retry loop when stopCapturing() ran
+    /// carried on and started the engine anyway. Both now refuse.
+    private var isShutDown = false
+    private var isRebuilding = false
+    private var didLogShutDownRefusal = false
+    /// See startHealthMonitor(). Cancelled by stopCapturing() and deinit.
+    private var healthMonitorTask: Task<Void, Never>?
+
+    deinit {
+        healthMonitorTask?.cancel()
+    }
 
     public init() throws {
         let session = AVAudioSession.sharedInstance()
@@ -184,8 +222,9 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
 
     // MARK: Capture diagnostics (issue #39)
     //
-    // Observation only -- nothing below feeds back into capture/teardown
-    // behavior. Issue #39: the mic silently stopped delivering audio in
+    // Observation only -- nothing in this section feeds back into
+    // capture/teardown behavior (the self-healing that acts on the same
+    // signal is the next section). Issue #39: the mic silently stopped delivering audio in
     // server mode after a demo-mode session (or, in a second on-device
     // report, startCapturing() threw an opaque error), root cause not yet
     // established between (1) a stale AVAudioEngine still holding the input
@@ -251,7 +290,9 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     /// Log-only: reports once, shortly after startCapturing() succeeds,
     /// whether the tap has delivered ANY buffer yet -- a loud warning if
     /// not (nothing reached the app: hypothesis 1), a quiet "ok" line with
-    /// the counts if so. Never restarts or otherwise touches capture.
+    /// the counts if so. Never restarts or otherwise touches capture itself
+    /// -- recovery is the separate health monitor's job (see
+    /// startHealthMonitor()), which checks on the same 2s cadence.
     /// stopCapturing() cancels it. Holds `self` weakly: this Task must not
     /// itself keep an old engine alive.
     ///
@@ -271,7 +312,7 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
                 onZeroBuffers: { _ in
                     guard let self else { return }
                     self.emitDiagnostic(self.captureSnapshot(
-                        "WARNING watchdog: ZERO tap buffers \(seconds)s after \(trigger) succeeded -- mic capture is silently dead (log only, nothing restarted)"
+                        "WARNING watchdog: ZERO tap buffers \(seconds)s after \(trigger) succeeded -- mic capture is silently dead (the health monitor will attempt recovery)"
                     ).formatted)
                 },
                 onBuffersFlowing: { _ in
@@ -281,6 +322,55 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             )
         }
         diagnostics.replaceWatchdog(with: task)
+    }
+
+    // MARK: Capture self-healing (issues #39/#49)
+
+    /// Started once, by a successful startCapturing(); runs until
+    /// stopCapturing()/deinit. Unlike the one-shot watchdog above, it keeps
+    /// checking for the whole session -- #49's mic died well after capture
+    /// had started fine -- and it acts: see CaptureRecovery.swift for the
+    /// bounded decision logic. Holds `self` weakly, same as the watchdog.
+    private func startHealthMonitor() {
+        let diagnostics = captureDiagnostics
+        // Under captureLock: stopCapturing() (another thread) cancels it.
+        captureLock.withLock {
+            guard !isShutDown else { return }
+            healthMonitorTask?.cancel()
+            healthMonitorTask = Task { [weak self] in
+                await CaptureHealthMonitor.run(
+                    currentBuffers: { diagnostics.counts.buffersReceived },
+                    onDecision: { decision in self?.handleHealthDecision(decision) }
+                )
+            }
+        }
+    }
+
+    private func handleHealthDecision(_ decision: CaptureRecoveryBudget.Decision) {
+        guard !captureLock.withLock({ isShutDown }) else { return }
+        let seconds = String(format: "%.1f", Double(CaptureHealthMonitor.defaultIntervalNanos) / 1_000_000_000)
+        let maxAttempts = CaptureRecoveryBudget.defaultMaxAttempts
+        switch decision {
+        case .healthy, .stillDead:
+            return
+        case .recovered(let attempts):
+            emitDiagnostic(captureSnapshot("RECOVERED: tap buffers flowing again after \(attempts) recovery attempt(s)").formatted)
+        case .attemptRecovery(let attempt):
+            emitDiagnostic(captureSnapshot("RECOVERY attempt \(attempt)/\(maxAttempts): no tap buffers for \(seconds)s -- reactivating the audio session and rebuilding the capture tap").formatted)
+            // The session is a process-wide singleton: another engine's
+            // stopCapturing() (setActive(false)) or an interruption can
+            // leave it inactive under this one. Harmless if already active.
+            do {
+                try AVAudioSession.sharedInstance().setActive(true)
+            } catch {
+                emitDiagnostic("RealAudioEngine: RECOVERY attempt \(attempt): session setActive(true) threw \(error)")
+            }
+            rebuildCaptureTap(trigger: "recovery attempt \(attempt)")
+        case .giveUp(let attempts):
+            let reason = "no tap buffers after \(attempts) recovery attempt(s)"
+            emitDiagnostic(captureSnapshot("GAVE UP: \(reason) -- asking the app to reconnect").formatted)
+            onCaptureLost?(reason)
+        }
     }
 
     /// Issue #49 diagnostics: emits a capture-state snapshot on demand
@@ -334,7 +424,7 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             let message = "RealAudioEngine: AVAudioEngineConfigurationChange received -- rebuilding capture tap"
             print(message)
             self?.onDebugEvent?("[\(DebugTimestamp.now())] \(message)")
-            self?.rebuildCaptureTap()
+            self?.rebuildCaptureTap(trigger: "AVAudioEngineConfigurationChange")
         }
 
         // A plain single `try installCaptureTapAndStart()` here used to be
@@ -351,11 +441,39 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         var lastError: Error?
         for attempt in 1...8 {
             do {
-                try installCaptureTapAndStart()
+                // Under captureLock, and re-checking isShutDown every
+                // attempt: a stopCapturing() that lands during this loop's
+                // sleeps (a disconnect while a connect is still starting
+                // capture) must win -- otherwise this attempt would start
+                // the engine AFTER the stop, leaving a zombie engine holding
+                // the mic that nothing will ever stop (issue #39).
+                try captureLock.withLock {
+                    guard !isShutDown else {
+                        throw AudioEngineError.captureStartFailed(NSError(domain: "RealAudioEngine", code: 3, userInfo: [
+                            NSLocalizedDescriptionKey: "stopCapturing() was called before capture finished starting -- not starting a torn-down engine",
+                        ]))
+                    }
+                    try installCaptureTapAndStart()
+                }
                 emitDiagnostic(captureSnapshot("startCapturing: started", runningBefore: engineRunningBefore).formatted)
                 startZeroBufferWatchdog()
+                // Covers the case issue #39's 2026-09-21 log caught: start()
+                // didn't throw but engine.isRunning was already false (a
+                // configuration change in flight), with health depending on
+                // a notification arriving and a rebuild succeeding.
+                startHealthMonitor()
                 return
             } catch {
+                if captureLock.withLock({ isShutDown }) {
+                    emitDiagnostic("RealAudioEngine: startCapturing abandoned -- stopCapturing() ran while it was still starting")
+                    // stopCapturing() may have run before this call
+                    // registered its observer, so it's removed here too.
+                    if let configChangeObserver {
+                        NotificationCenter.default.removeObserver(configChangeObserver)
+                        self.configChangeObserver = nil
+                    }
+                    throw error
+                }
                 lastError = error
                 // emitDiagnostic (print + on-screen log), same text as the
                 // bare print() this replaced: these per-attempt reasons are
@@ -422,6 +540,12 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         }
 
         print("RealAudioEngine: installing tap, hardwareFormat=\(hardwareFormat)")
+        // A previous attempt that installed its tap but then failed at
+        // engine.start() below leaves that tap in place, and installing a
+        // second tap on the same bus raises an uncatchable NSException --
+        // startCapturing()'s own retry loop could hit exactly that.
+        // removeTap on a bus with no tap is a no-op.
+        inputNode.removeTap(onBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 2400, format: hardwareFormat) { [weak self] buffer, _ in
             guard let self else { return }
             // Diagnostics (issue #39): a buffer reached the app at all --
@@ -473,14 +597,30 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         }
     }
 
-    private func rebuildCaptureTap() {
+    /// `trigger` names the caller for the log: the configuration-change
+    /// notification, or the health monitor's recovery attempt N. See
+    /// captureLock/isShutDown's doc comments for the guards.
+    private func rebuildCaptureTap(trigger: String) {
+        captureLock.lock()
+        defer { captureLock.unlock() }
+        // A notification or recovery racing stopCapturing() must not bring
+        // a torn-down engine back to life (issue #39).
+        guard !isShutDown else {
+            emitDiagnostic("RealAudioEngine: rebuildCaptureTap (\(trigger)) skipped -- stopCapturing() already ran")
+            return
+        }
+        // Re-entered on this same thread (see captureLock's doc comment):
+        // the outer rebuild already in progress does the whole job.
+        guard !isRebuilding else { return }
+        isRebuilding = true
+        defer { isRebuilding = false }
         // Issue #49 diagnostics: tap-installed/engine.isRunning state right
         // as a rebuild begins, before any teardown below runs -- e.g. the
         // Reading screen playing page audio through this same engine can
         // trigger the AVAudioEngineConfigurationChange that leads here, and
         // this line is what lets a captured log tell that path apart from a
         // route change or voice-processing's own graph rebuild.
-        emitDiagnostic(captureSnapshot("rebuildCaptureTap: begin").formatted)
+        emitDiagnostic(captureSnapshot("rebuildCaptureTap: begin (\(trigger))").formatted)
         // engine.stop() stops the WHOLE engine graph, not just the input
         // side being rebuilt here -- if playerNode is mid-buffer when this
         // fires, that playback is interrupted too. Logged so a real-device
@@ -525,17 +665,18 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             // can still silently deliver zero buffers afterward, hence the
             // watchdog re-arm below (skipped once stopCapturing() has run,
             // so a rebuild racing teardown can't cry wolf).
-            emitDiagnostic(captureSnapshot("rebuildCaptureTap: succeeded").formatted)
+            emitDiagnostic(captureSnapshot("rebuildCaptureTap: succeeded (\(trigger))").formatted)
             if !captureDiagnostics.wasStopped {
-                startZeroBufferWatchdog(after: "rebuildCaptureTap()")
+                startZeroBufferWatchdog(after: "rebuildCaptureTap() (\(trigger))")
             }
         } catch {
             // Issue #39 diagnostics: was a bare print(). A failed rebuild
-            // leaves NO tap installed -- a silent, permanent mic death if no
-            // later configuration change retries -- so it must reach the
-            // on-screen log, with the state snapshot. Same text as before.
-            emitDiagnostic("RealAudioEngine: failed to rebuild capture tap after configuration change: \(error)")
-            emitDiagnostic(captureSnapshot("rebuildCaptureTap: FAILED -- no capture tap is installed").formatted)
+            // leaves NO tap installed -- which used to be a silent,
+            // permanent mic death if no later configuration change retried.
+            // The health monitor now catches it (zero buffers) within ~2s
+            // and retries, bounded -- see startHealthMonitor().
+            emitDiagnostic("RealAudioEngine: failed to rebuild capture tap (\(trigger)): \(error)")
+            emitDiagnostic(captureSnapshot("rebuildCaptureTap: FAILED -- no capture tap is installed (\(trigger); health monitor will retry)").formatted)
         }
     }
 
@@ -546,6 +687,14 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         // end. The line's timestamp vs. the NEW engine's "startCapturing:
         // begin" is what shows the teardown/start ordering.
         var stopSnapshot = captureSnapshot("stopCapturing")
+        // Terminal for this instance -- see isShutDown's doc comment. Held
+        // for the whole teardown so an in-flight rebuild/start finishes
+        // first and one arriving later sees the flag.
+        captureLock.lock()
+        defer { captureLock.unlock() }
+        isShutDown = true
+        healthMonitorTask?.cancel()
+        healthMonitorTask = nil
         captureDiagnostics.markStopped()
         if let configChangeObserver {
             NotificationCenter.default.removeObserver(configChangeObserver)
@@ -559,9 +708,9 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
         // AVAudioEngine instances both holding the shared input hardware --
         // observed on-device as the newer engine's tap silently receiving
         // zero buffers, no error either side. engine.stop() releases the
-        // hardware; play()'s existing `if !engine.isRunning { try?
-        // engine.start() }` already handles a caller needing to use this
-        // same instance for playback afterward.
+        // hardware -- and it stays released: ensureEngineRunning() no
+        // longer restarts a shut-down instance for a late play()/enqueue()
+        // (issue #39), since restarting it re-grabs that same hardware.
         engine.stop()
         var sessionDeactivation = "ok"
         do {
@@ -604,6 +753,12 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             print("RealAudioEngine: engine never started -- dropping this play() call rather than hanging forever")
             return
         }
+        // ensureEngineRunning() can suspend (its retry sleeps). If the caller
+        // was cancelled meanwhile -- stopWaitingDitty()/interrupt() cancel
+        // the task and call stopPlaybackImmediately() -- scheduling now
+        // would play this buffer AFTER that stop. Nothing awaits a
+        // cancelled caller's playback, so just drop it.
+        guard !Task.isCancelled else { return }
         // Guards scheduleBuffer's completion handler and the timeout task
         // below from both trying to resume the same continuation --
         // resuming twice is a fatal error. Real race, confirmed on real
@@ -704,6 +859,10 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             print("RealAudioEngine: engine never started -- dropping this enqueue() call rather than hanging forever")
             return
         }
+        // Same reasoning as play()'s matching guard: a turn cancelled (by a
+        // barge-in's interrupt()) while this was suspended must not have
+        // its stale audio scheduled after the stop.
+        guard !Task.isCancelled else { return }
         // The hang-guard timeout comes from the tracker, not from this
         // buffer's own duration alone: it has to account for the buffers
         // already queued ahead of this one -- see bufferEnqueued() (issue #29).
@@ -776,13 +935,35 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
     /// installCaptureTapAndStart()'s transiently-invalid-format guard, here
     /// on the playback side). A handful of short retries gives the route a
     /// real chance to settle before play() gives up on this buffer.
+    ///
+    /// Refuses outright once stopCapturing() has run (issue #39): the old
+    /// coordinator's close() runs asynchronously after AppModel's
+    /// stopCapturing(), so its ditty loop or reply playback can still call
+    /// play()/enqueue() here -- and restarting this engine would re-grab the
+    /// shared input hardware (the voice-processing I/O unit owns the mic)
+    /// right as the NEXT connect's fresh engine starts capturing.
     private func ensureEngineRunning() async -> Bool {
+        if refuseBecauseShutDown() {
+            // A brief pause, so a caller's loop (the waiting ditty's `while
+            // !Task.isCancelled { await play() }`) can't spin hot until the
+            // old coordinator's close() gets round to cancelling it.
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            return false
+        }
         if engine.isRunning { return true }
         for attempt in 1...8 {
             do {
-                try engine.start()
+                try captureLock.withLock {
+                    guard !isShutDown else {
+                        throw AudioEngineError.captureStartFailed(NSError(domain: "RealAudioEngine", code: 3, userInfo: [
+                            NSLocalizedDescriptionKey: "engine was shut down by stopCapturing()",
+                        ]))
+                    }
+                    try engine.start()
+                }
                 return true
             } catch {
+                if refuseBecauseShutDown() { return false }
                 print("RealAudioEngine: engine.start() attempt \(attempt)/8 failed: \(error)")
                 do {
                     try await Task.sleep(nanoseconds: 250_000_000)
@@ -806,6 +987,20 @@ public final class RealAudioEngine: AudioPlaying, @unchecked Sendable {
             }
         }
         return false
+    }
+
+    /// True once stopCapturing() has run; logs the first refusal (on-screen)
+    /// so a captured log shows the zombie-restart path was actually hit.
+    private func refuseBecauseShutDown() -> Bool {
+        let (shutDown, firstRefusal): (Bool, Bool) = captureLock.withLock {
+            guard isShutDown else { return (false, false) }
+            defer { didLogShutDownRefusal = true }
+            return (true, !didLogShutDownRefusal)
+        }
+        if firstRefusal {
+            emitDiagnostic("RealAudioEngine#\(Self.liveEngines.id(for: self)): refused to restart the engine for playback after stopCapturing() -- a late play()/enqueue() from the old session (issue #39 zombie-engine guard)")
+        }
+        return shutDown
     }
 
     /// Converts wire-format (24kHz mono Int16 LE) bytes into an
