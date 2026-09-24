@@ -44,7 +44,7 @@ struct LandingView: View {
 
                 VStack(spacing: 14) {
                     Button {
-                        Task { await model.startStory() }
+                        Task { await model.startStory(.homeCreateStory) }
                     } label: {
                         Label("Create a Story", systemImage: "pencil")
                     }
