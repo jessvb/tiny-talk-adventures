@@ -324,7 +324,7 @@ class SessionRunner:
                 "groq requested but GROQ_API_KEY is not set on this server -- "
                 "the next story will use ollama"
             )
-        logger.info("story llm: %s", self._story_llm_name)
+        logger.info("next story llm: %s", self._story_llm_name)
 
     async def handle_update_settings(
         self, target_turns: int, page_count: int, llm_backend: str | None = None
@@ -986,6 +986,7 @@ class SessionRunner:
                 # ended, so it must use that story's engine and page count
                 # even if the parent changed either mid-story.
                 story_llm = self._story_llm
+                story_llm_name = self._story_llm_name
                 story_page_count = self._story_page_count
                 self._conversation = Conversation()
                 self._begin_story()
@@ -995,6 +996,9 @@ class SessionRunner:
                     logger.info("story saved to %s", saved_path)
                     story_id = story_store.story_id_from_path(saved_path)
                     await self._send_text_unbuffered(encode_rewriting_started())
+                    logger.info(
+                        "storybook rewrite for %s using %s", story_id, story_llm_name
+                    )
                     self._rewrite_task = asyncio.create_task(
                         self._run_rewrite(
                             story_id, turns, shared_facts,
