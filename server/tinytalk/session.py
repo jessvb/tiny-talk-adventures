@@ -1046,6 +1046,11 @@ class SessionRunner:
         this session's live REWRITING gate or to whatever connection is
         currently attached, and must not perturb either."""
         try:
+            # No story start on THIS server to have locked an engine to --
+            # the story was played out entirely in away-from-home mode --
+            # so there is nothing to reuse here; this always resolves the
+            # parent's current preference fresh, same as any other
+            # not-yet-started story would.
             await storybook.build_and_attach(
                 story_id, turns, shared_facts, llm=self._resolve_llm()[0],
                 page_count=config.STORYBOOK_PAGE_COUNT,

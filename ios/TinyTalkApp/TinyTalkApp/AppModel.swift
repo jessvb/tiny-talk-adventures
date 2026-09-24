@@ -465,6 +465,14 @@ final class AppModel: ObservableObject {
         }
 
         isConnected = true
+        // The server's per-session settings default to its own config
+        // constants until told otherwise -- send the parent's current
+        // preference now so even the very first story of this connection
+        // uses it, not just the second one onward. Sent before the
+        // demo-story sync block below so a synced story's rewrite already
+        // sees the parent's LLM choice, rather than the server's own
+        // just-restarted startup default.
+        Task { await coordinator.updateSettings(targetTurns: storyTurnCount, pageCount: storybookPageCount, llmBackend: llmBackend) }
         // Each pending transcript, plus its finished storybook (title, pages,
         // pictures) when one was built away from home -- so the Mac keeps
         // what the child already saw instead of redoing (or losing) it. A
@@ -484,11 +492,6 @@ final class AppModel: ObservableObject {
                 appendAudioDebugEvent("[\(DebugTimestamp.now())] demo story sync failed: \(error)")
             }
         }
-        // The server's per-session settings default to its own config
-        // constants until told otherwise -- send the parent's current
-        // preference now so even the very first story of this connection
-        // uses it, not just the second one onward.
-        Task { await coordinator.updateSettings(targetTurns: storyTurnCount, pageCount: storybookPageCount, llmBackend: llmBackend) }
         // So Landing's "Read Stories" button (LandingView.swift) is
         // accurate from a cold launch, not just after a background/
         // foreground cycle or a concluded story -- a story saved in a
