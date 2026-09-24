@@ -3081,6 +3081,26 @@ final class SessionCoordinatorTests: XCTestCase {
         runLoop.cancel()
     }
 
+    /// Issue #64: AppModel reads readyToShowTheEnd as "the live story is
+    /// over" (StoryEntry's liveStoryConcluded) when Library's "+" tile is
+    /// tapped -- which, on the Read-it-now path, is long after the rewrite
+    /// finished. It must still say so then, or "+" would resume the
+    /// finished story instead of starting a new one.
+    func testReadyToShowTheEndStaysLatchedAfterTheRewriteFinishes() async {
+        let (coordinator, connection, audio, vad) = makeConcludedStoryFixture()
+        audio.autoFinishEnqueuedBuffers = true
+        let runLoop = Task { await coordinator.start() }
+
+        await driveConcludingTurnToTheEnd(coordinator: coordinator, connection: connection, vad: vad)
+        connection.emit(.message(.rewritingDone))
+        await eventually { await coordinator.isRewriting == false }
+
+        let ready = await coordinator.readyToShowTheEnd
+        XCTAssertTrue(ready, "only newStory() may un-latch it, not the rewrite finishing")
+
+        runLoop.cancel()
+    }
+
     // MARK: - Issue #48: the last error goes stale when the next turn starts
 
     /// Drives a turn to the ditty timeout, which sets the sticky "took too
