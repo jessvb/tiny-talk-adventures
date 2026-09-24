@@ -702,6 +702,10 @@ final class AppModel: ObservableObject {
         pendingStoryDetailFetchId = nil
         isRewriting = false
         previousIsRewriting = false
+        // Same reasoning: a fresh coordinator's latestLlmBackendStatus
+        // starts nil, so mirror that here rather than showing the old
+        // connection's status until the poll loop's next tick overwrites it.
+        serverLlmStatus = nil
     }
 
     /// What the "Disconnect" button calls -- a disconnect the user chose
