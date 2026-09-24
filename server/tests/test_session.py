@@ -2157,3 +2157,64 @@ async def test_groq_story_replies_still_pass_the_safety_filter(transport):
     session = make_two_engine_session(transport, groq=groq, llm_backend="groq")
     await run_full_turn(session)
     assert transport.messages_of_type("response_text")[0]["text"] == SAFE_FALLBACK
+
+
+async def test_rewrite_uses_the_concluded_storys_engine_and_page_count(transport, monkeypatch):
+    """_run_turn's conclusion block calls _begin_story() (next story's
+    settings) BEFORE the rewrite starts -- the rewrite must still get the
+    settings of the story that just ended, even if the parent changed
+    them mid-story."""
+    monkeypatch.setattr("tinytalk.session.story_store.save_story", _fake_save_story)
+    captured = {}
+
+    async def capturing_build_and_attach(story_id, turns, shared_facts, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "tinytalk.session.storybook.build_and_attach", capturing_build_and_attach
+    )
+    assert config.STORYBOOK_PAGE_COUNT != 3  # otherwise this test proves nothing
+    ollama = FakeLlm(chunks_by_call=[["A fox found a shiny key. "], ["The end."]])
+    groq = FakeLlm()
+    session = make_two_engine_session(transport, ollama=ollama, groq=groq)
+
+    await run_full_turn(session)  # story starts on ollama
+    await session.handle_update_settings(7, 3, llm_backend="groq")
+    await run_full_turn(session)  # "The end." concludes the story
+    await session.wait_for_rewrite()
+
+    assert captured["llm"] is ollama
+    assert captured["page_count"] == config.STORYBOOK_PAGE_COUNT
+    assert session._story_llm is groq  # the NEXT story gets the new choice
+    assert session._story_page_count == 3
+
+
+async def test_synced_demo_story_rewrite_uses_the_current_preference(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        story_store, "save_synced_story",
+        lambda payload, **kw: tmp_path / f"20260909T120000-{payload['id']}.json",
+    )
+    captured = {}
+
+    async def capturing_build_and_attach(story_id, turns, shared_facts, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "tinytalk.session.storybook.build_and_attach", capturing_build_and_attach
+    )
+    groq = FakeLlm()
+    transport = FakeTransport()
+    session = make_two_engine_session(transport, groq=groq, llm_backend="groq")
+    story = {
+        "id": "abc12345",
+        "created_at": "2026-09-09T12:00:00+00:00",
+        "turns": [
+            {"speaker": "child", "text": "tell me about a fox", "interrupted": False},
+            {"speaker": "agent", "text": "Once there was a fox.", "interrupted": False},
+        ],
+        "shared_facts": [["fox", "foxes are clever"]],
+    }
+    await session.handle_text(json.dumps({"type": "sync_demo_stories", "stories": [story]}))
+    await asyncio.sleep(0.01)  # let the fire-and-forget rewrite task run
+
+    assert captured["llm"] is groq

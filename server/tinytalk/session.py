@@ -981,6 +981,12 @@ class SessionRunner:
                 saved_path = story_store.save_story(self._conversation)
                 turns = list(self._conversation.full_history)
                 shared_facts = list(self._animal_facts.shared_facts)
+                # Captured BEFORE _begin_story() swaps in the next story's
+                # settings: the rewrite belongs to the story that just
+                # ended, so it must use that story's engine and page count
+                # even if the parent changed either mid-story.
+                story_llm = self._story_llm
+                story_page_count = self._story_page_count
                 self._conversation = Conversation()
                 self._begin_story()
                 self._animal_facts = AnimalFactTracker()
@@ -990,7 +996,10 @@ class SessionRunner:
                     story_id = story_store.story_id_from_path(saved_path)
                     await self._send_text_unbuffered(encode_rewriting_started())
                     self._rewrite_task = asyncio.create_task(
-                        self._run_rewrite(story_id, turns, shared_facts)
+                        self._run_rewrite(
+                            story_id, turns, shared_facts,
+                            llm=story_llm, page_count=story_page_count,
+                        )
                     )
                 else:
                     # save_story() itself failed -- there is nothing to
@@ -1007,12 +1016,18 @@ class SessionRunner:
             await self._fail_turn(f"internal error: {exc}", turn_id)
 
     async def _run_rewrite(
-        self, story_id: str, turns: list, shared_facts: list[tuple[str, str]]
+        self,
+        story_id: str,
+        turns: list,
+        shared_facts: list[tuple[str, str]],
+        *,
+        llm: LlmEngine,
+        page_count: int,
     ) -> None:
         try:
             await storybook.build_and_attach(
-                story_id, turns, shared_facts, llm=self._llm,
-                page_count=self._story_page_count,
+                story_id, turns, shared_facts, llm=llm,
+                page_count=page_count,
                 image_backend=self._image_backend,
             )
         except Exception:  # noqa: BLE001 - the REWRITING gate must always release
@@ -1032,7 +1047,7 @@ class SessionRunner:
         currently attached, and must not perturb either."""
         try:
             await storybook.build_and_attach(
-                story_id, turns, shared_facts, llm=self._llm,
+                story_id, turns, shared_facts, llm=self._resolve_llm()[0],
                 page_count=config.STORYBOOK_PAGE_COUNT,
             )
         except Exception:  # noqa: BLE001 - a background rewrite must survive any single bad story
