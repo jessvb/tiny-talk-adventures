@@ -204,6 +204,78 @@ final class DemoStoryLibraryTests: XCTestCase {
         XCTAssertEqual(library.detail(id: "interrupted")?.rewriteStatus, .done)
     }
 
+    /// What a kill mid-drawing leaves on disk: the rewrite finished, the
+    /// pictures were marked pending, and none of them were saved yet.
+    private func storyKilledMidIllustration(id: String, illustrationsStatus: IllustrationsStatus? = .pending) -> LocalStory {
+        LocalStory(
+            id: id,
+            createdAt: "2026-09-19T12:00:00Z",
+            turns: payload(id: id).turns,
+            sharedFacts: [],
+            pageCount: 3,
+            title: "Pip the Fox",
+            pages: ["Page one.", "Page two.", "Page three."].map { LocalStoryPage(text: $0) },
+            rewriteStatus: .done,
+            illustrationsStatus: illustrationsStatus
+        )
+    }
+
+    func testResumeRedrawsPicturesForAStoryKilledMidIllustrationWithoutRewritingIt() async {
+        let chat = ScriptedChatClient(storybookJSON(title: "A Different Title"))
+        let store = makeStore()
+        let illustrator = FakeIllustrator(result: IllustrationResult(images: [Data([1]), Data([2]), nil], status: .partial))
+        let library = makeLibrary(store: store, chat: chat, illustrator: illustrator)
+        store.save(storyKilledMidIllustration(id: "abc"))
+
+        await library.resumeInterruptedBuilds()
+
+        XCTAssertEqual(chat.callCount, 0, "the finished rewrite must not be redone")
+        XCTAssertEqual(illustrator.receivedPages, [["Page one.", "Page two.", "Page three."]])
+        let detail = library.detail(id: "abc")
+        XCTAssertEqual(detail?.title, "Pip the Fox")
+        XCTAssertEqual(detail?.illustrationsStatus, .partial)
+        XCTAssertEqual(detail?.pages.map(\.hasImage), [true, true, false])
+        XCTAssertEqual(library.pageImage(id: "abc", index: 1), Data([2]))
+    }
+
+    func testResumeLeavesStoriesWhosePicturesFinishedOrWereNeverStartedAlone() async {
+        let store = makeStore()
+        let illustrator = FakeIllustrator(result: IllustrationResult(images: [nil, nil, nil], status: .failed))
+        let library = makeLibrary(store: store, chat: ScriptedChatClient(storybookJSON()), illustrator: illustrator)
+        store.save(storyKilledMidIllustration(id: "done", illustrationsStatus: .done))
+        store.save(storyKilledMidIllustration(id: "partial", illustrationsStatus: .partial))
+        store.save(storyKilledMidIllustration(id: "failed", illustrationsStatus: .failed))
+        store.save(storyKilledMidIllustration(id: "textonly", illustrationsStatus: nil))
+
+        await library.resumeInterruptedBuilds()
+
+        XCTAssertEqual(illustrator.receivedPages, [])
+    }
+
+    func testResumeWithNoIllustratorLeavesAnInterruptedPassPendingForLater() async {
+        let store = makeStore()
+        let library = makeLibrary(store: store, chat: ScriptedChatClient(storybookJSON()))
+        store.save(storyKilledMidIllustration(id: "abc"))
+
+        await library.resumeInterruptedBuilds()
+
+        XCTAssertEqual(library.detail(id: "abc")?.illustrationsStatus, .pending)
+        XCTAssertEqual(library.detail(id: "abc")?.rewriteStatus, .done)
+    }
+
+    func testResumingTwiceDrawsAnInterruptedStoryOnlyOnce() async {
+        let store = makeStore()
+        let illustrator = FakeIllustrator(result: IllustrationResult(images: [nil, nil, nil], status: .failed))
+        let library = makeLibrary(store: store, chat: ScriptedChatClient(storybookJSON()), illustrator: illustrator)
+        store.save(storyKilledMidIllustration(id: "abc"))
+
+        async let first: Void = library.resumeInterruptedBuilds()
+        async let second: Void = library.resumeInterruptedBuilds()
+        _ = await (first, second)
+
+        XCTAssertEqual(illustrator.receivedPages.count, 1)
+    }
+
     // MARK: - sync payloads
 
     func testSyncPayloadCarriesTheFinishedStorybookAndItsPictures() async {
