@@ -923,6 +923,7 @@ final class SessionCoordinatorTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 20_000_000) // ditty looping, no chunk yet
 
         await coordinator.stopPageAudio()
+        await waitForDittyStopToLand(audio)
 
         let countRightAfterStop = audio.played.count
         try? await Task.sleep(nanoseconds: 20_000_000)
@@ -953,7 +954,11 @@ final class SessionCoordinatorTests: XCTestCase {
         await coordinator.synthesizePage(storyId: "pip", pageIndex: 1)
         try? await Task.sleep(nanoseconds: 20_000_000) // ditty looping
 
+        XCTAssertFalse(audio.stopped, "precondition: nothing has stopped playback yet, so audio.stopped below really means the error was handled")
         connection.emit(.message(.error("no page 1 for story 'pip'", turnId: 0)))
+        // emit() only yields to the stream -- the coordinator handles the
+        // error asynchronously, so snapshotting right away raced it.
+        await waitForDittyStopToLand(audio)
 
         let countRightAfterError = audio.played.count
         try? await Task.sleep(nanoseconds: 20_000_000)
@@ -963,6 +968,19 @@ final class SessionCoordinatorTests: XCTestCase {
         )
 
         runLoop.cancel()
+    }
+
+    /// Waits until a ditty stop has genuinely landed -- stopWaitingDitty()
+    /// always calls audio.stopPlaybackImmediately(), so audio.stopped
+    /// flips then -- AND the one iteration already mid-play() at that
+    /// moment has returned (see FakeAudio.playsInFlight for why it may
+    /// still record itself after the stop). Only after both is a
+    /// played.count snapshot a fair "nothing more may play" baseline.
+    /// Snapshotting before either was issue #71's off-by-one flake. Keeps
+    /// the assertion's teeth: a loop that didn't actually stop would add
+    /// ~4 more plays during the caller's following 20ms wait.
+    private func waitForDittyStopToLand(_ audio: FakeAudio) async {
+        await eventually { audio.stopped && audio.playsInFlight == 0 }
     }
 
     /// Confirms handlePageAudioDittyTimeout() is properly scoped: it must
