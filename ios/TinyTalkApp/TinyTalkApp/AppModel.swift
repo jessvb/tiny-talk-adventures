@@ -178,6 +178,21 @@ final class AppModel: ObservableObject {
     /// single long-lived consumer task drains the stream strictly in order.
     private var micStreamContinuation: AsyncStream<Data>.Continuation?
     private var micConsumerTask: Task<Void, Never>?
+    /// Issue #70: "a connect is in flight" as real state. connect() sets
+    /// `coordinator` well before isConnected flips true, awaiting several
+    /// times in between (mic permission, new_story, audio capture start),
+    /// so neither of those says whether one is running. connectAttempt is
+    /// the one running now -- at most one at a time: connectResumingIfPending()
+    /// joins or waits out an existing attempt instead of building a second
+    /// coordinator and audio engine on top of it (a double-tap on Create a
+    /// Story; two engines holding the mic is #39's leading hypothesis).
+    /// connectGeneration is bumped by every disconnect(): an attempt started
+    /// under an older generation has been superseded (Home, or Library's
+    /// Back, tapped mid-connect), so at each of its await points connect()
+    /// checks isCurrentConnect() and tears down what it built itself instead
+    /// of finishing into a live session behind Home.
+    private var connectGeneration = 0
+    private var connectAttempt: (generation: Int, task: Task<Void, Never>)?
     /// True only when this app itself disconnected because it was
     /// backgrounded WHILE actually connected -- see
     /// handleAppBackgrounded()/handleAppForegrounded(). Distinguishes
@@ -349,8 +364,10 @@ final class AppModel: ObservableObject {
 
     /// What Landing's "Create a Story" button and Library's "+ New story"
     /// tile both call -- StoryEntry decides what each gets. Not connected:
-    /// connectResumingIfPending() as-is, so backgrounding/resume behavior is
-    /// identical regardless of which screen initiated the connect.
+    /// connectResumingIfPending(), so backgrounding/resume behavior is
+    /// identical regardless of which screen initiated the connect -- except
+    /// that Landing's button connects fresh and resets the server's story
+    /// too (issue #69; a new connection alone doesn't).
     /// Connected: never connect() a second time on top of the live
     /// coordinator (Library's "+" is reachable mid-story via Elsie's desk's
     /// own "Library" menu item) -- that would leak its WebSocket/audio
@@ -365,6 +382,11 @@ final class AppModel: ObservableObject {
         switch entry.action(isConnected: isConnected, liveStoryConcluded: liveStoryConcluded) {
         case .connect:
             await connectResumingIfPending()
+        case .connectAndStartNewStory:
+            // "Always a blank, new story" -- never resume a turn of whatever
+            // story came before (issue #69).
+            pendingResumeTurnId = nil
+            await connectResumingIfPending(startingNewStory: true)
         case .resumeLiveStory:
             return
         case .startNewStory:
@@ -374,7 +396,9 @@ final class AppModel: ObservableObject {
 
     /// What the story screen's "Home" menu item calls -- a deliberate
     /// disconnect, matching disconnectUserInitiated()'s existing "never
-    /// auto-resume this" semantics.
+    /// auto-resume this" semantics. Also cancels a connect still in flight
+    /// (Library -> quick Back, issue #70): disconnect() supersedes it, and
+    /// it tears itself down at its next await instead of going live.
     func goHome() {
         disconnectUserInitiated()
         screen = .landing
@@ -384,16 +408,87 @@ final class AppModel: ObservableObject {
     /// failure, caller shows its generic banner), except the thrown error
     /// (e.g. sessionConfigurationFailed's underlying AVAudioSession error)
     /// now reaches the on-screen debug log instead of vanishing -- issue #39.
+    ///
+    /// Also where every engine gets its onCaptureLost hook (issues #39/#49),
+    /// since both connect() and connectAwayFromHome() build theirs here.
     private func makeAudioEngineLoggingFailure() -> RealAudioEngine? {
         do {
-            return try RealAudioEngine()
+            let engine = try RealAudioEngine()
+            engine.onCaptureLost = { [weak self, weak engine] reason in
+                Task { @MainActor in
+                    guard let self, let engine else { return }
+                    await self.handleCaptureLost(from: engine, reason: reason)
+                }
+            }
+            return engine
         } catch {
             appendAudioDebugEvent("[\(DebugTimestamp.now())] AppModel: RealAudioEngine() init threw: \(error)")
             return nil
         }
     }
 
-    func connect(resumingTurnId: Int? = nil) async {
+    /// See handleCaptureLost(from:reason:).
+    private var lastCaptureLostReconnectAt: Date?
+
+    /// Issues #39/#49: RealAudioEngine's health monitor found the mic tap
+    /// delivering nothing and its own in-engine recovery attempts (session
+    /// reactivation + tap rebuild) didn't bring it back. The cure the
+    /// household found by hand for #39 was a fresh reconnect -- a brand-new
+    /// RealAudioEngine -- so this does that automatically, keeping the story
+    /// on screen and resuming a reply in flight exactly like a
+    /// background/foreground cycle (handleAppBackgrounded()). At most once a
+    /// minute: a mic that stays unavailable (a phone call holding it, say)
+    /// must not become a reconnect loop, so a second loss within that window
+    /// shows the banner instead and leaves the rest to the household.
+    private func handleCaptureLost(from engine: RealAudioEngine, reason: String) async {
+        // A late report from an engine a disconnect already replaced.
+        guard audioEngine === engine, isConnected, let coordinator else { return }
+        if let last = lastCaptureLostReconnectAt, Date().timeIntervalSince(last) < 60 {
+            appendAudioDebugEvent("[\(DebugTimestamp.now())] AppModel: mic capture lost again (\(reason)) within 60s of the last automatic reconnect -- not reconnecting again")
+            lastErrorMessage = "The microphone stopped working. Tap Home, then Create a Story to try again."
+            return
+        }
+        lastCaptureLostReconnectAt = Date()
+        let liveState = await coordinator.state
+        let resumeTurnId = (liveState == .waitingForReply || liveState == .speaking) ? await coordinator.activeTurnId : nil
+        guard audioEngine === engine else { return }  // disconnected meanwhile
+        pendingResumeTurnId = resumeTurnId
+        // disconnect() empties the on-screen log; keep the recovery lines
+        // that explain why this reconnect happened.
+        let keptLog = audioDebugLog
+        disconnect(keepingTurnHistory: true)
+        audioDebugLog = keptLog
+        appendAudioDebugEvent("[\(DebugTimestamp.now())] AppModel: mic capture lost (\(reason)) -- reconnecting with a fresh audio engine to recover (issue #39), resumingTurnId=\(String(describing: resumeTurnId))")
+        await connectResumingIfPending()
+    }
+
+    /// Issue #70: false once a disconnect() has superseded the connect
+    /// attempt that captured `generation` -- see connectGeneration.
+    private func isCurrentConnect(_ generation: Int) -> Bool {
+        generation == connectGeneration
+    }
+
+    /// Issue #70: what a superseded connect attempt does instead of going
+    /// live. disconnect() already tore down everything the attempt had put
+    /// on `self` by then, but not what the attempt went on to do after it:
+    /// audio capture (or the resumed turn's ditty) started once disconnect()
+    /// had already stopped it. So only the attempt's own objects are passed
+    /// in and torn down again -- `audio` only once its capture has started.
+    /// Both teardowns are safe to repeat.
+    private func abandonSupersededConnect(
+        _ step: String, coordinator: SessionCoordinator? = nil, capturingAudio audio: RealAudioEngine? = nil
+    ) async {
+        appendAudioDebugEvent("[\(DebugTimestamp.now())] AppModel: connect superseded by a disconnect (Home/Back mid-connect) \(step) -- tearing down its own session instead of going live")
+        audio?.stopCapturing()
+        await coordinator?.close()
+    }
+
+    /// `startingNewStory` (issue #69): the child asked for a blank story,
+    /// so once the connection is open the server is told to drop whatever
+    /// story its long-lived session still holds -- see
+    /// SessionCoordinator.startFreshServerStory(). Ignored when resuming.
+    func connect(resumingTurnId: Int? = nil, startingNewStory: Bool = false) async {
+        let generation = connectGeneration
         UserDefaults.standard.set(serverAddress, forKey: "serverAddress")
         guard let url = URL(string: serverAddress) else {
             lastErrorMessage = "invalid server address"
@@ -402,6 +497,10 @@ final class AppModel: ObservableObject {
 
         guard await RealAudioEngine.requestMicrophonePermission() else {
             lastErrorMessage = "microphone access denied. Check Settings > Privacy > Microphone > TinyTalkApp."
+            return
+        }
+        guard isCurrentConnect(generation) else {
+            await abandonSupersededConnect("during the mic permission check")
             return
         }
 
@@ -442,10 +541,29 @@ final class AppModel: ObservableObject {
         if let resumingTurnId {
             print("AppModel: resuming turn_id=\(resumingTurnId)")
             await coordinator.resume(turnId: resumingTurnId)
+            guard isCurrentConnect(generation) else {
+                await abandonSupersededConnect("while setting up the resumed turn", coordinator: coordinator)
+                return
+            }
         } else {
             print("AppModel: fresh connect, no turn to resume")
         }
         runLoop = Task { await coordinator.start() }
+        // Before startCapturing() below, not after: until capture starts no
+        // speech_start can be sent, so the reset is guaranteed to reach the
+        // server (which handles a connection's frames in order) ahead of
+        // the child's first utterance. The wire message only, not
+        // startNewStory(): this coordinator is brand new, so there are no
+        // bubbles, turn, ditty or mute state to reset -- and newStory()'s
+        // stopPlaybackImmediately() would touch the audio engine before
+        // capture has configured it (see the ditty note further down).
+        if startingNewStory && resumingTurnId == nil {
+            await coordinator.startFreshServerStory()
+            guard isCurrentConnect(generation) else {
+                await abandonSupersededConnect("while sending new_story", coordinator: coordinator)
+                return
+            }
+        }
 
         let (micStream, micContinuation) = AsyncStream<Data>.makeStream()
         micStreamContinuation = micContinuation
@@ -463,6 +581,12 @@ final class AppModel: ObservableObject {
                 micContinuation.yield(pcm)
             }
         } catch {
+            // Superseded meanwhile: disconnect() already cleaned up, and a
+            // capture error about a session nobody wants any more is noise.
+            guard isCurrentConnect(generation) else {
+                await abandonSupersededConnect("while audio capture was failing to start", coordinator: coordinator)
+                return
+            }
             // The most common real cause here is the user denying the
             // microphone permission prompt -- AVAudioEngine's start()
             // fails rather than throwing a dedicated "permission denied"
@@ -484,8 +608,16 @@ final class AppModel: ObservableObject {
         // reliably fails with an input/output sample-rate mismatch inside
         // CoreAudio's voice-processing unit, every single retry attempt,
         // regardless of how long play()'s own retry loop waits.
+        guard isCurrentConnect(generation) else {
+            await abandonSupersededConnect("while audio capture was starting", coordinator: coordinator, capturingAudio: audio)
+            return
+        }
         if resumingTurnId != nil {
             await coordinator.startResumedWaitingDitty()
+            guard isCurrentConnect(generation) else {
+                await abandonSupersededConnect("while starting the resumed turn's ditty", coordinator: coordinator, capturingAudio: audio)
+                return
+            }
         }
 
         isConnected = true
@@ -515,6 +647,10 @@ final class AppModel: ObservableObject {
                 print("AppModel: failed to sync demo stories: \(error)")
                 appendAudioDebugEvent("[\(DebugTimestamp.now())] demo story sync failed: \(error)")
             }
+            // Live by now, so a disconnect during the sync was an ordinary
+            // one that already tore everything down -- just don't start
+            // polling a session that's gone (issue #70).
+            guard isCurrentConnect(generation) else { return }
         }
         // So Landing's "Read Stories" button (LandingView.swift) is
         // accurate from a cold launch, not just after a background/
@@ -541,12 +677,22 @@ final class AppModel: ObservableObject {
         else { return nil }
         // Same on-screen debug log as the rest of demo mode -- a bad token
         // or an exhausted quota shows up there, never in front of the child.
-        return IllustrationPass(
-            chat: chat,
-            backend: CloudflareImageClient(accountId: accountId, apiToken: apiToken),
-            onDebugEvent: { [weak self] line in
-                Task { @MainActor in self?.appendAudioDebugEvent(line) }
-            }
+        let onDebugEvent: @Sendable (String) -> Void = { [weak self] line in
+            Task { @MainActor in self?.appendAudioDebugEvent(line) }
+        }
+        // Issue #68: the drawing budget runs on a clock that stands still
+        // while the app is backgrounded, and the wrapper keeps the pass
+        // alive through a short absence -- see BackgroundSafeIllustrator.
+        let clock = ForegroundClock()
+        return BackgroundSafeIllustrator(
+            wrapping: IllustrationPass(
+                chat: chat,
+                backend: CloudflareImageClient(accountId: accountId, apiToken: apiToken),
+                now: { clock.now() },
+                onDebugEvent: onDebugEvent
+            ),
+            clock: clock,
+            onDebugEvent: onDebugEvent
         )
     }
 
@@ -557,6 +703,7 @@ final class AppModel: ObservableObject {
     /// is backgrounded mid-reply -- that reply is simply lost, not
     /// replayed.
     func connectAwayFromHome() async {
+        let generation = connectGeneration
         guard let groqKey = KeychainStore.get("groqApiKey")?
                 .trimmingCharacters(in: .whitespacesAndNewlines), !groqKey.isEmpty else {
             lastErrorMessage = "no Groq API key saved -- add one in Settings, under Away From Home."
@@ -564,6 +711,10 @@ final class AppModel: ObservableObject {
         }
         guard await RealAudioEngine.requestMicrophonePermission() else {
             lastErrorMessage = "microphone access denied. Check Settings > Privacy > Microphone > TinyTalkApp."
+            return
+        }
+        guard isCurrentConnect(generation) else {  // same as connect()'s (issue #70)
+            await abandonSupersededConnect("during the mic permission check")
             return
         }
 
@@ -640,8 +791,16 @@ final class AppModel: ObservableObject {
         do {
             try await audio.startCapturing { pcm in micContinuation.yield(pcm) }
         } catch {
+            guard isCurrentConnect(generation) else {  // same as connect()'s
+                await abandonSupersededConnect("while audio capture was failing to start", coordinator: coordinator)
+                return
+            }
             lastErrorMessage = "could not start audio capture: \(error.localizedDescription). Check Settings > Privacy > Microphone."
             disconnect(keepingTurnHistory: true)  // same reasoning as connect()'s
+            return
+        }
+        guard isCurrentConnect(generation) else {  // same as connect()'s
+            await abandonSupersededConnect("while audio capture was starting", coordinator: coordinator, capturingAudio: audio)
             return
         }
 
@@ -679,6 +838,9 @@ final class AppModel: ObservableObject {
     /// caller that forgets to think about this errs on the side of not
     /// leaking one story's text into the next.
     func disconnect(keepingTurnHistory: Bool = false) {
+        // Supersedes a connect still in flight (issue #70) -- see
+        // connectGeneration.
+        connectGeneration += 1
         pollTask?.cancel()
         runLoop?.cancel()
         // Cancelling runLoop's Task alone does not stop the coordinator's
@@ -752,7 +914,31 @@ final class AppModel: ObservableObject {
     /// holding, instead of starting a fresh, memory-less session that
     /// discards the reply as belonging to a turn_id it no longer
     /// recognizes.
-    func connectResumingIfPending() async {
+    func connectResumingIfPending(startingNewStory: Bool = false) async {
+        // Issue #70: at most one connect at a time. One still running for
+        // the current generation IS this request's connect (a double-tap on
+        // Create a Story, Library's onAppear, ensureConnected()) -- wait for
+        // it rather than build a second coordinator and audio engine. One a
+        // disconnect has since superseded is waited out too, so its own
+        // teardown (stopping its engine, which deactivates the shared audio
+        // session) is over before a new engine starts; then loop, since
+        // another caller may have started the next attempt meanwhile.
+        while let attempt = connectAttempt {
+            let joiningCurrentAttempt = isCurrentConnect(attempt.generation)
+            appendAudioDebugEvent("[\(DebugTimestamp.now())] AppModel: a connect is already in flight -- \(joiningCurrentAttempt ? "waiting for it instead of starting another" : "it was superseded; waiting for its teardown before starting a new one")")
+            await attempt.task.value
+            if joiningCurrentAttempt { return }
+        }
+        let task = Task { [weak self] in
+            await self?.performConnect(startingNewStory: startingNewStory)
+            self?.connectAttempt = nil
+        }
+        connectAttempt = (generation: connectGeneration, task: task)
+        await task.value
+    }
+
+    /// connectResumingIfPending()'s body, run as the one connectAttempt.
+    private func performConnect(startingNewStory: Bool) async {
         // Whatever the banner said ("disconnected from server", a failed
         // earlier attempt, a timeout) is stale once a reconnect starts (issue
         // #48); a failed attempt shows its own. Clearing it here, in the one
@@ -767,9 +953,12 @@ final class AppModel: ObservableObject {
         // (see connectAwayFromHome()), so it always restarts numbering.
         turnHistory.coordinatorReplaced(resumingTurnId: awayFromHomeEnabled ? nil : resumingTurnId)
         if awayFromHomeEnabled {
+            // No reset needed away from home: every connectAwayFromHome()
+            // builds a brand-new DemoConnection, whose conversation and arc
+            // start empty -- nothing outlives the connection there.
             await connectAwayFromHome()
         } else {
-            await connect(resumingTurnId: resumingTurnId)
+            await connect(resumingTurnId: resumingTurnId, startingNewStory: startingNewStory)
         }
     }
 
@@ -792,11 +981,10 @@ final class AppModel: ObservableObject {
     /// start a ditty and replay audio the very next call tears down.
     private func ensureConnected() async -> Bool {
         if isConnected { return true }
-        // connect() sets `coordinator` well before isConnected flips, so a
-        // non-nil one here means a reconnect (an earlier tap's, or
-        // Landing's) is already mid-flight -- let it finish rather than
-        // start a duplicate; this tap is dropped.
-        guard coordinator == nil else { return false }
+        // A reconnect already in flight (an earlier tap's, or Landing's) is
+        // joined, not duplicated: connectResumingIfPending() waits for it
+        // (issue #70), so this tap acts once it lands instead of being
+        // dropped.
         // (connectResumingIfPending() takes down the "disconnected from
         // server" banner from the drop that got us here; a failed attempt
         // sets its own.)
@@ -869,7 +1057,19 @@ final class AppModel: ObservableObject {
         // "setMuted: isMuted a -> b" line -- a tap with no matching change
         // there (or one soon reverted) is what lead 2 predicts.
         appendAudioDebugEvent("[\(DebugTimestamp.now())] AppModel: mute button tapped on screen=\(screen): isMicMuted=\(isMicMuted) -> requesting setMuted(\(newValue))\(coordinatorToUpdate == nil ? " -- NO coordinator, ignored" : "")")
-        Task { await coordinatorToUpdate?.setMuted(newValue) }
+        Task { [weak self] in
+            guard let coordinatorToUpdate else { return }
+            await coordinatorToUpdate.setMuted(newValue)
+            // Issue #39: the button's look (isMicMuted) otherwise only
+            // changes when the poll loop mirrors it back -- and that loop
+            // only starts at the END of a successful connect(), so while a
+            // connect is still starting capture a tap looked like it did
+            // nothing at all. Reflect the coordinator's answer directly;
+            // the poll loop, when running, writes the same value anyway.
+            let muted = await coordinatorToUpdate.isMuted
+            guard let self, self.coordinator === coordinatorToUpdate else { return }
+            self.isMicMuted = muted
+        }
         // A dead-looking mic is exactly when the household taps this, so
         // the same snapshot as New Story's is taken here too.
         Task { await self.logMicHealth("mute button tap") }
