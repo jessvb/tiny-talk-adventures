@@ -384,13 +384,58 @@ final class AppModel: ObservableObject {
     /// failure, caller shows its generic banner), except the thrown error
     /// (e.g. sessionConfigurationFailed's underlying AVAudioSession error)
     /// now reaches the on-screen debug log instead of vanishing -- issue #39.
+    ///
+    /// Also where every engine gets its onCaptureLost hook (issues #39/#49),
+    /// since both connect() and connectAwayFromHome() build theirs here.
     private func makeAudioEngineLoggingFailure() -> RealAudioEngine? {
         do {
-            return try RealAudioEngine()
+            let engine = try RealAudioEngine()
+            engine.onCaptureLost = { [weak self, weak engine] reason in
+                Task { @MainActor in
+                    guard let self, let engine else { return }
+                    await self.handleCaptureLost(from: engine, reason: reason)
+                }
+            }
+            return engine
         } catch {
             appendAudioDebugEvent("[\(DebugTimestamp.now())] AppModel: RealAudioEngine() init threw: \(error)")
             return nil
         }
+    }
+
+    /// See handleCaptureLost(from:reason:).
+    private var lastCaptureLostReconnectAt: Date?
+
+    /// Issues #39/#49: RealAudioEngine's health monitor found the mic tap
+    /// delivering nothing and its own in-engine recovery attempts (session
+    /// reactivation + tap rebuild) didn't bring it back. The cure the
+    /// household found by hand for #39 was a fresh reconnect -- a brand-new
+    /// RealAudioEngine -- so this does that automatically, keeping the story
+    /// on screen and resuming a reply in flight exactly like a
+    /// background/foreground cycle (handleAppBackgrounded()). At most once a
+    /// minute: a mic that stays unavailable (a phone call holding it, say)
+    /// must not become a reconnect loop, so a second loss within that window
+    /// shows the banner instead and leaves the rest to the household.
+    private func handleCaptureLost(from engine: RealAudioEngine, reason: String) async {
+        // A late report from an engine a disconnect already replaced.
+        guard audioEngine === engine, isConnected, let coordinator else { return }
+        if let last = lastCaptureLostReconnectAt, Date().timeIntervalSince(last) < 60 {
+            appendAudioDebugEvent("[\(DebugTimestamp.now())] AppModel: mic capture lost again (\(reason)) within 60s of the last automatic reconnect -- not reconnecting again")
+            lastErrorMessage = "The microphone stopped working. Tap Home, then Create a Story to try again."
+            return
+        }
+        lastCaptureLostReconnectAt = Date()
+        let liveState = await coordinator.state
+        let resumeTurnId = (liveState == .waitingForReply || liveState == .speaking) ? await coordinator.activeTurnId : nil
+        guard audioEngine === engine else { return }  // disconnected meanwhile
+        pendingResumeTurnId = resumeTurnId
+        // disconnect() empties the on-screen log; keep the recovery lines
+        // that explain why this reconnect happened.
+        let keptLog = audioDebugLog
+        disconnect(keepingTurnHistory: true)
+        audioDebugLog = keptLog
+        appendAudioDebugEvent("[\(DebugTimestamp.now())] AppModel: mic capture lost (\(reason)) -- reconnecting with a fresh audio engine to recover (issue #39), resumingTurnId=\(String(describing: resumeTurnId))")
+        await connectResumingIfPending()
     }
 
     func connect(resumingTurnId: Int? = nil) async {
@@ -869,7 +914,19 @@ final class AppModel: ObservableObject {
         // "setMuted: isMuted a -> b" line -- a tap with no matching change
         // there (or one soon reverted) is what lead 2 predicts.
         appendAudioDebugEvent("[\(DebugTimestamp.now())] AppModel: mute button tapped on screen=\(screen): isMicMuted=\(isMicMuted) -> requesting setMuted(\(newValue))\(coordinatorToUpdate == nil ? " -- NO coordinator, ignored" : "")")
-        Task { await coordinatorToUpdate?.setMuted(newValue) }
+        Task { [weak self] in
+            guard let coordinatorToUpdate else { return }
+            await coordinatorToUpdate.setMuted(newValue)
+            // Issue #39: the button's look (isMicMuted) otherwise only
+            // changes when the poll loop mirrors it back -- and that loop
+            // only starts at the END of a successful connect(), so while a
+            // connect is still starting capture a tap looked like it did
+            // nothing at all. Reflect the coordinator's answer directly;
+            // the poll loop, when running, writes the same value anyway.
+            let muted = await coordinatorToUpdate.isMuted
+            guard let self, self.coordinator === coordinatorToUpdate else { return }
+            self.isMicMuted = muted
+        }
         // A dead-looking mic is exactly when the household taps this, so
         // the same snapshot as New Story's is taken here too.
         Task { await self.logMicHealth("mute button tap") }
