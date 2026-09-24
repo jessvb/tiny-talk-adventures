@@ -95,9 +95,18 @@ public struct DemoStoryLibrary: Sendable {
     }
 
     /// A build interrupted by the app being backgrounded or killed leaves
-    /// its story `pending` forever -- rebuild any such story. Idempotent.
+    /// its story `pending` forever -- pick any such story back up.
+    /// Idempotent. Two places a build can be cut off:
+    /// - mid-rewrite (`rewriteStatus == .pending`): redo the whole build.
+    /// - mid-pictures (`illustrationsStatus == .pending`, issue #54): the
+    ///   text is already done, so only redraw. A pass saves its pictures all
+    ///   at once at the end, so an interrupted one left none behind -- every
+    ///   page is redrawn. `.pending` is only ever written just before a pass
+    ///   starts in this process, so finding it here means that pass died
+    ///   (or, if it's still running, the serial queue makes this call wait
+    ///   for it and then no-op).
     public func resumeInterruptedBuilds() async {
-        for story in store.loadAll() where story.rewriteStatus == .pending {
+        for story in store.loadAll() where story.rewriteStatus == .pending || story.illustrationsStatus == .pending {
             await buildStorybook(id: story.id)
         }
     }
@@ -105,31 +114,54 @@ public struct DemoStoryLibrary: Sendable {
     private static func performBuild(
         id: String, store: LocalStoryStore, writer: StorybookWriter, illustrator: (any StoryIllustrating)?
     ) async {
-        guard var story = store.load(id: id), story.rewriteStatus == .pending else { return }
+        guard let story = store.load(id: id) else { return }
+        if story.rewriteStatus == .pending {
+            guard let rewritten = await performRewrite(story, store: store, writer: writer) else { return }
+            await performIllustration(rewritten, store: store, illustrator: illustrator)
+        } else if story.rewriteStatus == .done, story.illustrationsStatus == .pending {
+            await performIllustration(story, store: store, illustrator: illustrator)
+        }
+    }
 
+    /// Returns the saved storybook, or nil when the rewrite failed or the
+    /// story vanished mid-rewrite.
+    private static func performRewrite(
+        _ story: LocalStory, store: LocalStoryStore, writer: StorybookWriter
+    ) async -> LocalStory? {
+        var story = story
         let written = await writer.write(
             turns: story.turns, sharedFacts: story.sharedFacts, pageCount: story.pageCount
         )
         // The story may have been synced home (and its local copy deleted)
         // while the model was thinking -- never re-save it, or it would
         // reappear in the away Library as a duplicate of the synced one.
-        guard store.load(id: id) != nil else { return }
+        guard store.load(id: story.id) != nil else { return nil }
         guard let written else {
             story.rewriteStatus = .failed
             store.save(story)
-            return
+            return nil
         }
         story.title = written.title
         story.pages = written.pages.map { LocalStoryPage(text: $0) }
         story.epilogue = written.epilogue
         story.rewriteStatus = .done
         store.save(story)
+        return story
+    }
 
+    /// With no illustrator configured, a freshly rewritten story stays
+    /// text-only (status nil) and an interrupted pass stays `.pending`, so
+    /// it is picked up again once one is.
+    private static func performIllustration(
+        _ story: LocalStory, store: LocalStoryStore, illustrator: (any StoryIllustrating)?
+    ) async {
         guard let illustrator else { return }
+        var story = story
+        let id = story.id
         story.illustrationsStatus = .pending
         store.save(story)
-        let result = await illustrator.illustrate(pages: written.pages)
-        guard store.load(id: id) != nil else { return } // same reason as above
+        let result = await illustrator.illustrate(pages: story.pages.map(\.text))
+        guard store.load(id: id) != nil else { return } // same reason as performRewrite's
         for (index, image) in result.images.enumerated() where story.pages.indices.contains(index) {
             guard let image else { continue }
             store.saveImage(image, id: id, pageIndex: index)
