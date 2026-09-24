@@ -336,22 +336,28 @@ final class AppModel: ObservableObject {
     }
 
     /// What Landing's "Create a Story" button and Library's "+ New story"
-    /// tile both call. Reuses connectResumingIfPending() as-is so
-    /// backgrounding/resume behavior is identical regardless of which
-    /// screen initiated the connect. Guarded on isConnected: Library's "+"
-    /// tile is now reachable while ALREADY connected (via Elsie's desk's
-    /// own "Library" menu item, which navigates there without
-    /// disconnecting) -- without this guard, tapping it mid-story would
-    /// call connect() a second time on top of the live coordinator,
-    /// leaking its WebSocket/audio engine/Task and double-capturing the
-    /// mic rather than just returning to the story already in progress.
-    /// The live session keeps running via startPollingState()'s poll loop
-    /// regardless of which screen is on-screen, so simply navigating back
-    /// to .creating is enough to resume it.
-    func startStory() async {
+    /// tile both call -- StoryEntry decides what each gets. Not connected:
+    /// connectResumingIfPending() as-is, so backgrounding/resume behavior is
+    /// identical regardless of which screen initiated the connect.
+    /// Connected: never connect() a second time on top of the live
+    /// coordinator (Library's "+" is reachable mid-story via Elsie's desk's
+    /// own "Library" menu item) -- that would leak its WebSocket/audio
+    /// engine/Task and double-capture the mic. Instead either just navigate
+    /// back (the live session keeps running via startPollingState()'s poll
+    /// loop regardless of which screen is on-screen), or start a new story
+    /// on it -- issue #64: navigating back into a FINISHED story left its
+    /// bubbles on screen and The End unable to fire for the next one.
+    func startStory(_ entry: StoryEntry) async {
         screen = .creating
-        guard !isConnected else { return }
-        await connectResumingIfPending()
+        let liveStoryConcluded = await coordinator?.readyToShowTheEnd ?? false
+        switch entry.action(isConnected: isConnected, liveStoryConcluded: liveStoryConcluded) {
+        case .connect:
+            await connectResumingIfPending()
+        case .resumeLiveStory:
+            return
+        case .startNewStory:
+            await startNewStory()
+        }
     }
 
     /// What the story screen's "Home" menu item calls -- a deliberate
@@ -1322,6 +1328,14 @@ final class AppModel: ObservableObject {
                         if self.screen != .theEnd {
                             self.screen = .theEnd
                         }
+                        // The End -> Read it now -> Reading's Back lands on
+                        // Library, whose Back would otherwise follow
+                        // whatever set this last -- possibly .creating
+                        // from a mid-story Library visit, i.e. straight
+                        // back into the story that just finished (issue
+                        // #64). The story is over, so Library's way out
+                        // is Home.
+                        self.libraryReturnScreen = .landing
                         let storyId = newest.id
                         Task { await coordinator.getStory(storyId: storyId) }
                     }
