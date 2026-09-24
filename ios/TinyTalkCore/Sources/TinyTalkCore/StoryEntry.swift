@@ -15,9 +15,25 @@ import Foundation
 public enum StoryEntry: Equatable, Sendable {
     /// Landing's "Create a Story": always a blank, new story.
     case homeCreateStory
-    /// Library's "+ New story" tile: back into the story in progress if
-    /// there is one, otherwise a new story.
+    /// Library's "+ New story" tile, Library opened from a live story
+    /// (Elsie's desk): back into the story in progress if there is one,
+    /// otherwise a new story.
     case libraryNewStoryTile
+    /// Library's "+ New story" tile, Library opened from Home: always a
+    /// blank, new story, exactly like Home's own button. Issue #69: Library's
+    /// onAppear reconnects on its own, so the plain tile saw a live session
+    /// whose fresh coordinator hadn't concluded anything and "resumed" it --
+    /// a blank screen while the server carried on with the story abandoned
+    /// via Home. Reached from Home, nothing is on screen to go back into.
+    case libraryNewStoryTileOpenedFromHome
+
+    /// Which tile case Library's "+" is, given where Library was opened
+    /// from (AppModel.libraryReturnScreen == .landing means Home; The End
+    /// sets that too, and its story is over, so a new story is right there
+    /// as well).
+    public static func libraryTile(openedFromHome: Bool) -> StoryEntry {
+        openedFromHome ? .libraryNewStoryTileOpenedFromHome : .libraryNewStoryTile
+    }
 
     public enum Action: Equatable, Sendable {
         /// No session yet -- connect, resuming whatever turn is pending
@@ -41,7 +57,7 @@ public enum StoryEntry: Equatable, Sendable {
     /// from the moment a story finishes until newStory() starts another.
     public func action(isConnected: Bool, liveStoryConcluded: Bool) -> Action {
         switch self {
-        case .homeCreateStory:
+        case .homeCreateStory, .libraryNewStoryTileOpenedFromHome:
             return isConnected ? .startNewStory : .connectAndStartNewStory
         case .libraryNewStoryTile:
             // No session: deliberately NOT a reset. Library can be open

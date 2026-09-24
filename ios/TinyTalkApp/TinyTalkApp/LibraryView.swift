@@ -161,7 +161,10 @@ struct LibraryView: View {
 
     private var newStoryTile: some View {
         Button {
-            Task { await model.startStory(.libraryNewStoryTile) }
+            // Reached from Home, "+" is a blank new story like Home's own
+            // button (issue #69) -- see StoryEntry.libraryTile(openedFromHome:).
+            let entry = StoryEntry.libraryTile(openedFromHome: model.libraryReturnScreen == .landing)
+            Task { await model.startStory(entry) }
         } label: {
             VStack(spacing: 8) {
                 Text("+")
