@@ -57,7 +57,6 @@ struct SettingsView: View {
                         storyLengthCard
                         underTheHoodCard
                         awayFromHomeCard
-                        storybookPreviewCard
                         replayButton
                     }
                     .padding(20)
@@ -398,47 +397,6 @@ struct SettingsView: View {
                 .background(TTA.Palette.paper)
                 .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
             }
-        }
-    }
-
-    /// Developer preview of the Reading/The End screens against mock data
-    /// -- see MockStories.swift. Library is no longer previewed here: it
-    /// shows real data via Landing's "Read Stories" button (LandingView.swift)
-    /// once at least one story exists.
-    private var storybookPreviewCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("COMING SOON: STORYBOOKS")
-                .font(TTA.Typography.display(12))
-                .tracking(1.5)
-                .foregroundColor(TTA.Palette.inkSoft)
-
-            Text("Preview only — these screens use example stories, not real ones yet.")
-                .font(TTA.Typography.body(12.5))
-                .foregroundColor(TTA.Palette.inkSoft)
-
-            previewButton("Preview: The End") {
-                model.selectedStory = MockStories.pip
-                model.screen = .theEnd
-            }
-            previewButton("Preview: Reading") {
-                model.selectedStory = MockStories.pip
-                model.screen = .reading
-            }
-        }
-        .padding(16)
-        .background(TTA.Palette.cream)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-    }
-
-    private func previewButton(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(TTA.Typography.display(14))
-                .foregroundColor(TTA.Palette.wood)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(11)
-                .background(TTA.Palette.paper)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
     }
 

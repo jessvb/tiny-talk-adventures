@@ -359,6 +359,12 @@ public actor SessionCoordinator {
     /// necessary now that this can also change from inside this actor.
     public private(set) var isMuted = false
 
+    /// Diagnostics only (issues #39/#49): every captureAudio() call this
+    /// coordinator has received, muted or not. Read by AppModel's New Story
+    /// snapshot to tell "the engine delivers nothing" from "audio arrives
+    /// but is muted/ignored downstream".
+    public private(set) var capturedChunkCount = 0
+
     public init(
         connection: any ServerConnecting,
         audio: any AudioPlaying,
@@ -392,6 +398,13 @@ public actor SessionCoordinator {
     /// speech/silence decisions are two independent streams from two
     /// different sources.
     public func captureAudio(_ pcm: Data) async {
+        // Issues #39/#49 diagnostics: did mic audio reach this coordinator
+        // at all? Counted before the mute guard, so a muted-but-flowing mic
+        // still shows up; the first chunk is logged once per coordinator.
+        capturedChunkCount += 1
+        if capturedChunkCount == 1 {
+            logDebug("captureAudio: first mic chunk received (isMuted=\(isMuted), state=\(machine.state))")
+        }
         guard !isMuted else { return }
         vad.feed(pcm)
         // isFlushing overrides an already-.listening state on purpose -- see
@@ -426,6 +439,12 @@ public actor SessionCoordinator {
     /// state machine stuck in .listening with no more audio ever arriving
     /// to end it.
     public func setMuted(_ muted: Bool) async {
+        // Issue #49 diagnostics: every actual change (not every call --
+        // AppModel's poll loop can re-assert the same value each tick), so
+        // a captured log shows whether an unmute was later overwritten.
+        if muted != isMuted {
+            logDebug("setMuted: isMuted \(isMuted) -> \(muted) (state=\(machine.state))")
+        }
         isMuted = muted
         if muted {
             await handleSpeechEnd()

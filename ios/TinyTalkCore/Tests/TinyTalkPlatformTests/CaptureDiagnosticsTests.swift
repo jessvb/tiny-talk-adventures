@@ -70,6 +70,18 @@ final class CaptureDiagnosticsTests: XCTestCase {
         XCTAssertEqual(CaptureDiagnostics.peakAmplitude(ofPCM16: data), 7)
     }
 
+    func testBuffersSinceLastCheckReportsOnlyTheDelta() {
+        let diagnostics = CaptureDiagnostics()
+        XCTAssertEqual(diagnostics.buffersSinceLastCheck(), 0)
+        diagnostics.bufferArrived()
+        diagnostics.bufferArrived()
+        XCTAssertEqual(diagnostics.buffersSinceLastCheck(), 2)
+        XCTAssertEqual(diagnostics.buffersSinceLastCheck(), 0, "a second check with nothing new must report 0")
+        diagnostics.bufferArrived()
+        XCTAssertEqual(diagnostics.buffersSinceLastCheck(), 1)
+        XCTAssertEqual(diagnostics.counts.buffersReceived, 3, "lifetime count is unaffected")
+    }
+
     func testTapAndStopFlagsRoundTrip() {
         let diagnostics = CaptureDiagnostics()
         XCTAssertFalse(diagnostics.isTapInstalled)
@@ -169,6 +181,38 @@ final class CaptureWatchdogTests: XCTestCase {
         XCTAssertTrue(calls.flowingCalls.isEmpty)
         task.cancel()
         await task.value
+    }
+
+    func testRebuildBaselineIgnoresBuffersFromBeforeTheRebuild() async {
+        // Issue #49: armed after rebuildCaptureTap(), buffers the OLD tap
+        // delivered must not make a dead rebuilt tap look healthy.
+        let diagnostics = CaptureDiagnostics()
+        diagnostics.bufferArrived()
+        diagnostics.bufferArrived()
+        let calls = WatchdogCalls()
+        await CaptureWatchdog.run(
+            after: 20_000_000, diagnostics: diagnostics, baselineBuffers: 2,
+            onZeroBuffers: calls.recordZero, onBuffersFlowing: calls.recordFlowing
+        )
+        XCTAssertEqual(calls.zeroCalls.count, 1)
+        XCTAssertTrue(calls.flowingCalls.isEmpty)
+    }
+
+    func testRebuildBaselineReportsHealthyOnceNewBuffersArrive() async {
+        let diagnostics = CaptureDiagnostics()
+        diagnostics.bufferArrived()
+        let calls = WatchdogCalls()
+        let task = Task {
+            await CaptureWatchdog.run(
+                after: 200_000_000, diagnostics: diagnostics, baselineBuffers: 1,
+                onZeroBuffers: calls.recordZero, onBuffersFlowing: calls.recordFlowing
+            )
+        }
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        diagnostics.bufferArrived()
+        await task.value
+        XCTAssertTrue(calls.zeroCalls.isEmpty)
+        XCTAssertEqual(calls.flowingCalls.count, 1)
     }
 
     func testCancellationSuppressesBothReports() async {
