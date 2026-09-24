@@ -456,12 +456,17 @@ public actor SessionCoordinator {
         try await connection.send(.syncDemoStories(stories: stories))
     }
 
-    /// Sends the parent's current story-length preference to the server --
-    /// see protocol.py's UpdateSettings and this project's
+    /// Sends the parent's current story-length preference (and, if set,
+    /// the llmBackend choice from issue #25 -- "ollama"/"groq") to the
+    /// server -- see protocol.py's UpdateSettings and this project's
     /// story-length-settings design spec. Fire-and-forget, same pattern
     /// as listStories()/getStory(storyId:): applies to the next story
-    /// only, no response expected, no local state to update here (the
-    /// values themselves live in AppModel/UserDefaults, not this actor).
+    /// only. When llmBackend is nil the server sends nothing back and
+    /// there's no local state to update here (the turn-length values
+    /// themselves live in AppModel/UserDefaults, not this actor); when
+    /// llmBackend is non-nil the server replies with an llm_backend
+    /// event, which the event loop below stores into
+    /// latestLlmBackendStatus.
     public func updateSettings(targetTurns: Int, pageCount: Int, llmBackend: String? = nil) async {
         try? await connection.send(.updateSettings(targetTurns: targetTurns, pageCount: pageCount, llmBackend: llmBackend))
     }
