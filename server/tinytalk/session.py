@@ -44,6 +44,7 @@ from .protocol import (
     decode_client_message,
     encode_arc_stage,
     encode_error,
+    encode_llm_backend,
     encode_page_audio_done,
     encode_page_image_done,
     encode_response_text,
@@ -117,6 +118,8 @@ class SessionRunner:
         system_prompt: str = config.SYSTEM_PROMPT,
         conversation: Conversation | None = None,
         image_backend: ImageGenBackend | None = None,
+        groq_llm: LlmEngine | None = None,
+        llm_backend: str = "ollama",
     ) -> None:
         self._transport = transport
         # Starts at 0 rather than 1: app.py builds this session around a
@@ -131,6 +134,14 @@ class SessionRunner:
         self._transport_lock = asyncio.Lock()
         self._stt = stt
         self._llm = llm
+        # Server-mode backend toggle (issue #25, docs/superpowers/specs/
+        # 2026-09-22-server-llm-backend-toggle-design.md). self._llm stays
+        # the local (Ollama) engine; _groq_llm exists only when
+        # GROQ_API_KEY was set at startup. _llm_backend is the parent's
+        # preference, resolved into _story_llm once per story by
+        # _begin_story() -- never mid-story.
+        self._groq_llm = groq_llm
+        self._llm_backend = llm_backend
         self._tts = tts
         self._image_backend = image_backend
         self._system_prompt = system_prompt
@@ -215,8 +226,10 @@ class SessionRunner:
                 await self.handle_get_page_image(story_id, page_index)
             case SyncDemoStories(stories=stories):
                 await self.handle_sync_demo_stories(stories)
-            case UpdateSettings(target_turns=target_turns, page_count=page_count):
-                await self.handle_update_settings(target_turns, page_count)
+            case UpdateSettings(
+                target_turns=target_turns, page_count=page_count, llm_backend=llm_backend
+            ):
+                await self.handle_update_settings(target_turns, page_count, llm_backend)
 
     async def handle_conclude_story(self, turn_id: int) -> None:
         """The "Finish this story" action: cancels whatever's in flight
@@ -285,6 +298,14 @@ class SessionRunner:
         stories = story_store.list_stories()
         await self._send_text_unbuffered(encode_story_list(stories))
 
+    def _resolve_llm(self) -> tuple[LlmEngine, str]:
+        """The engine the parent's current preference maps to: Groq only
+        if it was asked for AND this server has one (GROQ_API_KEY set at
+        startup), otherwise the local engine."""
+        if self._llm_backend == "groq" and self._groq_llm is not None:
+            return self._groq_llm, "groq"
+        return self._llm, "ollama"
+
     def _begin_story(self) -> None:
         """One place where a story's settings are captured -- the arc's
         target_turns and the page count its eventual rewrite will use.
@@ -297,8 +318,17 @@ class SessionRunner:
         connection, see app.py's serve())."""
         self._story_arc = StoryArc(target_turns=self._target_turns)
         self._story_page_count = self._page_count
+        self._story_llm, self._story_llm_name = self._resolve_llm()
+        if self._llm_backend == "groq" and self._story_llm_name != "groq":
+            logger.warning(
+                "groq requested but GROQ_API_KEY is not set on this server -- "
+                "the next story will use ollama"
+            )
+        logger.info("next story llm: %s", self._story_llm_name)
 
-    async def handle_update_settings(self, target_turns: int, page_count: int) -> None:
+    async def handle_update_settings(
+        self, target_turns: int, page_count: int, llm_backend: str | None = None
+    ) -> None:
         """Parent-adjustable story-length settings from the Settings
         screen -- see protocol.py's UpdateSettings and this project's
         story-length-settings design spec. Clamped here (not at decode
@@ -311,6 +341,8 @@ class SessionRunner:
         in-flight to migrate."""
         self._target_turns = max(4, min(12, target_turns))
         self._page_count = max(3, min(10, page_count))
+        if llm_backend is not None:
+            self._llm_backend = llm_backend
         # __init__'s arc/page-count capture happens once per SERVER
         # PROCESS (see _begin_story's own doc comment), and the
         # post-conclusion reset captures the next story's settings
@@ -321,11 +353,19 @@ class SessionRunner:
         # retroactively" half of the requirement.
         if not self._story_arc.has_started:
             self._begin_story()
+        _, active = self._resolve_llm()
         logger.info(
-            "update_settings: target_turns=%d, page_count=%d (will apply to the next story)",
+            "update_settings: target_turns=%d, page_count=%d, llm_backend=%s "
+            "(active=%s) (will apply to the next story)",
             self._target_turns,
             self._page_count,
+            self._llm_backend,
+            active,
         )
+        if llm_backend is not None:
+            await self._send_text_unbuffered(
+                encode_llm_backend(self._llm_backend, active, self._groq_llm is not None)
+            )
 
     async def handle_get_story(self, story_id: str) -> None:
         story = story_store.load_story(story_id)
@@ -781,7 +821,7 @@ class SessionRunner:
         turn without duplicating the streaming loop."""
         parts: list[str] = []
         first_chunk_at: float | None = None
-        async for chunk in self._llm.stream_reply(messages):
+        async for chunk in self._story_llm.stream_reply(messages):
             if first_chunk_at is None:
                 first_chunk_at = time.monotonic()
             parts.append(chunk)
@@ -941,6 +981,13 @@ class SessionRunner:
                 saved_path = story_store.save_story(self._conversation)
                 turns = list(self._conversation.full_history)
                 shared_facts = list(self._animal_facts.shared_facts)
+                # Captured BEFORE _begin_story() swaps in the next story's
+                # settings: the rewrite belongs to the story that just
+                # ended, so it must use that story's engine and page count
+                # even if the parent changed either mid-story.
+                story_llm = self._story_llm
+                story_llm_name = self._story_llm_name
+                story_page_count = self._story_page_count
                 self._conversation = Conversation()
                 self._begin_story()
                 self._animal_facts = AnimalFactTracker()
@@ -949,8 +996,14 @@ class SessionRunner:
                     logger.info("story saved to %s", saved_path)
                     story_id = story_store.story_id_from_path(saved_path)
                     await self._send_text_unbuffered(encode_rewriting_started())
+                    logger.info(
+                        "storybook rewrite for %s using %s", story_id, story_llm_name
+                    )
                     self._rewrite_task = asyncio.create_task(
-                        self._run_rewrite(story_id, turns, shared_facts)
+                        self._run_rewrite(
+                            story_id, turns, shared_facts,
+                            llm=story_llm, page_count=story_page_count,
+                        )
                     )
                 else:
                     # save_story() itself failed -- there is nothing to
@@ -967,12 +1020,18 @@ class SessionRunner:
             await self._fail_turn(f"internal error: {exc}", turn_id)
 
     async def _run_rewrite(
-        self, story_id: str, turns: list, shared_facts: list[tuple[str, str]]
+        self,
+        story_id: str,
+        turns: list,
+        shared_facts: list[tuple[str, str]],
+        *,
+        llm: LlmEngine,
+        page_count: int,
     ) -> None:
         try:
             await storybook.build_and_attach(
-                story_id, turns, shared_facts, llm=self._llm,
-                page_count=self._story_page_count,
+                story_id, turns, shared_facts, llm=llm,
+                page_count=page_count,
                 image_backend=self._image_backend,
             )
         except Exception:  # noqa: BLE001 - the REWRITING gate must always release
@@ -991,8 +1050,13 @@ class SessionRunner:
         this session's live REWRITING gate or to whatever connection is
         currently attached, and must not perturb either."""
         try:
+            # No story start on THIS server to have locked an engine to --
+            # the story was played out entirely in away-from-home mode --
+            # so there is nothing to reuse here; this always resolves the
+            # parent's current preference fresh, same as any other
+            # not-yet-started story would.
             await storybook.build_and_attach(
-                story_id, turns, shared_facts, llm=self._llm,
+                story_id, turns, shared_facts, llm=self._resolve_llm()[0],
                 page_count=config.STORYBOOK_PAGE_COUNT,
             )
         except Exception:  # noqa: BLE001 - a background rewrite must survive any single bad story

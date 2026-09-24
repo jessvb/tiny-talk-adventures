@@ -125,7 +125,11 @@ struct SettingsView: View {
             Text(
                 model.awayFromHomeEnabled
                     ? "Away from home: Elsie's brain is in Groq's cloud right now, not your Mac."
-                    : "Your Mac on the home WiFi. Speech, story and voice all run there — nothing is sent to the internet."
+                    : model.llmBackend == "groq"
+                        // Issue #25: the parent picked Groq for home stories,
+                        // so "nothing is sent to the internet" would be false.
+                        ? "Your Mac on the home WiFi. Listening and voices run there; new stories use Groq's cloud for the story text."
+                        : "Your Mac on the home WiFi. Speech, story and voice all run there — nothing is sent to the internet."
             )
                 .font(TTA.Typography.body(13.5))
                 .foregroundColor(TTA.Palette.inkSoft)
@@ -256,9 +260,43 @@ struct SettingsView: View {
     private var awayFromHomeCard: some View {
         if showAwayFromHomeCard {
             VStack(alignment: .leading, spacing: 10) {
-                Text("AWAY FROM HOME")
+                Text("ELSIE'S BRAIN")
                     .font(TTA.Typography.display(12))
                     .tracking(1.5)
+                    .foregroundColor(TTA.Palette.inkSoft)
+
+                Text("Starting with the next story, Elsie thinks with:")
+                    .font(TTA.Typography.body(12.5, weight: .medium))
+                    .foregroundColor(TTA.Palette.inkSoft)
+
+                Picker(
+                    "Starting with the next story, Elsie thinks with",
+                    selection: Binding(
+                        get: { model.llmBackend },
+                        set: { model.setLlmBackend($0) }
+                    )
+                ) {
+                    Text("Mac (local)").tag("ollama")
+                    Text("Groq cloud").tag("groq")
+                }
+                .pickerStyle(.segmented)
+
+                Text("A story that's already going keeps the brain it started with -- a change here kicks in when the next story begins. With Groq, story text goes to Groq's cloud; listening and voices stay on your Mac. Needs GROQ_API_KEY set on the Mac.")
+                    .font(TTA.Typography.body(12.5))
+                    .foregroundColor(TTA.Palette.inkSoft)
+
+                if model.isConnected, !model.awayFromHomeEnabled, let status = model.serverLlmStatus {
+                    Text(llmStatusText(status))
+                        .font(TTA.Typography.body(11.5))
+                        .foregroundColor(
+                            status.requested != status.active ? TTA.Palette.alert : TTA.Palette.inkSoft
+                        )
+                }
+
+                Divider().padding(.vertical, 4)
+
+                Text("Away from home")
+                    .font(TTA.Typography.body(12.5, weight: .medium))
                     .foregroundColor(TTA.Palette.inkSoft)
 
                 Text("For demos only, away from the home WiFi: speech and story go through Groq's cloud AI instead of your Mac. Needs a free Groq API key.")
@@ -370,6 +408,14 @@ struct SettingsView: View {
             .background(TTA.Palette.cream)
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
+    }
+
+    private func llmStatusText(_ status: LlmBackendStatus) -> String {
+        let active = status.active == "groq" ? "Groq cloud" : "Mac (local)"
+        if status.requested == "groq" && !status.groqAvailable {
+            return "Next story will use: \(active) -- no Groq key set on the Mac"
+        }
+        return "Next story will use: \(active)"
     }
 
     /// AVSpeechTts.resolveVoice() already picks Matilda by default (see

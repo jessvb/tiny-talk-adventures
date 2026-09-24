@@ -129,14 +129,21 @@ class NullTransport:
 def build_session(
     transport: Transport, *, stt: SttEngine, llm: LlmEngine, tts: TtsEngine,
     image_backend: ImageGenBackend | None = None,
+    groq_llm: LlmEngine | None = None,
+    llm_backend: str = "ollama",
 ) -> SessionRunner:
-    return SessionRunner(transport=transport, stt=stt, llm=llm, tts=tts, image_backend=image_backend)
+    return SessionRunner(
+        transport=transport, stt=stt, llm=llm, tts=tts, image_backend=image_backend,
+        groq_llm=groq_llm, llm_backend=llm_backend,
+    )
 
 
-def build_llm() -> LlmEngine:
-    if config.LLM_BACKEND == "groq":
-        return GroqLlm()
-    return OllamaLlm()
+def build_llms() -> tuple[LlmEngine, LlmEngine | None]:
+    """The local engine always; Groq only if GROQ_API_KEY is set. Which
+    one a story uses is the parent's choice from the phone (issue #25),
+    defaulting to config.LLM_BACKEND -- see SessionRunner._resolve_llm()."""
+    groq = GroqLlm() if config.GROQ_API_KEY else None
+    return OllamaLlm(), groq
 
 
 async def handle_connection(
@@ -337,17 +344,17 @@ async def serve() -> None:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
     logger.info(
-        "listening on ws://%s:%s (llm_backend=%s, model=%s, think=%s)",
+        "listening on ws://%s:%s (startup llm preference=%s (phone's choice "
+        "overrides), ollama model=%s, think=%s, groq=%s)",
         config.SERVER_HOST,
         config.SERVER_PORT,
         config.LLM_BACKEND,
-        config.GROQ_MODEL if config.LLM_BACKEND == "groq" else config.OLLAMA_MODEL,
-        # Groq doesn't have a "thinking" toggle in this codebase; only
-        # meaningful for the Ollama backend, but always shown for
-        # visibility -- confirming this at a glance (rather than only via
-        # request-body inspection) is exactly what would have saved a
-        # round of real debugging on 2026-08-25.
-        config.OLLAMA_THINK if config.LLM_BACKEND == "ollama" else "n/a",
+        config.OLLAMA_MODEL,
+        # Only meaningful for the Ollama backend. Confirming this at a
+        # glance (rather than only via request-body inspection) is exactly
+        # what would have saved a round of real debugging on 2026-08-25.
+        config.OLLAMA_THINK,
+        f"available ({config.GROQ_MODEL})" if config.GROQ_API_KEY else "unavailable (no GROQ_API_KEY)",
     )
 
     # Built once and shared across every connection: each of these lazily
@@ -365,7 +372,7 @@ async def serve() -> None:
     # on a 16GB Mac, traced to Ollama's own inference rather than to engine
     # construction here.
     stt = KyutaiStt()
-    llm = build_llm()
+    llm, groq_llm = build_llms()
     tts = KokoroTts()
     image_backend = StableDiffusionBackend()
     # One SessionRunner for the server's whole lifetime, not one per
@@ -374,7 +381,10 @@ async def serve() -> None:
     # rebind_transport()/replay_last_turn() move it onto each new
     # connection in turn, rather than a fresh, memory-less session starting
     # over every time.
-    session = build_session(NullTransport(), stt=stt, llm=llm, tts=tts, image_backend=image_backend)
+    session = build_session(
+        NullTransport(), stt=stt, llm=llm, tts=tts, image_backend=image_backend,
+        groq_llm=groq_llm, llm_backend=config.LLM_BACKEND,
+    )
 
     # Tracks connection handler tasks currently in flight, so shutdown can
     # wait for them to finish naturally instead of tearing an actively-

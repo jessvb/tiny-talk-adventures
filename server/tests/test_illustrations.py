@@ -302,13 +302,25 @@ async def test_release_ollama_memory_posts_keep_alive_zero_for_ollama_backend(mo
     assert body == {"model": "qwen3.5:9b", "keep_alive": 0}
 
 
-async def test_release_ollama_memory_is_a_noop_for_non_ollama_backend(monkeypatch):
+async def test_release_ollama_memory_posts_even_when_config_backend_is_groq(monkeypatch):
+    # The phone's per-story LLM choice (issue #25) can leave
+    # config.LLM_BACKEND (the startup preference) pointing at "groq" even
+    # though the story just illustrated actually ran on Ollama -- this
+    # call must stay unconditional (see its own doc comment) rather than
+    # gated on that flag, or a real release would get skipped.
     monkeypatch.setattr(config, "LLM_BACKEND", "groq")
+    monkeypatch.setattr(config, "OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setattr(config, "OLLAMA_MODEL", "qwen3.5:9b")
+    requests = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        raise AssertionError("should never make a request for a non-Ollama backend")
+        requests.append(request)
+        return httpx.Response(200, json={})
 
     await _release_ollama_memory(transport=httpx.MockTransport(handler))
+
+    assert len(requests) == 1
+    assert requests[0].url == "http://localhost:11434/api/generate"
 
 
 async def test_release_ollama_memory_failure_is_logged_not_raised(monkeypatch):

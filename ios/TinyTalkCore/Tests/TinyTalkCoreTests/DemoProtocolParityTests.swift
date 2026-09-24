@@ -39,7 +39,7 @@ final class DemoProtocolParityTests: XCTestCase {
         case .concludeStory:
             return .respondsWithAnEvent
         case .updateSettings:
-            return .silentByDesign("takes effect on the next story; the server sends no reply either")
+            return .silentByDesign("takes effect on the next story; demo mode ignores llmBackend (always Groq), so unlike the real server it sends no llm_backend reply")
         case .getPageImage:
             return .respondsWithAnEvent
         case .synthesizePage:

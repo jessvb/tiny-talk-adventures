@@ -8,7 +8,7 @@ from conftest import FakeLlm, FakeStt, FakeTts
 from tinytalk import config
 from tinytalk.audio import MIC_SAMPLE_RATE
 from tinytalk import app as app_module
-from tinytalk.app import NullTransport, WebSocketTransport, build_llm, build_session, handle_connection
+from tinytalk.app import NullTransport, WebSocketTransport, build_llms, build_session, handle_connection
 from tinytalk.engines import EngineError
 from tinytalk.llm_groq import GroqLlm
 from tinytalk.llm_ollama import OllamaLlm
@@ -68,15 +68,27 @@ class BoomStt:
         pass
 
 
-def test_build_llm_defaults_to_ollama(monkeypatch):
-    monkeypatch.setattr(config, "LLM_BACKEND", "ollama")
-    assert isinstance(build_llm(), OllamaLlm)
+def test_build_llms_without_a_groq_key_has_only_ollama(monkeypatch):
+    monkeypatch.setattr(config, "GROQ_API_KEY", "")
+    local, groq = build_llms()
+    assert isinstance(local, OllamaLlm)
+    assert groq is None
 
 
-def test_build_llm_switches_to_groq_when_configured(monkeypatch):
-    monkeypatch.setattr(config, "LLM_BACKEND", "groq")
+def test_build_llms_with_a_groq_key_builds_both(monkeypatch):
     monkeypatch.setattr(config, "GROQ_API_KEY", "test-key")
-    assert isinstance(build_llm(), GroqLlm)
+    local, groq = build_llms()
+    assert isinstance(local, OllamaLlm)
+    assert isinstance(groq, GroqLlm)
+
+
+def test_build_session_passes_both_engines_and_the_startup_preference():
+    groq = FakeLlm()
+    session = build_session(
+        NullTransport(), stt=FakeStt(), llm=FakeLlm(), tts=FakeTts(),
+        groq_llm=groq, llm_backend="groq",
+    )
+    assert session._story_llm is groq
 
 
 async def test_transport_sends_text_and_binary_over_the_socket():

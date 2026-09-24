@@ -175,7 +175,9 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
                 objectTracker = ObjectTracker()
             }
             await animalFactTracker.reset()
-        case .updateSettings(let turns, let pages):
+        case .updateSettings(let turns, let pages, _):
+            // llmBackend is ignored: away-from-home mode is always Groq,
+            // and it never replies with an llm_backend event.
             // Same bounds SessionRunner.handle_update_settings enforces
             // server-side (turns 4-12, pages 3-10). Applies to the NEXT
             // story only: an arc that hasn't started is rebuilt now (so the

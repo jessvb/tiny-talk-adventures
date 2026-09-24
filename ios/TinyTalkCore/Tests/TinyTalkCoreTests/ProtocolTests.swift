@@ -152,6 +152,23 @@ final class ProtocolTests: XCTestCase {
         )
     }
 
+    func testUpdateSettingsEncodesLlmBackendWhenPresent() {
+        XCTAssertEqual(
+            ClientMessage.updateSettings(targetTurns: 7, pageCount: 5, llmBackend: "groq").encode(),
+            #"{"type":"update_settings","target_turns":7,"page_count":5,"llm_backend":"groq"}"#
+        )
+    }
+
+    func testDecodesLlmBackendStatus() throws {
+        let event = try decodeServerEvent(
+            #"{"type": "llm_backend", "requested": "groq", "active": "ollama", "groq_available": false}"#
+        )
+        XCTAssertEqual(
+            event,
+            .llmBackend(LlmBackendStatus(requested: "groq", active: "ollama", groqAvailable: false))
+        )
+    }
+
     func testGetPageImageEncodesStoryIdAndPageIndex() {
         XCTAssertEqual(
             ClientMessage.getPageImage(storyId: "abcd1234", pageIndex: 2).encode(),

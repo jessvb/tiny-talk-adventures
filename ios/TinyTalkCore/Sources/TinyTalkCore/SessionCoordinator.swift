@@ -145,6 +145,9 @@ public actor SessionCoordinator {
     public private(set) var isRewriting = false
     public private(set) var latestStoryList: [SavedStorySummary]?
     public private(set) var latestStoryDetail: SavedStoryDetail?
+    /// The server's most recent llm_backend reply (issue #25), or nil if it
+    /// never sent one (an older server, or not yet connected).
+    public private(set) var latestLlmBackendStatus: LlmBackendStatus?
     /// Every page-image request's result received so far, keyed
     /// "storyId#pageIndex" (matching AppModel.pageImages' own key format
     /// exactly, so its poll loop can merge this wholesale -- see
@@ -473,14 +476,19 @@ public actor SessionCoordinator {
         try await connection.send(.syncDemoStories(stories: stories))
     }
 
-    /// Sends the parent's current story-length preference to the server --
-    /// see protocol.py's UpdateSettings and this project's
+    /// Sends the parent's current story-length preference (and, if set,
+    /// the llmBackend choice from issue #25 -- "ollama"/"groq") to the
+    /// server -- see protocol.py's UpdateSettings and this project's
     /// story-length-settings design spec. Fire-and-forget, same pattern
     /// as listStories()/getStory(storyId:): applies to the next story
-    /// only, no response expected, no local state to update here (the
-    /// values themselves live in AppModel/UserDefaults, not this actor).
-    public func updateSettings(targetTurns: Int, pageCount: Int) async {
-        try? await connection.send(.updateSettings(targetTurns: targetTurns, pageCount: pageCount))
+    /// only. When llmBackend is nil the server sends nothing back and
+    /// there's no local state to update here (the turn-length values
+    /// themselves live in AppModel/UserDefaults, not this actor); when
+    /// llmBackend is non-nil the server replies with an llm_backend
+    /// event, which the event loop below stores into
+    /// latestLlmBackendStatus.
+    public func updateSettings(targetTurns: Int, pageCount: Int, llmBackend: String? = nil) async {
+        try? await connection.send(.updateSettings(targetTurns: targetTurns, pageCount: pageCount, llmBackend: llmBackend))
     }
 
     /// Appends to the pre-roll ring buffer, evicting the oldest chunks once
@@ -969,6 +977,9 @@ public actor SessionCoordinator {
             case .message(.storyDetail(let detail)):
                 latestStoryDetail = detail
                 continue
+            case .message(.llmBackend(let status)):
+                latestLlmBackendStatus = status
+                continue
             case .message(.pageImageDone(let storyId, let pageIndex, let hasImage)):
                 // No turn_id, same as the other story-lifecycle events
                 // above -- see pendingPageImageRequests' doc comment for
@@ -1037,7 +1048,7 @@ public actor SessionCoordinator {
             case .audio, .closed,
                  .message(.rewritingStarted), .message(.rewritingDone),
                  .message(.storyList), .message(.storyDetail),
-                 .message(.pageImageDone), .message(.pageAudioDone):
+                 .message(.pageImageDone), .message(.pageAudioDone), .message(.llmBackend):
                 fatalError("unreachable: handled above")
             }
 
@@ -1488,7 +1499,7 @@ public actor SessionCoordinator {
                 return
             case .message(.rewritingStarted), .message(.rewritingDone),
                  .message(.storyList), .message(.storyDetail),
-                 .message(.pageImageDone), .message(.pageAudioDone):
+                 .message(.pageImageDone), .message(.pageAudioDone), .message(.llmBackend):
                 fatalError("unreachable: consumeServerEvents() never forwards story-lifecycle events into turnContinuation")
             }
         }

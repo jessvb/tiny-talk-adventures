@@ -44,6 +44,9 @@ class ProtocolError(ValueError):
     """Raised when an incoming control message is malformed or unknown."""
 
 
+LLM_BACKENDS = ("ollama", "groq")
+
+
 @dataclass(frozen=True)
 class SpeechStart:
     """The client's VAD detected speech onset; audio frames follow."""
@@ -146,14 +149,20 @@ class SyncDemoStories:
 
 @dataclass(frozen=True)
 class UpdateSettings:
-    """Parent-adjustable story-length settings from the Settings screen --
-    persisted client-side, sent once after connecting and again whenever
-    changed while connected. Applied to the next story construction, not
+    """Parent-adjustable settings from the Settings screen -- persisted
+    client-side, sent once after connecting and again whenever changed
+    while connected. Applied to the next story construction, not
     retroactively to one already in progress -- see SessionRunner's
-    handle_update_settings()."""
+    handle_update_settings().
+
+    llm_backend is optional (docs/superpowers/specs/
+    2026-09-22-server-llm-backend-toggle-design.md): absent means "keep
+    whatever the server is already using", so an older phone build or
+    demo mode's own messages change nothing."""
 
     target_turns: int
     page_count: int
+    llm_backend: str | None = None
 
 
 ClientMessage = (
@@ -254,7 +263,14 @@ def decode_client_message(raw: str) -> ClientMessage:
             raise ProtocolError(
                 f"update_settings requires an integer page_count: {raw!r}"
             )
-        return UpdateSettings(target_turns=target_turns, page_count=page_count)
+        llm_backend = payload.get("llm_backend")
+        if llm_backend is not None and llm_backend not in LLM_BACKENDS:
+            raise ProtocolError(
+                f"update_settings llm_backend must be one of {LLM_BACKENDS}: {raw!r}"
+            )
+        return UpdateSettings(
+            target_turns=target_turns, page_count=page_count, llm_backend=llm_backend
+        )
     return message_type()
 
 
@@ -313,3 +329,18 @@ def encode_rewriting_started() -> str:
 
 def encode_rewriting_done() -> str:
     return json.dumps({"type": "rewriting_done"})
+
+
+def encode_llm_backend(requested: str, active: str, groq_available: bool) -> str:
+    """Reply to an update_settings carrying llm_backend -- `active` is what
+    the NEXT story will actually use (ollama if groq was requested but this
+    server has no GROQ_API_KEY). No turn_id: not part of live turn-taking,
+    same as story_list."""
+    return json.dumps(
+        {
+            "type": "llm_backend",
+            "requested": requested,
+            "active": active,
+            "groq_available": groq_available,
+        }
+    )

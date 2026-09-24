@@ -38,6 +38,16 @@ final class AppModel: ObservableObject {
     /// below). Applies to the NEXT story only -- never retroactively.
     @Published var storyTurnCount: Int
     @Published var storybookPageCount: Int
+    /// Which LLM the HOME SERVER uses for the next story -- "ollama" (local,
+    /// default) or "groq" (issue #25, docs/superpowers/specs/
+    /// 2026-09-22-server-llm-backend-toggle-design.md). Persisted like the
+    /// story-length settings and sent alongside them on every
+    /// updateSettings. Ignored by away-from-home mode (always Groq).
+    @Published var llmBackend: String
+    /// The server's latest reply about which backend it will actually use
+    /// -- nil until it sends one. Mirrored from the coordinator by the poll
+    /// loop, same as isRewriting.
+    @Published var serverLlmStatus: LlmBackendStatus?
     /// The mic must only actively listen on .creating -- see issue #31.
     /// `screen` is set directly from ~15 call sites across every View file
     /// (Settings' preview buttons, Library/Reading navigation, The End's
@@ -253,6 +263,7 @@ final class AppModel: ObservableObject {
         storyTurnCount = storedTurnCount == 0 ? 7 : storedTurnCount
         let storedPageCount = UserDefaults.standard.integer(forKey: "storybookPageCount")
         storybookPageCount = storedPageCount == 0 ? 5 : storedPageCount
+        llmBackend = UserDefaults.standard.string(forKey: "llmBackend") ?? "ollama"
         let hasOnboarded = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
         screen = hasOnboarded ? .landing : .onboarding
     }
@@ -478,6 +489,14 @@ final class AppModel: ObservableObject {
         }
 
         isConnected = true
+        // The server's per-session settings default to its own config
+        // constants until told otherwise -- send the parent's current
+        // preference now so even the very first story of this connection
+        // uses it, not just the second one onward. Sent before the
+        // demo-story sync block below so a synced story's rewrite already
+        // sees the parent's LLM choice, rather than the server's own
+        // just-restarted startup default.
+        Task { await coordinator.updateSettings(targetTurns: storyTurnCount, pageCount: storybookPageCount, llmBackend: llmBackend) }
         // Each pending transcript, plus its finished storybook (title, pages,
         // pictures) when one was built away from home -- so the Mac keeps
         // what the child already saw instead of redoing (or losing) it. A
@@ -497,11 +516,6 @@ final class AppModel: ObservableObject {
                 appendAudioDebugEvent("[\(DebugTimestamp.now())] demo story sync failed: \(error)")
             }
         }
-        // The server's per-session settings default to its own config
-        // constants until told otherwise -- send the parent's current
-        // preference now so even the very first story of this connection
-        // uses it, not just the second one onward.
-        Task { await coordinator.updateSettings(targetTurns: storyTurnCount, pageCount: storybookPageCount) }
         // So Landing's "Read Stories" button (LandingView.swift) is
         // accurate from a cold launch, not just after a background/
         // foreground cycle or a concluded story -- a story saved in a
@@ -636,7 +650,7 @@ final class AppModel: ObservableObject {
         // even the very first story of this connection uses them (until
         // now only the real-server path did this, so the Settings steppers
         // silently did nothing away from home).
-        Task { await coordinator.updateSettings(targetTurns: storyTurnCount, pageCount: storybookPageCount) }
+        Task { await coordinator.updateSettings(targetTurns: storyTurnCount, pageCount: storybookPageCount, llmBackend: llmBackend) }
         // Same as connect(): fetch the Library now. This seeds the End-screen
         // baseline (hasEstablishedLibraryBaseline) and keeps Landing's "Read
         // Stories" accurate from a cold launch. Without it, the FIRST list of
@@ -715,6 +729,10 @@ final class AppModel: ObservableObject {
         pendingStoryDetailFetchId = nil
         isRewriting = false
         previousIsRewriting = false
+        // Same reasoning: a fresh coordinator's latestLlmBackendStatus
+        // starts nil, so mirror that here rather than showing the old
+        // connection's status until the poll loop's next tick overwrites it.
+        serverLlmStatus = nil
     }
 
     /// What the "Disconnect" button calls -- a disconnect the user chose
@@ -1013,7 +1031,22 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(turnCount, forKey: "storyTurnCount")
         UserDefaults.standard.set(pageCount, forKey: "storybookPageCount")
         guard isConnected, let coordinator else { return }
-        Task { await coordinator.updateSettings(targetTurns: turnCount, pageCount: pageCount) }
+        Task { await coordinator.updateSettings(targetTurns: turnCount, pageCount: pageCount, llmBackend: llmBackend) }
+    }
+
+    /// What the "Elsie's Brain" picker calls. Same shape as
+    /// updateStorySettings(): persists immediately, sends immediately only
+    /// if connected (otherwise connect() sends it). Applies to the next
+    /// story only -- the server locks each story's engine when it starts.
+    func setLlmBackend(_ backend: String) {
+        llmBackend = backend
+        UserDefaults.standard.set(backend, forKey: "llmBackend")
+        guard isConnected, let coordinator else { return }
+        Task {
+            await coordinator.updateSettings(
+                targetTurns: storyTurnCount, pageCount: storybookPageCount, llmBackend: backend
+            )
+        }
     }
 
     /// Checks camera permission/availability before presenting the
@@ -1209,6 +1242,7 @@ final class AppModel: ObservableObject {
                 let readyToShowTheEnd = await coordinator.readyToShowTheEnd
                 let storyList = await coordinator.latestStoryList
                 let storyDetail = await coordinator.latestStoryDetail
+                let llmStatus = await coordinator.latestLlmBackendStatus
                 let coordinatorPageImages = await coordinator.pageImages
                 // Read regardless of `closed` (cheap, and reading it only
                 // inside the `guard closed` branch below would still be
@@ -1272,6 +1306,7 @@ final class AppModel: ObservableObject {
                         reply: reply, replyTurnId: replyTurnId
                     )
                     self.isRewriting = rewriting
+                    self.serverLlmStatus = llmStatus
 
                     // Library's real data source: every listStories()
                     // response (fired today by the readyToShowTheEnd

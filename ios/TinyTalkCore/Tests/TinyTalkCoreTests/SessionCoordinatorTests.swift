@@ -2498,6 +2498,36 @@ final class SessionCoordinatorTests: XCTestCase {
         runLoop.cancel()
     }
 
+    func testUpdateSettingsSendsTheLlmBackend() async {
+        let connection = FakeConnection()
+        let coordinator = SessionCoordinator(connection: connection, audio: FakeAudio(), vad: FakeVAD())
+        let runLoop = Task { await coordinator.start() }
+
+        await coordinator.updateSettings(targetTurns: 9, pageCount: 4, llmBackend: "groq")
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        XCTAssertEqual(
+            connection.sentMessages,
+            [.updateSettings(targetTurns: 9, pageCount: 4, llmBackend: "groq")]
+        )
+        runLoop.cancel()
+    }
+
+    func testLlmBackendEventIsStoredAsLatestStatus() async {
+        let connection = FakeConnection()
+        let coordinator = SessionCoordinator(connection: connection, audio: FakeAudio(), vad: FakeVAD())
+        let runLoop = Task { await coordinator.start() }
+
+        connection.emit(.message(.llmBackend(
+            LlmBackendStatus(requested: "groq", active: "groq", groqAvailable: true)
+        )))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        let status = await coordinator.latestLlmBackendStatus
+        XCTAssertEqual(status, LlmBackendStatus(requested: "groq", active: "groq", groqAvailable: true))
+        runLoop.cancel()
+    }
+
     func testMultipleAudioEventsInOneTurnAllEnqueueNotPlay() async {
         let connection = FakeConnection()
         let audio = FakeAudio()
