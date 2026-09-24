@@ -72,10 +72,11 @@ final class AppModel: ObservableObject {
     /// derived from isConnected the way SettingsView's equivalent back
     /// button is: Library's own reconnect can make isConnected true again
     /// for a visit that started from Landing, which would make isConnected
-    /// alone indistinguishable from "came from a live story." Every screen
-    /// that navigates to .library sets this explicitly rather than relying
-    /// on the .landing default, since AppModel is one long-lived instance
-    /// across the whole session.
+    /// alone indistinguishable from "came from a live story." Landing and
+    /// the desk's Library item set this explicitly rather than relying on
+    /// the .landing default, since AppModel is one long-lived instance
+    /// across the whole session. Reading's Back doesn't: that path starts
+    /// at The End, which sets it to .landing when it appears (issue #64).
     var libraryReturnScreen: AppScreen = .landing
     @Published var state: SessionState = .idle
     @Published var lastTranscript: String = ""
