@@ -349,8 +349,10 @@ final class AppModel: ObservableObject {
 
     /// What Landing's "Create a Story" button and Library's "+ New story"
     /// tile both call -- StoryEntry decides what each gets. Not connected:
-    /// connectResumingIfPending() as-is, so backgrounding/resume behavior is
-    /// identical regardless of which screen initiated the connect.
+    /// connectResumingIfPending(), so backgrounding/resume behavior is
+    /// identical regardless of which screen initiated the connect -- except
+    /// that Landing's button connects fresh and resets the server's story
+    /// too (issue #69; a new connection alone doesn't).
     /// Connected: never connect() a second time on top of the live
     /// coordinator (Library's "+" is reachable mid-story via Elsie's desk's
     /// own "Library" menu item) -- that would leak its WebSocket/audio
@@ -365,6 +367,11 @@ final class AppModel: ObservableObject {
         switch entry.action(isConnected: isConnected, liveStoryConcluded: liveStoryConcluded) {
         case .connect:
             await connectResumingIfPending()
+        case .connectAndStartNewStory:
+            // "Always a blank, new story" -- never resume a turn of whatever
+            // story came before (issue #69).
+            pendingResumeTurnId = nil
+            await connectResumingIfPending(startingNewStory: true)
         case .resumeLiveStory:
             return
         case .startNewStory:
@@ -393,7 +400,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func connect(resumingTurnId: Int? = nil) async {
+    /// `startingNewStory` (issue #69): the child asked for a blank story,
+    /// so once the connection is open the server is told to drop whatever
+    /// story its long-lived session still holds -- see
+    /// SessionCoordinator.startFreshServerStory(). Ignored when resuming.
+    func connect(resumingTurnId: Int? = nil, startingNewStory: Bool = false) async {
         UserDefaults.standard.set(serverAddress, forKey: "serverAddress")
         guard let url = URL(string: serverAddress) else {
             lastErrorMessage = "invalid server address"
@@ -446,6 +457,17 @@ final class AppModel: ObservableObject {
             print("AppModel: fresh connect, no turn to resume")
         }
         runLoop = Task { await coordinator.start() }
+        // Before startCapturing() below, not after: until capture starts no
+        // speech_start can be sent, so the reset is guaranteed to reach the
+        // server (which handles a connection's frames in order) ahead of
+        // the child's first utterance. The wire message only, not
+        // startNewStory(): this coordinator is brand new, so there are no
+        // bubbles, turn, ditty or mute state to reset -- and newStory()'s
+        // stopPlaybackImmediately() would touch the audio engine before
+        // capture has configured it (see the ditty note further down).
+        if startingNewStory && resumingTurnId == nil {
+            await coordinator.startFreshServerStory()
+        }
 
         let (micStream, micContinuation) = AsyncStream<Data>.makeStream()
         micStreamContinuation = micContinuation
@@ -752,7 +774,7 @@ final class AppModel: ObservableObject {
     /// holding, instead of starting a fresh, memory-less session that
     /// discards the reply as belonging to a turn_id it no longer
     /// recognizes.
-    func connectResumingIfPending() async {
+    func connectResumingIfPending(startingNewStory: Bool = false) async {
         // Whatever the banner said ("disconnected from server", a failed
         // earlier attempt, a timeout) is stale once a reconnect starts (issue
         // #48); a failed attempt shows its own. Clearing it here, in the one
@@ -767,9 +789,12 @@ final class AppModel: ObservableObject {
         // (see connectAwayFromHome()), so it always restarts numbering.
         turnHistory.coordinatorReplaced(resumingTurnId: awayFromHomeEnabled ? nil : resumingTurnId)
         if awayFromHomeEnabled {
+            // No reset needed away from home: every connectAwayFromHome()
+            // builds a brand-new DemoConnection, whose conversation and arc
+            // start empty -- nothing outlives the connection there.
             await connectAwayFromHome()
         } else {
-            await connect(resumingTurnId: resumingTurnId)
+            await connect(resumingTurnId: resumingTurnId, startingNewStory: startingNewStory)
         }
     }
 

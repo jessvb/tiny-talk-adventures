@@ -20,8 +20,15 @@ public enum StoryEntry: Equatable, Sendable {
     case libraryNewStoryTile
 
     public enum Action: Equatable, Sendable {
-        /// No session yet -- connect (the pre-#64 path, unchanged).
+        /// No session yet -- connect, resuming whatever turn is pending
+        /// (the pre-#64 path, unchanged).
         case connect
+        /// No session yet, and the child asked for a blank, new story --
+        /// connect fresh, then tell the server to drop whatever story it is
+        /// still holding (issue #69: the server keeps one session across
+        /// connections, so a new connection alone doesn't reset its
+        /// conversation or story arc).
+        case connectAndStartNewStory
         /// Just show the story screen; the live session carries on.
         case resumeLiveStory
         /// Abandon whatever the live session holds and start over on it
@@ -33,11 +40,15 @@ public enum StoryEntry: Equatable, Sendable {
     /// `liveStoryConcluded` is the coordinator's readyToShowTheEnd: true
     /// from the moment a story finishes until newStory() starts another.
     public func action(isConnected: Bool, liveStoryConcluded: Bool) -> Action {
-        guard isConnected else { return .connect }
         switch self {
         case .homeCreateStory:
-            return .startNewStory
+            return isConnected ? .startNewStory : .connectAndStartNewStory
         case .libraryNewStoryTile:
+            // No session: deliberately NOT a reset. Library can be open
+            // mid-story after the connection dropped, with that story's
+            // bubbles kept on screen (issue #23), and "+" means "back into
+            // it" then.
+            guard isConnected else { return .connect }
             return liveStoryConcluded ? .startNewStory : .resumeLiveStory
         }
     }
