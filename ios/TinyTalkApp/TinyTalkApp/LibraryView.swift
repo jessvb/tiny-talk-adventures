@@ -53,7 +53,16 @@ struct LibraryView: View {
     private var header: some View {
         HStack(spacing: 12) {
             Button {
-                model.screen = model.libraryReturnScreen
+                // Home always goes through goHome(), never a bare
+                // `screen = .landing` -- issue #64: that left a session
+                // connected behind Home, which "Create a Story" then
+                // walked back into. (Safe when already disconnected:
+                // disconnect() is idempotent.)
+                if model.libraryReturnScreen == .landing {
+                    model.goHome()
+                } else {
+                    model.screen = model.libraryReturnScreen
+                }
             } label: {
                 Image(systemName: "chevron.left")
             }
@@ -152,7 +161,7 @@ struct LibraryView: View {
 
     private var newStoryTile: some View {
         Button {
-            Task { await model.startStory() }
+            Task { await model.startStory(.libraryNewStoryTile) }
         } label: {
             VStack(spacing: 8) {
                 Text("+")
