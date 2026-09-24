@@ -49,10 +49,12 @@ public enum ClientMessage: Sendable, Equatable {
     /// results in one more real response_text/turn_end pair the client
     /// must be able to attribute to a turn.
     case concludeStory(turnId: Int)
-    /// Parent-adjustable story-length settings from the Settings screen --
-    /// see protocol.py's UpdateSettings. Sent once after connecting and
-    /// again whenever changed while connected.
-    case updateSettings(targetTurns: Int, pageCount: Int)
+    /// Parent-adjustable settings from the Settings screen -- see
+    /// protocol.py's UpdateSettings. Sent once after connecting and
+    /// again whenever changed while connected. llmBackend ("ollama" /
+    /// "groq", issue #25) is omitted from the JSON when nil, so the
+    /// server keeps its current choice.
+    case updateSettings(targetTurns: Int, pageCount: Int, llmBackend: String? = nil)
     /// Request the generated illustration for one page of a saved story
     /// -- see protocol.py's GetPageImage.
     case getPageImage(storyId: String, pageIndex: Int)
@@ -121,7 +123,10 @@ public enum ClientMessage: Sendable, Equatable {
             return #"{"type":"get_story","story_id":"\#(Self.jsonEscaped(storyId))"}"#
         case .concludeStory(let turnId):
             return #"{"type":"conclude_story","turn_id":\#(turnId)}"#
-        case .updateSettings(let targetTurns, let pageCount):
+        case .updateSettings(let targetTurns, let pageCount, let llmBackend):
+            if let llmBackend {
+                return #"{"type":"update_settings","target_turns":\#(targetTurns),"page_count":\#(pageCount),"llm_backend":"\#(Self.jsonEscaped(llmBackend))"}"#
+            }
             return #"{"type":"update_settings","target_turns":\#(targetTurns),"page_count":\#(pageCount)}"#
         case .getPageImage(let storyId, let pageIndex):
             return #"{"type":"get_page_image","story_id":"\#(Self.jsonEscaped(storyId))","page_index":\#(pageIndex)}"#
@@ -145,6 +150,22 @@ public enum ClientMessage: Sendable, Equatable {
             }
         }
         return result
+    }
+}
+
+/// The server's reply to an updateSettings carrying llmBackend -- see
+/// protocol.py's encode_llm_backend(). `active` is what the NEXT story
+/// will use: "ollama" when "groq" was requested but the Mac has no
+/// GROQ_API_KEY (then groqAvailable is false).
+public struct LlmBackendStatus: Sendable, Equatable {
+    public let requested: String
+    public let active: String
+    public let groqAvailable: Bool
+
+    public init(requested: String, active: String, groqAvailable: Bool) {
+        self.requested = requested
+        self.active = active
+        self.groqAvailable = groqAvailable
     }
 }
 
@@ -179,6 +200,8 @@ public enum ServerEvent: Sendable, Equatable {
     /// produces audio for non-empty page text (no safety-check discard
     /// path exists for TTS the way there is for illustrations).
     case pageAudioDone(storyId: String, pageIndex: Int)
+    /// See LlmBackendStatus. No turn_id, like storyList.
+    case llmBackend(LlmBackendStatus)
 }
 
 public enum ProtocolError: Error, Equatable {
@@ -228,6 +251,12 @@ public func decodeServerEvent(_ raw: String) throws -> ServerEvent {
             storyId: json["story_id"] as? String ?? "",
             pageIndex: json["page_index"] as? Int ?? 0
         )
+    case "llm_backend":
+        return .llmBackend(LlmBackendStatus(
+            requested: json["requested"] as? String ?? "ollama",
+            active: json["active"] as? String ?? "ollama",
+            groqAvailable: json["groq_available"] as? Bool ?? false
+        ))
     default:
         throw ProtocolError.malformed("unknown server message type: \(type)")
     }
