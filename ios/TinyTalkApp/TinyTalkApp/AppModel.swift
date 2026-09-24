@@ -541,12 +541,22 @@ final class AppModel: ObservableObject {
         else { return nil }
         // Same on-screen debug log as the rest of demo mode -- a bad token
         // or an exhausted quota shows up there, never in front of the child.
-        return IllustrationPass(
-            chat: chat,
-            backend: CloudflareImageClient(accountId: accountId, apiToken: apiToken),
-            onDebugEvent: { [weak self] line in
-                Task { @MainActor in self?.appendAudioDebugEvent(line) }
-            }
+        let onDebugEvent: @Sendable (String) -> Void = { [weak self] line in
+            Task { @MainActor in self?.appendAudioDebugEvent(line) }
+        }
+        // Issue #68: the drawing budget runs on a clock that stands still
+        // while the app is backgrounded, and the wrapper keeps the pass
+        // alive through a short absence -- see BackgroundSafeIllustrator.
+        let clock = ForegroundClock()
+        return BackgroundSafeIllustrator(
+            wrapping: IllustrationPass(
+                chat: chat,
+                backend: CloudflareImageClient(accountId: accountId, apiToken: apiToken),
+                now: { clock.now() },
+                onDebugEvent: onDebugEvent
+            ),
+            clock: clock,
+            onDebugEvent: onDebugEvent
         )
     }
 
