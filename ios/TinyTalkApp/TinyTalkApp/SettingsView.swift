@@ -126,7 +126,11 @@ struct SettingsView: View {
             Text(
                 model.awayFromHomeEnabled
                     ? "Away from home: Elsie's brain is in Groq's cloud right now, not your Mac."
-                    : "Your Mac on the home WiFi. Speech, story and voice all run there — nothing is sent to the internet."
+                    : model.llmBackend == "groq"
+                        // Issue #25: the parent picked Groq for home stories,
+                        // so "nothing is sent to the internet" would be false.
+                        ? "Your Mac on the home WiFi. Listening and voices run there; new stories use Groq's cloud for the story text."
+                        : "Your Mac on the home WiFi. Speech, story and voice all run there — nothing is sent to the internet."
             )
                 .font(TTA.Typography.body(13.5))
                 .foregroundColor(TTA.Palette.inkSoft)
@@ -262,12 +266,12 @@ struct SettingsView: View {
                     .tracking(1.5)
                     .foregroundColor(TTA.Palette.inkSoft)
 
-                Text("At home, Elsie thinks with:")
+                Text("Starting with the next story, Elsie thinks with:")
                     .font(TTA.Typography.body(12.5, weight: .medium))
                     .foregroundColor(TTA.Palette.inkSoft)
 
                 Picker(
-                    "At home, Elsie thinks with",
+                    "Starting with the next story, Elsie thinks with",
                     selection: Binding(
                         get: { model.llmBackend },
                         set: { model.setLlmBackend($0) }
@@ -278,7 +282,7 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.segmented)
 
-                Text("Applies from the next story. With Groq, story text goes to Groq's cloud; listening and voices stay on your Mac. Needs GROQ_API_KEY set on the Mac.")
+                Text("A story that's already going keeps the brain it started with -- a change here kicks in when the next story begins. With Groq, story text goes to Groq's cloud; listening and voices stay on your Mac. Needs GROQ_API_KEY set on the Mac.")
                     .font(TTA.Typography.body(12.5))
                     .foregroundColor(TTA.Palette.inkSoft)
 
@@ -410,9 +414,9 @@ struct SettingsView: View {
     private func llmStatusText(_ status: LlmBackendStatus) -> String {
         let active = status.active == "groq" ? "Groq cloud" : "Mac (local)"
         if status.requested == "groq" && !status.groqAvailable {
-            return "Mac will use: \(active) -- no Groq key set on the Mac"
+            return "Next story will use: \(active) -- no Groq key set on the Mac"
         }
-        return "Mac will use: \(active)"
+        return "Next story will use: \(active)"
     }
 
     /// AVSpeechTts.resolveVoice() already picks Matilda by default (see
