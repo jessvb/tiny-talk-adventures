@@ -7,6 +7,7 @@ final class FakeAudio: AudioPlaying, @unchecked Sendable {
     private var _stopped = false
     private var _played: [Data] = []
     private var _playWasCancelled = false
+    private var _playsInFlight = 0
     private var _playDelayNanos: UInt64 = 0
     private var _enqueued: [Data] = []
     private var _enqueueWasCancelled = false
@@ -51,6 +52,15 @@ final class FakeAudio: AudioPlaying, @unchecked Sendable {
     /// distinguishes "the caller was told to stop" from "the in-flight
     /// work was actually cancelled" -- see SessionCoordinator's doc comment.
     var playWasCancelled: Bool { lock.withLock { _playWasCancelled } }
+    /// play() calls entered but not yet returned. Lets a ditty-stop test
+    /// wait for the one iteration that was already mid-play() when the
+    /// stop landed: if its Task.sleep had already finished, cancellation
+    /// can no longer un-finish it, so it still records itself in `played`
+    /// a moment later. That is correct behavior (stopPlaybackImmediately()
+    /// is what silences it for real), not a missed stop -- but a test that
+    /// snapshots `played.count` before it lands flakes by exactly one
+    /// (issue #71).
+    var playsInFlight: Int { lock.withLock { _playsInFlight } }
     /// Buffers passed to enqueue(_:) so far, in order.
     var enqueued: [Data] { lock.withLock { _enqueued } }
     /// True if an enqueue(_:) call observed real Task cancellation (via
@@ -77,6 +87,8 @@ final class FakeAudio: AudioPlaying, @unchecked Sendable {
     }
 
     func play(_ pcm: Data) async {
+        lock.withLock { _playsInFlight += 1 }
+        defer { lock.withLock { _playsInFlight -= 1 } }
         let playDelayNanos = playDelayNanos
         if playDelayNanos > 0 {
             do {
