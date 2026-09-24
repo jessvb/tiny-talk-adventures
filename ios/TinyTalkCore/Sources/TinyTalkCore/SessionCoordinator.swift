@@ -247,7 +247,8 @@ public actor SessionCoordinator {
     /// never resets back to false on rewritingDone -- readyToShowTheEnd
     /// must not un-latch once both signals have combined, but isRewriting
     /// itself does need to go back to false (a UI polls it to know when
-    /// the rewrite has actually finished).
+    /// the rewrite has actually finished). Reset when the next utterance
+    /// ends, like currentTurnPlaybackFinished (see handleSpeechEnd()).
     private var sawRewritingStarted = false
     /// True once the CURRENT turn's turnEnd has been processed inside
     /// runTurn() -- i.e. every audio chunk that turn received has
@@ -1146,6 +1147,13 @@ public actor SessionCoordinator {
         // for why a stale true from an earlier turn must never survive
         // into this one.
         currentTurnPlaybackFinished = false
+        // Same for the other half of the pair: a new utterance can only
+        // start once any rewrite is over (handleSpeechStart()'s isRewriting
+        // guard), so a rewriting_started seen before now belonged to a
+        // story that already ended -- e.g. the previous one's, resent by
+        // the server on connect. Left set, this turn's own turn_end would
+        // latch readyToShowTheEnd mid-story (PR #67 on-device step 4).
+        sawRewritingStarted = false
         let (turnStream, continuation) = AsyncStream<ServerConnectionEvent>.makeStream()
         turnContinuation = continuation
         turnTask = Task { [weak self] in

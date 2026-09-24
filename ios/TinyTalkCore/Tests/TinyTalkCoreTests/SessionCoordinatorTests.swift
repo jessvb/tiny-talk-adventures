@@ -3101,6 +3101,40 @@ final class SessionCoordinatorTests: XCTestCase {
         runLoop.cancel()
     }
 
+    /// PR #67 on-device step 4: a coordinator that connects while the
+    /// server is still REWRITING the PREVIOUS story gets that story's
+    /// rewriting_started from resend_current_status(). Once the rewrite
+    /// finishes and the child tells a new story, its first ordinary
+    /// turn_end must not combine with that stale rewriting_started --
+    /// base behavior latched readyToShowTheEnd mid-story, so Library's "+"
+    /// treated the live story as finished and started a new one over it.
+    func testRewritingStartedFromBeforeThisStoryNeverCombinesWithALaterOrdinaryTurn() async {
+        let (coordinator, connection, audio, vad) = makeConcludedStoryFixture()
+        audio.autoFinishEnqueuedBuffers = true
+        let runLoop = Task { await coordinator.start() }
+
+        connection.emit(.message(.rewritingStarted))
+        await eventually { await coordinator.isRewriting }
+        connection.emit(.message(.rewritingDone))
+        await eventually { await coordinator.isRewriting == false }
+
+        vad.fire(.speechStart)
+        await eventually { await coordinator.state == .listening }
+        vad.fire(.speechEnd)
+        await eventually { await coordinator.state == .waitingForReply }
+        try? await Task.sleep(nanoseconds: 10_000_000) // handleSpeechEnd() creates the turn's stream just after the state flip
+        connection.emit(.message(.responseText("Once upon a time.", turnId: 1)))
+        connection.emit(.audio(Data([1])))
+        connection.emit(.message(.turnEnd(turnId: 1)))
+        await eventually { await coordinator.state == .idle }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let ready = await coordinator.readyToShowTheEnd
+        XCTAssertFalse(ready, "an ordinary turn of a new story is not The End")
+
+        runLoop.cancel()
+    }
+
     // MARK: - Issue #48: the last error goes stale when the next turn starts
 
     /// Drives a turn to the ditty timeout, which sets the sticky "took too
