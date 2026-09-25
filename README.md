@@ -1,13 +1,26 @@
 # Tiny Talk Adventures
 
-A voice-based, collaborative story-writing app for kids. A child and an LLM
-write a story together, out loud: the child picks an animal, real facts about
-it get woven into the story, the story pulls inspiration from the child's own
-environment (recognized on-device via camera), and the child can jump in and
-change the story at any point. All AI runs locally — nothing leaves the
-household.
+**A child talks. Six models answer. Nothing leaves the house.**
 
-Personal pet project, built for one family, not intended to scale or ship.
+A voice-first story app for kids. A child and Elsie the elephant make up a
+story together, out loud, and the child can cut in at any moment with a
+better idea. Afterwards, the conversation becomes an illustrated picture
+book. Speech recognition, the language model, the voice and the artwork all
+run on one M1 MacBook Pro with 16 GB of RAM, on the family's own WiFi.
+
+**→ [Read the project write-up](https://jessvb.github.io/tiny-talk-adventures/)**:
+how it works, the hard problems, the Claude Code workflow, and what it would
+take to scale.
+
+<p align="center">
+  <img src="site/shots/landing.png" width="190" alt="Landing screen: Elsie the elephant invites the child to create a story">
+  <img src="site/shots/story.png" width="190" alt="A story in progress: the child and Elsie talking about Squeaky the squirrel who loves cooking">
+  <img src="site/shots/read.png" width="190" alt="A storybook page with a locally generated illustration of Squeaky in a kitchen">
+  <img src="site/shots/the-end.png" width="190" alt="The End screen with the finished book">
+</p>
+
+This is a personal project, built for one family. It isn't meant to scale or
+ship.
 
 ## Why
 
@@ -16,51 +29,94 @@ Three reasons this exists:
 - Learning to build with Claude Code
 - Building something real for my kiddo to play and learn with
 
+## How it works
+
+### The child can always interrupt
+
+Young children think out loud and cut in halfway through your sentence. Most
+voice assistants make you wait for your turn; Tiny Talk stops the moment the
+child speaks and builds on what they said. Stopping is decided on the phone
+itself, with no network round trip.
+
+![Timeline comparing a wait-your-turn assistant, where the child's idea is unheard, with Tiny Talk, where Elsie stops instantly and builds on the idea](docs/images/interruption.png)
+
+### Every element on screen is backed by a model
+
+![Annotated screenshots of story creation and reading, labelling which model powers each element: Silero VAD, Kyutai STT, Qwen 3.5 9B, a safety denylist, Kokoro TTS, FastViT-T8, API Ninjas facts, and Stable Diffusion 1.5 page art](docs/images/models-on-screen.png)
+
+### Architecture
+
+![Architecture: the iPhone runs voice detection, object recognition and playback; the Mac runs speech-to-text, the story model, a safety gate and speech, then the storybook rewrite and page art; animal facts come from an external API; an away-from-home mode uses Groq and Cloudflare instead](docs/images/architecture.png)
+
+- **Phone** (iPhone 13 Pro): on-device voice-activity detection (Silero
+  VAD) for near-instant barge-in, echo cancellation, playback, and on-device
+  object recognition (FastViT-T8 via Core ML) that brings real objects from
+  the child's room into the story. Photos never leave the phone; only the
+  label does.
+- **Home server** (M1 MacBook Pro, 16 GB): streaming speech-to-text (Kyutai
+  STT 1b on MLX), the storyteller (Qwen 3.5 9B via Ollama), a deterministic
+  safety gate on every reply, and Elsie's voice (Kokoro-82M). After the story
+  ends it rewrites the chat as picture-book pages and illustrates them
+  locally (Stable Diffusion 1.5 + a storybook LoRA + IP-Adapter, so the same
+  character appears on every page).
+- **Outside the home:** real animal facts come from API Ninjas and are
+  cached after the first lookup. An optional **away-from-home demo mode**
+  swaps in hosted models (Groq, Cloudflare Workers AI) when there's no home
+  Mac, and a clearly worded setting tells grown-ups when it's on.
+
+Phone and server share one WebSocket: JSON control frames plus raw 24 kHz
+PCM16 audio, with a turn id on every frame so late replies to an abandoned
+utterance get dropped. A client must send its `speech_start`/`interrupt`
+control frame *before* that utterance's audio frames. Audio that arrives
+outside a listening state is silently dropped (see
+`server/tinytalk/protocol.py`'s module docstring).
+
+For the reasoning behind each choice, and what each one cost, see
+[The system](https://jessvb.github.io/tiny-talk-adventures/#architecture) and
+[Development journey](https://jessvb.github.io/tiny-talk-adventures/journey.html).
+
 ## Status
 
-The full app is being built as a sequence of independent sub-projects; each
-gets its own design spec before implementation. See `docs/superpowers/specs/`
-for specs in progress.
+The app was built as a sequence of independent sub-projects. Each one got a
+written design spec (`docs/superpowers/specs/`) and a plan
+(`docs/superpowers/plans/`) before any code. All of these are merged and
+confirmed on a real phone:
 
-The **voice/dialog pipeline** — the interruptible speech I/O layer (phone
-client + local Mac server), built first because low-latency barge-in
-handling is the core technical learning goal — has its server implemented
-and merged to `main`, verified end to end against real models (Kyutai STT,
-Qwen 3.5 9B via Ollama, Kokoro TTS) including a real barge-in test.
+- **Voice/dialog pipeline**: interruptible speech I/O between the phone and
+  the Mac server, plus the iOS client
+- **Story generation engine**: a five-stage narrative arc over a turn
+  budget, with deterministic safety scaffolding
+- **Animal facts retrieval**: fetched once per animal, then cached
+- **Object recognition**: camera → on-device classifier → story guidance
+- **Kid-facing UI**: onboarding, landing, story, library, reading, The End
+- **Storybook persistence and page art**: the conversation retold as
+  illustrated pages, with character-consistent local illustrations
+- **Story length settings**: parent-adjustable turns and pages
+- **Away-from-home demo mode**: hosted models behind one switch, with
+  storybooks and illustrations synced back home
 
-**Known constraint, confirmed real (not just a risk on paper):** running all
-three models concurrently is tight on an M1/16GB — see the design spec's
-"Open questions / risks" for what was actually measured. In short: expect
-slow or occasionally failed replies on a loaded machine, and close other
-memory-hungry apps for a fair test.
+Android (Pixel 3) is a secondary target that hasn't been started. For current
+bugs and follow-ups, see the
+[issue list](https://github.com/jessvb/tiny-talk-adventures/issues).
 
-Next up: the iOS phone client.
+**Known constraint:** running every model at once is tight on a 16 GB Mac.
+Close other memory-heavy apps for a fair test (see "Running the server"
+below).
 
-Planned after that, in rough order: story generation engine (narrative arc +
-safety scaffolding), animal facts retrieval, on-device object recognition for
-environment-based inspiration, illustration sourcing with attribution,
-storybook persistence.
+## Read more
 
-## Architecture (current sub-project)
+The project site has four short write-ups:
 
-- **Phone** (iPhone 13 Pro primary target, Android/Pixel 3 secondary):
-  captures mic audio, runs on-device voice-activity detection for
-  near-instant interrupt handling, streams audio to the server, plays back
-  spoken responses.
-- **Server** (M1 MacBook Pro, 16GB, on the same home WiFi): runs local
-  speech-to-text, a local LLM for story dialogue, and local text-to-speech.
-  No cloud AI APIs — everything free and offline.
-
-See `docs/superpowers/specs/2026-08-12-voice-dialog-pipeline-design.md` for
-the full design. Note on the wire protocol: a client must send its
-`speech_start`/`interrupt` control frame *before* the audio frames for that
-utterance — audio arriving outside a listening state is silently dropped
-(see `server/tinytalk/protocol.py`'s module docstring for details).
+| Page | What's in it |
+|---|---|
+| [The system](https://jessvb.github.io/tiny-talk-adventures/) | What it does, where each model fits, and an interactive architecture diagram |
+| [Development journey](https://jessvb.github.io/tiny-talk-adventures/journey.html) | Four real problems: the "random disconnects" that were really a realtime-throughput problem, a three-minute "thinking" silence, a PyTorch segfault that was my own race condition, and barge-in regressions |
+| [Working with Claude Code](https://jessvb.github.io/tiny-talk-adventures/claude-code.html) | Context hand-offs, parallel worktrees, design before code, and batching fixes so testing happens once |
+| [What if?](https://jessvb.github.io/tiny-talk-adventures/what-if.html) | What would change on the App Store, in a classroom, offline on a budget tablet, and for every child |
 
 ## Setup
 
-The voice/dialog pipeline server (see Status above) is implemented under
-`server/`. This section covers how to set up the environment to run it.
+The home server is implemented under `server/`. This section covers how to set up the environment to run it.
 Commands verified 2026-08-13; re-check versions if it's been a while.
 
 **Isolation policy:** nothing for this project is ever installed into
@@ -372,12 +428,20 @@ you only need to type it once per Mac.
 
 ## Repo layout
 
-- `docs/superpowers/specs/` — design specs, one per sub-project, dated
-- `server/` — the voice/dialog pipeline server: Python, pytest, see
-  "Running the server" below. `server/.python-version` pins the pyenv
-  Python version; `server/.venv` (gitignored) is where all Python
-  dependencies actually live — see the Setup section's isolation policy.
-- (further implementation directories to follow as sub-projects are built)
+- `server/`: the Mac home server (Python). `tinytalk/` is the package,
+  `tests/` the pytest suite, and `tools/` holds the CLI test client and
+  hardware probes. `server/.python-version` pins the pyenv Python version;
+  `server/.venv` (gitignored) is where all Python dependencies live. See the
+  Setup section's isolation policy.
+- `ios/TinyTalkApp/`: the iPhone app (SwiftUI, generated with XcodeGen).
+- `ios/TinyTalkCore/`: a Swift package with the app's logic (`TinyTalkCore`)
+  and its device-facing pieces: audio, VAD, object recognition
+  (`TinyTalkPlatform`).
+- `docs/superpowers/specs/` and `docs/superpowers/plans/`: one dated design
+  spec and implementation plan per sub-project.
+- `site/`: the static project website, deployed to GitHub Pages by
+  `.github/workflows/pages.yml` on every push to `main` that changes it.
+- `docs/images/`: diagrams used in this README, rendered from the site.
 
 ## Development
 
