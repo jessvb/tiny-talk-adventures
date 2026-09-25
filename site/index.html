@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tiny Talk Adventures — voice-first storytelling that runs entirely at home</title>
+<meta name="description" content="A child and Elsie the elephant make up a story out loud, then it becomes an illustrated book. Every model runs on one home Mac.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+<style>
+section.wrap{padding-top:clamp(40px,6vw,80px);padding-bottom:clamp(40px,6vw,80px)}
+h2{font-size:clamp(28px,3.4vw,42px);margin-bottom:16px;max-width:26ch}
+.sub{font:400 15.5px/1.6 var(--sans);color:var(--ink-4);margin:-6px 0 26px;max-width:66ch}
+
+/* hero */
+.hero{padding-top:clamp(48px,8vw,100px)!important;padding-bottom:clamp(32px,5vw,56px)!important;display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:clamp(32px,5vw,72px);align-items:center}
+.hero > div{min-width:0}
+.pill{display:inline-flex;align-items:center;gap:9px;padding:6px 13px;border:1px solid var(--line-strong);border-radius:999px;font:500 12.5px var(--mono);color:var(--gold);margin-bottom:26px}
+.pill::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--teal)}
+.hero h1{font-size:clamp(40px,6.2vw,74px);line-height:1.02;max-width:none}
+.hero .lede{font-size:clamp(17px,1.4vw,20px);max-width:54ch;margin-bottom:34px}
+.ctas{display:flex;gap:12px;flex-wrap:wrap}
+.hero-shot{display:flex;justify-content:center;position:relative}
+.hero-shot::before{content:"";position:absolute;inset:8% 14%;background:radial-gradient(circle at 50% 40%,rgba(210,98,47,.28),transparent 68%);filter:blur(42px)}
+.hero-shot img{position:relative;width:min(290px,76vw);border-radius:30px;border:1px solid var(--line-strong);box-shadow:0 34px 70px -24px rgba(0,0,0,.85)}
+
+/* stats */
+.stats-wrap{padding-bottom:clamp(40px,6vw,72px)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:16px;overflow:hidden}
+.stats > div{background:var(--panel);padding:20px 22px}
+.stat-n{font:500 30px var(--mono);color:var(--gold);letter-spacing:-.02em}
+.stat-l{font:400 13.5px/1.45 var(--sans);color:var(--ink-4);margin-top:6px}
+
+.intro{font-size:17px;line-height:1.62;margin-bottom:32px;max-width:64ch}
+.tile h3{font-size:15.5px;margin-bottom:6px}
+.tiles{margin-top:14px}
+.tiles .tile{border-radius:14px;padding:20px 22px}
+
+/* what it does */
+.steps{--min:220px;gap:clamp(22px,3vw,36px)}
+.steps img{width:100%;border-radius:18px;border:1px solid var(--line);display:block;margin-bottom:14px}
+.steps h3{font:600 16px var(--sans);color:var(--ink);margin:0 0 6px}
+.steps p{font:400 14.5px/1.5 var(--sans);color:var(--ink-4);margin:0}
+
+/* model callouts: labels either side of a phone screenshot, joined by leader lines */
+.figs{--min:340px;gap:clamp(20px,3vw,40px)}
+figure{margin:0;min-width:0}
+.annot{position:relative;width:100%;aspect-ratio:1/1;container-type:inline-size}
+.annot img{position:absolute;left:28.28%;top:3%;height:94%;border-radius:4cqw;border:1px solid var(--line-strong)}
+.annot svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.co{position:absolute;width:25.5%;transform:translateY(-50%)}
+.co.l{left:0;text-align:right}
+.co.r{left:74.5%}
+.co b{display:block;font:600 max(9px,2.1cqw) var(--mono);color:var(--gold);letter-spacing:.06em}
+.co span{display:block;font:600 max(11px,2.6cqw)/1.2 var(--sans);color:var(--ink)}
+.co small{display:block;font:400 max(10px,2.2cqw)/1.3 var(--sans);color:var(--ink-4)}
+figcaption{font:500 13px var(--mono);color:var(--ink-5);text-align:center;margin-top:10px}
+
+/* architecture */
+.arch{background:var(--col);border:1px solid var(--line);border-radius:18px;padding:clamp(12px,2vw,24px);overflow-x:auto}
+.arch svg{display:block;width:100%;min-width:860px;height:auto}
+.node{cursor:pointer;outline:none}
+.node .ring{stroke:var(--line-strong)}
+.node.away .ring{stroke:var(--line-hover)}
+.node:hover .ring{stroke:#8a7b6d}
+.node[aria-pressed=true] .ring{stroke:var(--accent)}
+.node:focus-visible .ring{stroke:var(--gold);stroke-width:3}
+.detail{margin-top:12px;padding:clamp(20px,3vw,30px);--min:260px;gap:clamp(18px,3vw,40px)}
+.detail > div{min-width:0}
+.detail h3{font:600 clamp(21px,2.2vw,27px)/1.2 var(--serif);margin:8px 0 10px;color:var(--ink-hi)}
+.detail .where{font:500 11.5px var(--mono);color:var(--accent);letter-spacing:.1em}
+.chip{display:inline-block;padding:5px 11px;border-radius:8px;background:var(--box);font:500 12.5px var(--mono);color:var(--gold)}
+.detail-body{display:grid;gap:12px}
+.detail-body p{margin:0;font:400 15.5px/1.58 var(--sans);color:var(--ink-2)}
+.detail-body p.why{font-size:14.5px;line-height:1.55;color:var(--ink-4);padding-top:12px;border-top:1px solid var(--line)}
+.why strong{color:var(--gold);font-weight:600}
+
+/* goals */
+.goals{border:1px solid var(--line);border-radius:18px;overflow:hidden}
+.goal{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:10px 28px;padding:22px 24px;background:var(--panel);border-bottom:1px solid var(--line)}
+.goal:last-child{border-bottom:0}
+.goal > *{min-width:0;margin:0}
+.goal .tag{font:500 11.5px var(--mono);color:var(--gold);letter-spacing:.08em;margin-bottom:4px}
+.goal h3{font:600 16.5px/1.3 var(--sans);color:var(--ink);margin:0}
+.goal p{font:400 14.5px/1.55 var(--sans);color:var(--ink-3)}
+.goal p.lesson{color:var(--ink-4)}
+.lesson strong{color:var(--teal-ink);font-weight:600}
+/* Inline emphasis in body copy: brighter ink rather than just heavier. */
+.tile p b,.steps p b,.goal p b{color:var(--ink);font-weight:600}
+
+/* details */
+.details{--min:280px}
+.details .tile{padding:24px}
+.details .eyebrow{font:500 12px var(--mono);color:var(--teal);letter-spacing:.06em;margin-bottom:10px}
+.details code{font-size:13px}
+
+/* grown-ups */
+.grownups{--min:280px;gap:clamp(28px,4vw,56px);align-items:center}
+.grownups h2{font-size:clamp(26px,3vw,38px);line-height:1.14}
+.grownups p{font:400 16px/1.6 var(--sans);color:var(--ink-3);margin:0}
+.pair{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+.pair img{width:min(220px,42vw);border-radius:20px;border:1px solid var(--line)}
+</style>
+</head>
+<body>
+<div class="page">
+
+<nav>
+  <a class="brand" href="index.html">
+    <span class="brand-mark">T</span>
+    <span class="brand-name">Tiny Talk Adventures</span>
+  </a>
+  <div class="nav-links">
+    <a href="index.html" aria-current="page">The system</a>
+    <a href="journey.html">Journey</a>
+    <a href="claude-code.html">Working with Claude Code</a>
+    <a href="what-if.html">What if?</a>
+    <a href="https://github.com/jessvb/tiny-talk-adventures" target="_blank" rel="noopener">GitHub ↗</a>
+  </div>
+</nav>
+
+<header class="wrap wide hero">
+  <div>
+    <div class="pill">personal project · runs on one household Mac</div>
+    <h1>A child talks. Six models answer. Nothing leaves the house.</h1>
+    <p class="lede">Tiny Talk Adventures lets a child and Elsie the elephant make up a story together, out loud — then turns the conversation into an illustrated book. Speech recognition, the language model, the voice and the artwork all run on one M1 MacBook Pro with 16&nbsp;GB of RAM.</p>
+    <div class="ctas">
+      <a class="cta" href="#models">See where each model fits</a>
+      <a class="cta ghost" href="journey.html">Read the hard problems →</a>
+    </div>
+  </div>
+  <div class="hero-shot">
+    <img src="shots/landing.png" alt="Tiny Talk Adventures landing screen with Elsie the elephant">
+  </div>
+</header>
+
+<div class="wrap wide stats-wrap">
+  <div class="stats">
+    <div><div class="stat-n">16 GB</div><div class="stat-l">RAM shared by every model at once</div></div>
+    <div><div class="stat-n">0.77×</div><div class="stat-l">speech-to-text realtime factor — the number the design hangs on</div></div>
+    <div><div class="stat-n">6</div><div class="stat-l">models: voice detection, STT, LLM, TTS, vision, image</div></div>
+    <div><div class="stat-n">486+</div><div class="stat-l">server tests, plus a hardware probe that gates model changes</div></div>
+  </div>
+</div>
+
+<section class="wrap wide">
+  <div class="kicker">01 — THE OPPORTUNITY</div>
+  <h2 style="max-width:24ch">Children don't wait their turn — and they shouldn't have to</h2>
+  <p class="intro">Young children think out loud and interrupt with a better idea halfway through yours. Most voice interfaces expect the opposite: wait for the tone, speak, wait again. Tiny Talk follows the child's rhythm — they can cut in at any moment, and Elsie stops and builds on what they said.</p>
+
+  <div class="card diagram-scroll">
+    <svg viewBox="0 0 1000 400" style="min-width:640px" role="img" aria-label="Same moment, two systems. A wait-your-turn assistant talks over the child and the idea is lost; Tiny Talk stops the moment the child speaks and builds on the idea.">
+      <text x="330" y="16" text-anchor="middle" fill="#5fb3a5" font-family="JetBrains Mono, monospace" font-size="12" letter-spacing="1.5">CHILD SPEAKS</text>
+      <rect x="0" y="28" width="1000" height="152" rx="12" fill="#211b17" stroke="#2e2620"/>
+      <text x="20" y="56" fill="#9d9083" font-family="JetBrains Mono, monospace" font-size="13" letter-spacing="1.5">A · WAIT-YOUR-TURN ASSISTANT</text>
+      <text x="980" y="56" text-anchor="end" fill="#d2622f" font-family="JetBrains Mono, monospace" font-size="12.5">→ the idea is lost</text>
+      <line x1="20" y1="119" x2="980" y2="119" stroke="#2e2620"/>
+      <text x="20" y="97" fill="#7d7064" font-family="Instrument Sans, sans-serif" font-size="13">Assistant</text>
+      <text x="20" y="150" fill="#7d7064" font-family="Instrument Sans, sans-serif" font-size="13">Child</text>
+      <rect x="130" y="76" width="500" height="32" rx="7" fill="#3c3129"/>
+      <text x="144" y="97" fill="#c3b5a6" font-family="Instrument Sans, sans-serif" font-size="14">keeps talking over the child…</text>
+      <circle cx="652" cy="92" r="6" fill="#7d7064"/>
+      <text x="664" y="96" fill="#7d7064" font-family="JetBrains Mono, monospace" font-size="12">tone — your turn</text>
+      <rect x="330" y="129" width="230" height="32" rx="7" fill="none" stroke="#7d7064" stroke-dasharray="4 4"/>
+      <text x="344" y="150" fill="#7d7064" font-family="Instrument Sans, sans-serif" font-size="13">“What if the squirrel can fly?”</text>
+      <text x="572" y="150" fill="#d2622f" font-family="JetBrains Mono, monospace" font-size="12">unheard</text>
+      <rect x="700" y="129" width="280" height="32" rx="7" fill="#5b4c40"/>
+      <text x="714" y="150" fill="#e9dfd2" font-family="Instrument Sans, sans-serif" font-size="13">tries again — if still interested</text>
+      <rect x="0" y="208" width="1000" height="152" rx="12" fill="#211b17" stroke="#3a2f26"/>
+      <text x="20" y="236" fill="#e8b44a" font-family="JetBrains Mono, monospace" font-size="13" letter-spacing="1.5">B · TINY TALK</text>
+      <text x="980" y="236" text-anchor="end" fill="#e8b44a" font-family="JetBrains Mono, monospace" font-size="12.5">→ the idea becomes the story</text>
+      <line x1="20" y1="299" x2="980" y2="299" stroke="#2e2620"/>
+      <text x="20" y="277" fill="#9d9083" font-family="Instrument Sans, sans-serif" font-size="13">Elsie</text>
+      <text x="20" y="330" fill="#9d9083" font-family="Instrument Sans, sans-serif" font-size="13">Child</text>
+      <rect x="130" y="256" width="196" height="32" rx="7" fill="#c9824a"/>
+      <text x="144" y="277" fill="#1b1714" font-family="Instrument Sans, sans-serif" font-size="14" font-weight="600">Elsie talking…</text>
+      <text x="340" y="277" fill="#d2622f" font-family="JetBrains Mono, monospace" font-size="12">stops instantly</text>
+      <rect x="580" y="256" width="400" height="32" rx="7" fill="#c9824a"/>
+      <text x="594" y="277" fill="#1b1714" font-family="Instrument Sans, sans-serif" font-size="14" font-weight="600">builds on it: “Where does it fly first?”</text>
+      <rect x="330" y="309" width="230" height="32" rx="7" fill="#3a8d80"/>
+      <text x="344" y="330" fill="#10201e" font-family="Instrument Sans, sans-serif" font-size="13" font-weight="600">“What if the squirrel can fly?”</text>
+      <line x1="330" y1="22" x2="330" y2="366" stroke="#5fb3a5" stroke-width="1.5" stroke-dasharray="3 4"/>
+      <line x1="130" y1="384" x2="975" y2="384" stroke="#3a2f26"/>
+      <path d="M975 379 L985 384 L975 389 Z" fill="#3a2f26"/>
+      <text x="130" y="398" fill="#5e5249" font-family="JetBrains Mono, monospace" font-size="11" letter-spacing="1">TIME →</text>
+    </svg>
+  </div>
+
+  <div class="grid tiles">
+    <div class="tile"><h3>The child leads</h3><p>Interruptions are welcomed, never corrected, and most replies end by asking the child what happens next.</p></div>
+    <div class="tile"><h3>Learning woven in</h3><p><b>Real animal facts</b> from an external source, not the model's memory — inside a story world that stays physically real.</p></div>
+    <div class="tile"><h3>Private by architecture</h3><p>A child's voice is sensitive data. At home it stays on the family's own devices — no accounts, no analytics, no third-party inference.</p></div>
+  </div>
+</section>
+
+<section class="wrap wide">
+  <div class="kicker">02 — WHAT IT DOES</div>
+  <h2 style="margin-bottom:36px">From hello to a finished book</h2>
+  <div class="grid steps">
+    <div>
+      <img src="shots/landing.png" alt="Landing screen: Elsie invites the child to start a story">
+      <h3>Children can talk, anytime</h3>
+      <p>Elsie's <b>always ready to listen</b>, even when telling her part of the story. No buttons to learn — the child just speaks, and Elsie stops.</p>
+    </div>
+    <div>
+      <img src="shots/story.png" alt="A story in progress about Squeaky the squirrel who loves cooking">
+      <h3>Facts inside the fiction</h3>
+      <p>Squeaky's acorn crumbs are high in fibre; his carrots carry vitamin A. The child listens — the transcript is for grown-ups.</p>
+    </div>
+    <div>
+      <img src="shots/read.png" alt="A storybook page with an illustration of Squeaky the squirrel in a kitchen">
+      <h3>The conversation becomes a book</h3>
+      <p>Both voices are <b>retold as picture-book</b> pages, illustrated locally, with the same character on every page.</p>
+    </div>
+    <div>
+      <img src="shots/the-end.png" alt="The End celebration screen with the finished book">
+      <h3>Every story gets a real ending</h3>
+      <p>The turn budget runs out, the child asks to stop, or Elsie concludes — whichever comes first.</p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap wide" id="models">
+  <div class="kicker">03 — WHERE EACH MODEL SHOWS UP</div>
+  <h2 style="margin-bottom:36px">Every element on screen is backed by a model</h2>
+
+  <div class="grid figs">
+    <figure>
+      <div class="annot">
+        <img src="shots/story.png" alt="Story creation screen">
+        <svg viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true">
+          <g stroke="#e8b44a" stroke-width="1.5" fill="none">
+            <polyline points="262,300 400,300 498,327" vector-effect="non-scaling-stroke"/>
+            <polyline points="262,470 420,470 540,381" vector-effect="non-scaling-stroke"/>
+            <polyline points="262,720 420,720 500,845" vector-effect="non-scaling-stroke"/>
+            <polyline points="262,900 300,900 336,862" vector-effect="non-scaling-stroke"/>
+            <polyline points="738,190 690,190 650,193" vector-effect="non-scaling-stroke"/>
+            <polyline points="738,420 690,420 640,340" vector-effect="non-scaling-stroke"/>
+            <polyline points="738,780 700,780 664,856" vector-effect="non-scaling-stroke"/>
+          </g>
+          <g fill="#e8b44a">
+            <circle cx="498" cy="327" r="6"/><circle cx="540" cy="381" r="6"/><circle cx="500" cy="845" r="6"/><circle cx="336" cy="862" r="6"/><circle cx="650" cy="193" r="6"/><circle cx="640" cy="340" r="6"/><circle cx="664" cy="856" r="6"/>
+          </g>
+        </svg>
+        <div class="co l" style="top:30%"><b>LLM</b><span>Qwen 3.5 9B</span><small>writes Elsie's reply</small></div>
+        <div class="co l" style="top:47%"><b>FACT API</b><span>API Ninjas</span><small>a real fact, woven in</small></div>
+        <div class="co l" style="top:72%"><b>TTS</b><span>Kokoro-82M</span><small>Elsie's voice</small></div>
+        <div class="co l" style="top:90%"><b>VISION</b><span>FastViT-T8</span><small>names what the camera sees</small></div>
+        <div class="co r" style="top:19%"><b>STT</b><span>Kyutai STT 1b</span><small>the child's words</small></div>
+        <div class="co r" style="top:42%"><b>SAFETY</b><span>Denylist</span><small>checks each reply before it's spoken</small></div>
+        <div class="co r" style="top:78%"><b>VAD</b><span>Silero VAD</span><small>hears when the child starts talking</small></div>
+      </div>
+      <figcaption>Creating a story</figcaption>
+    </figure>
+
+    <figure>
+      <div class="annot">
+        <img src="shots/read.png" alt="Storybook reading screen">
+        <svg viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true">
+          <g stroke="#e8b44a" stroke-width="1.5" fill="none">
+            <polyline points="262,250 360,250 430,260" vector-effect="non-scaling-stroke"/>
+            <polyline points="262,560 330,560 360,560" vector-effect="non-scaling-stroke"/>
+            <polyline points="738,157 700,157 676,157" vector-effect="non-scaling-stroke"/>
+            <polyline points="738,660 690,660 640,622" vector-effect="non-scaling-stroke"/>
+          </g>
+          <g fill="#e8b44a">
+            <circle cx="430" cy="260" r="6"/><circle cx="360" cy="560" r="6"/><circle cx="676" cy="157" r="6"/><circle cx="640" cy="622" r="6"/>
+          </g>
+        </svg>
+        <div class="co l" style="top:25%"><b>IMAGE</b><span>SD 1.5 + LoRA</span><small>page art; IP-Adapter keeps the same squirrel</small></div>
+        <div class="co l" style="top:56%"><b>LLM</b><span>Qwen 3.5 9B</span><small>retells the chat as book pages</small></div>
+        <div class="co r" style="top:15.7%"><b>TTS</b><span>Kokoro-82M</span><small>reads each page aloud</small></div>
+        <div class="co r" style="top:66%"><b>FACT API</b><span>API Ninjas</span><small>facts from the story carried into the book</small></div>
+      </div>
+      <figcaption>Reading it back</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="wrap wide" id="architecture">
+  <div class="kicker">04 — ARCHITECTURE</div>
+  <h2 style="margin-bottom:10px">How the pieces connect. Tap any box.</h2>
+  <p class="sub" style="margin-top:0">Solid lines run at home, on hardware the family owns. Dashed boxes are the away-from-home demo mode only.</p>
+
+  <div class="arch">
+    <svg viewBox="0 0 1200 500" role="group" aria-label="Architecture: iPhone, MacBook and external services, with the models on each. Choose a box to see details below.">
+      <defs>
+        <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#8a7b6d"/></marker>
+      </defs>
+      <rect x="10" y="20" width="260" height="460" rx="22" fill="#1a1613" stroke="#2b241e"/>
+      <text x="32" y="50" fill="#7d7064" font-family="JetBrains Mono, monospace" font-size="12.5" letter-spacing="1.5">iPHONE</text>
+      <rect x="420" y="20" width="560" height="460" rx="22" fill="#1a1613" stroke="#2b241e"/>
+      <text x="442" y="50" fill="#7d7064" font-family="JetBrains Mono, monospace" font-size="12.5" letter-spacing="1.5">M1 MACBOOK PRO · 16 GB · HOME WIFI</text>
+      <text x="1010" y="50" fill="#7d7064" font-family="JetBrains Mono, monospace" font-size="12.5" letter-spacing="1.5">EXTERNAL</text>
+
+      <g stroke="#8a7b6d" stroke-width="1.6" fill="none">
+        <path d="M250 113 H438" marker-end="url(#ah)"/>
+        <path d="M600 113 H618" marker-end="url(#ah)"/>
+        <path d="M780 113 H798" marker-end="url(#ah)"/>
+        <path d="M880 146 V258" marker-end="url(#ah)"/>
+        <path d="M800 293 H252" marker-end="url(#ah)"/>
+        <path d="M250 203 H660 V148" marker-end="url(#ah)"/>
+        <path d="M1010 223 H740 V148" marker-end="url(#ah)"/>
+        <path d="M680 425 H718" marker-end="url(#ah)"/>
+      </g>
+      <line x1="440" y1="355" x2="960" y2="355" stroke="#2b241e" stroke-dasharray="5 6"/>
+      <text x="442" y="380" fill="#7d7064" font-family="JetBrains Mono, monospace" font-size="12" letter-spacing="1.3">AFTER THE STORY ENDS</text>
+
+      <g class="node" data-node="wire">
+        <rect class="ring" x="286" y="126" width="120" height="58" rx="10" fill="#14110f"/>
+        <text x="346" y="150" text-anchor="middle" fill="#f2e9dd" font-family="Instrument Sans, sans-serif" font-size="13.5" font-weight="600">WebSocket</text>
+        <text x="346" y="170" text-anchor="middle" fill="#e8b44a" font-family="JetBrains Mono, monospace" font-size="11">24 kHz PCM16</text>
+      </g>
+      <g class="node" data-node="vad">
+        <rect class="ring" x="30" y="80" width="220" height="66" rx="12" fill="#221d19" stroke-width="1.6"/>
+        <text x="46" y="108" fill="#f2e9dd" font-family="Instrument Sans, sans-serif" font-size="15" font-weight="600">Voice detection</text>
+        <text x="46" y="130" fill="#e8b44a" font-family="JetBrains Mono, monospace" font-size="12">Silero VAD</text>
+      </g>
+      <g class="node" data-node="vision">
+        <rect class="ring" x="30" y="170" width="220" height="66" rx="12" fill="#221d19" stroke-width="1.6"/>
+        <text x="46" y="198" fill="#f2e9dd" font-family="Instrument Sans, sans-serif" font-size="15" font-weight="600">Object recognition</text>
+        <text x="46" y="220" fill="#e8b44a" font-family="JetBrains Mono, monospace" font-size="12">FastViT-T8 · Core ML</text>
+      </g>
+      <g>
+        <rect x="30" y="260" width="220" height="66" rx="12" fill="#1a1613" stroke="#3c3129" stroke-width="1.6"/>
+        <text x="46" y="288" fill="#f2e9dd" font-family="Instrument Sans, sans-serif" font-size="15" font-weight="600">Speaker + echo cancel</text>
+        <text x="46" y="310" fill="#9d9083" font-family="JetBrains Mono, monospace" font-size="12">stops locally on barge-in</text>
+      </g>
+      <g class="node away" data-node="away">
+        <rect class="ring" x="30" y="390" width="220" height="66" rx="12" fill="transparent" stroke-width="1.6" stroke-dasharray="6 5"/>
+        <text x="46" y="418" fill="#c3b5a6" font-family="Instrument Sans, sans-serif" font-size="15" font-weight="600">Apple speech + voices</text>
+        <text x="46" y="440" fill="#9d9083" font-family="JetBrains Mono, monospace" font-size="12">away mode only</text>
+      </g>
+
+      <g class="node" data-node="stt">
+        <rect class="ring" x="440" y="80" width="160" height="66" rx="12" fill="#221d19" stroke-width="1.6"/>
+        <text x="456" y="108" fill="#f2e9dd" font-family="Instrument Sans, sans-serif" font-size="15" font-weight="600">Speech to text</text>
+        <text x="456" y="130" fill="#e8b44a" font-family="JetBrains Mono, monospace" font-size="12">Kyutai STT 1b</text>
+      </g>
+      <g class="node" data-node="llm">
+        <rect class="ring" x="620" y="80" width="160" height="66" rx="12" fill="#221d19" stroke-width="1.6"/>
+        <text x="636" y="108" fill="#f2e9dd" font-family="Instrument Sans, sans-serif" font-size="15" font-weight="600">Story turn</text>
+        <text x="636" y="130" fill="#e8b44a" font-family="JetBrains Mono, monospace" font-size="12">Qwen 3.5 9B</text>
+      </g>
+      <g class="node" data-node="safety">
+        <rect class="ring" x="800" y="80" width="160" height="66" rx="12" fill="#221d19" stroke-width="1.6"/>
+        <text x="816" y="108" fill="#f2e9dd" font-family="Instrument Sans, sans-serif" font-size="15" font-weight="600">Safety gate</text>
+        <text x="816" y="130" fill="#e8b44a" font-family="JetBrains Mono, monospace" font-size="12">denylist · no model</text>
+      </g>
+      <g class="node" data-node="tts">
+        <rect class="ring" x="800" y="260" width="160" height="66" rx="12" fill="#221d19" stroke-width="1.6"/>
+        <text x="816" y="288" fill="#f2e9dd" font-family="Instrument Sans, sans-serif" font-size="15" font-weight="600">Speech</text>
+        <text x="816" y="310" fill="#e8b44a" font-family="JetBrains Mono, monospace" font-size="12">Kokoro-82M</text>
+      </g>
+      <g class="node" data-node="rewrite">
+        <rect class="ring" x="440" y="395" width="240" height="62" rx="12" fill="#221d19" stroke-width="1.6"/>
+        <text x="456" y="421" fill="#f2e9dd" font-family="Instrument Sans, sans-serif" font-size="15" font-weight="600">Storybook rewrite</text>
+        <text x="456" y="442" fill="#e8b44a" font-family="JetBrains Mono, monospace" font-size="12">Qwen 3.5 9B · same process</text>
+      </g>
+      <g class="node" data-node="art">
+        <rect class="ring" x="720" y="395" width="240" height="62" rx="12" fill="#221d19" stroke-width="1.6"/>
+        <text x="736" y="421" fill="#f2e9dd" font-family="Instrument Sans, sans-serif" font-size="15" font-weight="600">Page art</text>
+        <text x="736" y="442" fill="#e8b44a" font-family="JetBrains Mono, monospace" font-size="12">SD 1.5 + LoRA + IP-Adapter</text>
+      </g>
+
+      <g class="node" data-node="facts">
+        <rect class="ring" x="1010" y="190" width="180" height="66" rx="12" fill="#221d19" stroke-width="1.6"/>
+        <text x="1026" y="218" fill="#f2e9dd" font-family="Instrument Sans, sans-serif" font-size="15" font-weight="600">Animal facts</text>
+        <text x="1026" y="240" fill="#e8b44a" font-family="JetBrains Mono, monospace" font-size="12">API Ninjas · cached</text>
+      </g>
+      <g class="node away" data-node="away">
+        <rect class="ring" x="1010" y="300" width="180" height="156" rx="12" fill="transparent" stroke-width="1.6" stroke-dasharray="6 5"/>
+        <text x="1026" y="328" fill="#9d9083" font-family="JetBrains Mono, monospace" font-size="11" letter-spacing="1.2">AWAY MODE ONLY</text>
+        <text x="1026" y="360" fill="#c3b5a6" font-family="Instrument Sans, sans-serif" font-size="14.5" font-weight="600">Groq</text>
+        <text x="1026" y="380" fill="#9d9083" font-family="JetBrains Mono, monospace" font-size="12">gpt-oss-20b</text>
+        <text x="1026" y="414" fill="#c3b5a6" font-family="Instrument Sans, sans-serif" font-size="14.5" font-weight="600">Cloudflare</text>
+        <text x="1026" y="434" fill="#9d9083" font-family="JetBrains Mono, monospace" font-size="12">FLUX · page art</text>
+      </g>
+    </svg>
+  </div>
+
+  <div class="card grid detail" aria-live="polite">
+    <div>
+      <div class="where" id="d-where"></div>
+      <h3 id="d-title"></h3>
+      <div class="chip" id="d-model"></div>
+    </div>
+    <div class="detail-body">
+      <p id="d-body"></p>
+      <p class="why"><strong>Why it matters — </strong><span id="d-why"></span></p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap wide">
+  <div class="kicker">05 — DESIGN GOALS</div>
+  <h2 style="margin-bottom:10px">Five goals, and what we learned from each</h2>
+  <p class="sub" style="margin-top:0;margin-bottom:30px;max-width:60ch">Each goal shaped the system — and each one taught us something.</p>
+  <div class="goals">
+    <div class="goal">
+      <div><div class="tag">EDUCATION</div><h3>Real facts, real world</h3></div>
+      <p>Animal facts come from an external API, not model memory. The story world stays physically real.</p>
+      <p class="lesson"><strong>What we learned — </strong>A model will state a fact it never fetched. The book's closing fact is now written by <b>deterministic</b> server code, after the model was caught inventing one.</p>
+    </div>
+    <div class="goal">
+      <div><div class="tag">ENGAGEMENT</div><h3>A story, not a chat</h3></div>
+      <p><b>Five narrative stages</b> over a turn budget, each adding its own guidance.</p>
+      <p class="lesson"><strong>What we learned — </strong>A good story needs an ending more than it needs length. Testing cut the target from 12 turns to 7.</p>
+    </div>
+    <div class="goal">
+      <div><div class="tag">EFFICIENCY</div><h3>Everything on one Mac</h3></div>
+      <p><b>Small, capable models</b>, measured on this Mac: an 82M-parameter voice, a 1B transcriber, a 9B storyteller. Where a rule will do — story staging, a double-safety check — no model runs at all.</p>
+      <p class="lesson"><strong>What we learned — </strong>Models that each fit can still crowd each other out. Kept loaded side by side, the speech, voice and image models held 12 GB of a 16 GB Mac — before the storyteller itself — and every turn slowed as the machine swapped.</p>
+    </div>
+    <div class="goal">
+      <div><div class="tag">PRIVACY</div><h3>Local by default</h3></div>
+      <p>At home, a child's voice reaches <b>only their phone and the family Mac</b>. No accounts or analytics.</p>
+      <p class="lesson"><strong>What we learned — </strong> Cloud use exists only in the away-from-home mode, and the switch says so in plain words for grown-ups.</p>
+    </div>
+    <div class="goal">
+      <div><div class="tag">AI FOR CHILDREN</div><h3>Assume defaults aren't safe</h3></div>
+      <p>Every place that generates text for the child has its own safeguards and retry logic.</p>
+      <p class="lesson"><strong>What we learned — </strong>Every new way of generating text <b>needs its own safeguards</b>. A review found the storybook rewrite had shipped with none.</p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap wide">
+  <div class="kicker">06 — DETAILS WORTH THE DETOUR</div>
+  <h2 style="margin-bottom:30px">Small decisions that hold it together</h2>
+  <div class="grid details">
+    <div class="tile"><div class="eyebrow">STATE MACHINE</div><h3>A gate, not a warning</h3><p>The storybook rewrite and a live turn share one local LLM. A <code>REWRITING</code> state makes overlap impossible — on every path into a new story, including the child simply talking again.</p></div>
+    <div class="tile"><div class="eyebrow">PROMPT PLUMBING</div><h3>Three signals, one call</h3><p>Story stage, animal fact and camera object all arrive as guidance in the same single LLM call. A new capability costs no extra inference.</p></div>
+    <div class="tile"><div class="eyebrow">WIRE PROTOCOL</div><h3>A turn id on every frame</h3><p>Transcription can take seconds, so a reply may arrive after the child has moved on. Tagging each frame with its turn lets the phone drop stale replies — misattribution was confirmed on real hardware before this.</p></div>
+    <div class="tile"><div class="eyebrow">SESSIONS</div><h3>A story outlives its connection</h3><p>iOS backgrounding mustn't kill a story. The session persists across sockets; a disconnect doesn't cancel the turn — its output is buffered and replayed on reconnect.</p></div>
+  </div>
+</section>
+
+<section class="wrap wide">
+  <div class="grid grownups">
+    <div>
+      <div class="kicker">07 — FOR GROWN-UPS</div>
+      <h2>Trust comes from being plain about where data goes</h2>
+      <p>One settings screen shows where Elsie's brain is running, whether it's connected, and how long stories last. Turning on away-from-home mode shows a clear warning that the conversation now goes to a cloud service.</p>
+    </div>
+    <div class="pair">
+      <img src="shots/settings.png" alt="Grown-up settings: server address, story length, under-the-hood state">
+      <img src="shots/away.png" alt="Away-from-home toggle with a warning that Elsie's brain runs in the cloud">
+    </div>
+  </div>
+</section>
+
+<footer class="wrap wide">
+  <div class="footer-line">Next: the problems that took days, not minutes.</div>
+  <a class="cta" href="journey.html">Development journey →</a>
+</footer>
+
+<div class="wrap credits">
+  <div class="credits-by">Tiny Talk was co-developed by <a href="https://jessvb.github.io/" target="_blank" rel="noopener">Jessica Van Brummelen</a> and Claude.</div>
+  <div class="credits-links">
+    <a href="https://github.com/jessvb/tiny-talk-adventures" target="_blank" rel="noopener">Source on GitHub ↗</a>
+    <a href="https://jessvb.github.io/" target="_blank" rel="noopener">Website ↗</a>
+    <a href="https://www.linkedin.com/in/jessicavanbrummelen/" target="_blank" rel="noopener">LinkedIn ↗</a>
+    <a href="https://scholar.google.com/citations?user=6d4tBYwAAAAJ&amp;hl=en" target="_blank" rel="noopener">Google Scholar ↗</a>
+  </div>
+</div>
+
+</div>
+
+<script>
+// Detail text for each box in the architecture diagram.
+const NODES = {
+  vad: {
+    where: "iPHONE", title: "Hears when the child starts talking", model: "Silero VAD · on-device",
+    body: "Runs continuously on the phone and marks the start and end of speech. When the child talks over Elsie, the phone stops playback itself — no network round trip.",
+    why: "Interruption is the core interaction. Too slow and Elsie talks over the child; too eager and her own echo cuts her off.",
+  },
+  vision: {
+    where: "iPHONE", title: "Brings a real object into the story", model: "FastViT-T8 · Core ML",
+    body: "The child shows the camera something — a teddy, a cup — and an on-device ImageNet classifier names it. The label becomes guidance for Elsie's next turn.",
+    why: "It replaced Apple's built-in classifier after on-device testing showed its labels were too generic for household objects. Photos never leave the phone; only the label does.",
+  },
+  wire: {
+    where: "PHONE ↔ MAC", title: "One socket, two kinds of frame", model: "WebSocket · JSON + 24 kHz PCM16",
+    body: "Control messages are JSON; audio is raw binary at 24 kHz — the rate the speech models expect natively, so nothing is ever resampled.",
+    why: "Every frame carries a turn id, so a late reply to an abandoned utterance can be recognised and dropped.",
+  },
+  stt: {
+    where: "MAC", title: "The model that had to be smaller", model: "Kyutai STT 1b · MLX",
+    body: "Streaming transcription at 0.77× realtime, with a 1.1 s flush when the child stops talking.",
+    why: "The larger 2.6b ran slower than realtime, so audio backed up without limit — the hidden cause of the “random disconnects”. Accuracy is worth nothing on a turn that never finishes.",
+  },
+  llm: {
+    where: "MAC", title: "One call per turn", model: "Qwen 3.5 9B · Ollama",
+    body: "A fixed storyteller persona plus per-turn guidance: the story stage (from a turn count), any real animal fact, any camera object. One to three spoken sentences back.",
+    why: "Thinking mode was off by request — it had been producing 100+ lines of hidden reasoning and ~3m19s replies. Keep-alive is 30 min so the model isn't evicted between turns.",
+  },
+  safety: {
+    where: "MAC", title: "A deterministic check before anything is spoken", model: "Regex denylist · zero model calls",
+    body: "Five categories checked in one pass. A flagged reply is replaced with a gentle redirect: “Hmm, let's take the story somewhere else!”",
+    why: "A classifier would be one more model competing for 16 GB on the critical path. The code documents plainly that this is a floor, not real moderation.",
+  },
+  tts: {
+    where: "MAC", title: "A voice that can be cut off mid-sentence", model: "Kokoro-82M · PyTorch MPS",
+    body: "Replies are synthesised sentence by sentence and played as they arrive: about 0.9 s to first audio. The same model reads storybook pages aloud.",
+    why: "Kokoro only auto-detects CUDA, so on a Mac it silently fell back to CPU. Forcing Apple's GPU backend measured ~1.8× faster.",
+  },
+  facts: {
+    where: "EXTERNAL", title: "Real facts, fetched once", model: "API Ninjas · Animals",
+    body: "The first time an animal is mentioned, a fact is fetched and cached locally. Every later mention is an instant lookup.",
+    why: "Facts come from a source, not the model's memory. With no key configured, stories still work — they just lose the fact grounding.",
+  },
+  rewrite: {
+    where: "MAC · BACKGROUND", title: "The chat, retold as a picture book", model: "Qwen 3.5 9B · same process",
+    body: "After the story ends, both voices are rewritten as third-person pages. The parser tolerates small-model JSON slips instead of discarding a finished story.",
+    why: "The closing fact is formatted by server code, never written by the model — a review caught the model inventing one.",
+  },
+  art: {
+    where: "MAC · BACKGROUND", title: "The same squirrel on every page", model: "SD 1.5 + storybook LoRA + IP-Adapter",
+    body: "One illustration per page, at 25 steps. Page one's image conditions every later page, so the character stays recognisably the same.",
+    why: "The default 50 steps took ~15 min an image on this Mac. Consistency had to come from conditioning, not more generation.",
+  },
+  away: {
+    where: "AWAY MODE ONLY", title: "A demo path for when there's no home Mac", model: "Apple speech · Groq gpt-oss-20b · Cloudflare FLUX",
+    body: "Off the home network, the phone's own speech stack and hosted models stand in. Same prompts, same safety gate, one backend switch.",
+    why: "The switch was first built to test whether the LLM was the real latency bottleneck. It's clearly labelled for grown-ups because it changes where a child's voice goes.",
+  },
+};
+
+const nodes = document.querySelectorAll(".node");
+function pick(key) {
+  const n = NODES[key];
+  for (const f of ["where", "title", "model", "body", "why"]) document.getElementById("d-" + f).textContent = n[f];
+  nodes.forEach(g => g.setAttribute("aria-pressed", String(g.dataset.node === key)));
+}
+nodes.forEach(g => {
+  g.setAttribute("role", "button");
+  g.setAttribute("tabindex", "0");
+  g.setAttribute("aria-label", NODES[g.dataset.node].title);
+  g.addEventListener("click", () => pick(g.dataset.node));
+  g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(g.dataset.node); } });
+});
+pick("stt");
+</script>
+</body>
+</html>

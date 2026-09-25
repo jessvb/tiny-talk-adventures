@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Development journey — Tiny Talk Adventures</title>
+<meta name="description" content="How Tiny Talk Adventures was built: one spec per sub-project, the realtime constraint everything hangs on, and four real problems told the way they happened.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+<style>
+h1{font-size:clamp(36px,5.4vw,66px);margin-bottom:24px;max-width:24ch}
+.lede{line-height:1.62;max-width:64ch}
+.lede + .lede{margin-top:16px}
+section.wrap > .kicker{margin-bottom:14px}
+h2{max-width:30ch}
+.intro{line-height:1.62;margin-bottom:30px}
+
+/* build order */
+.timeline-wrap{padding-bottom:clamp(40px,6vw,72px)}
+.small-kicker{font:500 12px var(--mono);color:var(--ink-5);letter-spacing:.1em;margin-bottom:18px}
+.timeline{list-style:none;margin:0;padding:0;display:grid;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.timeline li{background:var(--panel);padding:13px 18px;display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+.timeline time{font:400 12.5px var(--mono);color:var(--ink-5);min-width:78px}
+.timeline b{font:500 15px var(--sans);color:var(--ink);flex:1;min-width:180px}
+.timeline span{font:400 13.5px var(--sans);color:var(--ink-4)}
+.aside{font:400 14px/1.55 var(--sans);color:var(--ink-5);margin:14px 0 0;max-width:70ch}
+
+/* realtime bars */
+.bars{display:grid;gap:22px;padding:clamp(22px,3vw,34px)}
+.bar-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:10px;flex-wrap:wrap}
+.bar-name{font:600 15px var(--sans);color:var(--ink)}
+.bar-stat{font:500 13px var(--mono)}
+.ok{color:var(--teal)} .bad{color:var(--accent)}
+.bar{height:34px;border-radius:9px;background:var(--bg);position:relative;overflow:hidden;border:1px solid var(--line)}
+.bar > div{position:absolute;top:0;bottom:0}
+.bar .ticks{inset:0;background:repeating-linear-gradient(90deg,var(--box) 0 1px,transparent 1px 10%)}
+.bar .fill-ok{left:0;width:77%;background:linear-gradient(90deg,#2d6b62,var(--teal));border-radius:8px}
+.bar .idle{left:77%;right:0;display:grid;place-items:center;font:500 11.5px var(--mono);color:var(--ink-5)}
+.bar .fill-bad{left:0;right:0;background:linear-gradient(90deg,#8f3f1c,var(--accent))}
+.bar .backlog{right:0;width:32%;background:repeating-linear-gradient(135deg,rgba(20,17,15,.55) 0 6px,transparent 6px 12px)}
+.bar .backlog-label{right:8px;display:grid;place-items:center;font:600 11.5px var(--mono);color:#1b1714}
+.bar-note{font:400 13.5px/1.5 var(--sans);color:var(--ink-5);margin:9px 0 0}
+.bar-note .n{font-family:var(--mono)}
+.callout{padding:16px 18px;background:var(--bg);border-radius:12px;border-left:2px solid var(--gold)}
+.callout p{font:400 14.5px/1.58 var(--sans);color:var(--ink-3);margin:0}
+.callout strong{color:var(--ink);font-weight:600}
+
+/* case studies */
+.cases{display:grid;gap:12px}
+.case{background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow:hidden}
+.case summary{list-style:none;padding:22px clamp(18px,2.5vw,28px);cursor:pointer;display:flex;gap:18px;align-items:flex-start}
+.case summary::-webkit-details-marker{display:none}
+.case summary:hover{background:var(--hover)}
+.case-num{font:500 12.5px var(--mono);color:var(--accent);padding-top:5px;flex-shrink:0}
+.case-head{flex:1;min-width:0}
+.case-title{display:block;font:600 clamp(18px,2vw,23px)/1.25 var(--serif);color:var(--ink-hi);margin-bottom:6px;letter-spacing:-.01em}
+.case-sub{display:block;font:400 14.5px/1.5 var(--sans);color:var(--ink-4)}
+.case-mark{font:400 20px var(--mono);color:var(--ink-5);flex-shrink:0;padding-top:2px}
+.case-mark::before{content:"+"}
+.case[open] .case-mark{color:var(--accent)}
+.case[open] .case-mark::before{content:"−"}
+.case-body{display:grid;gap:1px;background:var(--line);margin:0 clamp(18px,2.5vw,28px) 26px;border:1px solid var(--line);border-radius:13px;overflow:hidden}
+.case-body > div{background:var(--bg);padding:20px 22px}
+.case-body h4{font:500 11.5px var(--mono);letter-spacing:.08em;margin:0 0 9px}
+.case-body p{font:400 15px/1.6 var(--sans);color:var(--ink-2);margin:0}
+.case-body .learned{background:var(--hover)}
+.case-body .learned p{font:italic 400 15.5px/1.6 var(--serif);color:var(--ink)}
+
+.verify{--min:270px}
+.verify .tile{padding:24px}
+.verify h3{margin-bottom:9px}
+footer.wrap{align-items:flex-end}
+</style>
+</head>
+<body>
+<div class="page">
+
+<nav>
+  <a class="brand" href="index.html">
+    <span class="brand-mark">T</span>
+    <span class="brand-name">Tiny Talk Adventures</span>
+  </a>
+  <div class="nav-links">
+    <a href="index.html">The system</a>
+    <a href="journey.html" aria-current="page">Journey</a>
+    <a href="claude-code.html">Working with Claude Code</a>
+    <a href="what-if.html">What if?</a>
+    <a href="https://github.com/jessvb/tiny-talk-adventures" target="_blank" rel="noopener">GitHub ↗</a>
+  </div>
+</nav>
+
+<header class="wrap">
+  <div class="kicker">DEVELOPMENT JOURNEY</div>
+  <h1>Building is easy. Testing on actual hardware is hard.</h1>
+  <p class="lede">Tiny Talk was built as a sequence of small sub-projects, each with a written design spec before any code. That structure is visible in the repository, and it is also why the interesting failures are well documented: every one of them changed a spec.</p>
+  <p class="lede">Four real problems, told the way they actually happened.</p>
+</header>
+
+<div class="wrap timeline-wrap">
+  <div class="small-kicker">BUILD ORDER — ONE SPEC PER SUB-PROJECT</div>
+  <ol class="timeline">
+    <li><time>12 Aug</time><b>Voice / dialog pipeline</b><span>interruptible speech I/O — built first on purpose</span></li>
+    <li><time>14 Aug</time><b>iOS phone client</b><span>on-device VAD, AEC, real hardware only</span></li>
+    <li><time>24 Aug</time><b>Story generation engine</b><span>narrative arc + deterministic safety scaffolding</span></li>
+    <li><time>27 Aug</time><b>Animal facts retrieval</b><span>fetch once per animal, cache forever</span></li>
+    <li><time>29 Aug</time><b>Object recognition</b><span>camera → on-device Vision → story guidance</span></li>
+    <li><time>5 Sep</time><b>Child-facing UI</b><span>onboarding, landing, story, library, reading, the end</span></li>
+    <li><time>8 Sep</time><b>Storybook persistence</b><span>transcript → picture-book prose, saved</span></li>
+    <li><time>9 Sep</time><b>Story length settings</b><span>parent-adjustable turns and pages</span></li>
+    <li><time>9 Sep</time><b>Away-from-home demo mode</b><span>hosted models behind one switch</span></li>
+    <li><time>11 Sep</time><b>Storybook page art</b><span>local diffusion, character-consistent</span></li>
+    <li><time>12 Sep</time><b>Pipelined TTS playback</b><span>speak sentence one while two synthesises</span></li>
+    <li><time>15 Sep</time><b>Library + reading screens</b><span>wired to the real API, mocks removed</span></li>
+    <li><time>19 Sep</time><b>Demo mode parity</b><span>close the gap the other sub-projects opened</span></li>
+  </ol>
+  <p class="aside">The voice pipeline came first deliberately — interruptible, low-latency speech was the actual learning goal, and everything after it is downstream of what that pipeline turned out to cost.</p>
+</div>
+
+<section class="wrap">
+  <div class="kicker">THE NUMBER EVERYTHING HANGS ON</div>
+  <h2 style="margin-bottom:16px">You cannot ask a five-year-old to talk more slowly</h2>
+  <p class="intro">Audio arrives from the phone at exactly one second per second. If the transcriber decodes a second of speech in more than a second, the backlog grows forever — it never recovers, because there is no slack anywhere in the system to recover into. This is the difference between a slow feature and a broken one.</p>
+
+  <div class="card bars">
+    <div>
+      <div class="bar-head">
+        <span class="bar-name">Kyutai STT 1b <span class="ok">— keeps up</span></span>
+        <span class="bar-stat ok">0.77× realtime · 23% headroom</span>
+      </div>
+      <div class="bar" role="img" aria-label="1b model: busy 77% of each second, idle the rest">
+        <div class="ticks"></div><div class="fill-ok"></div><div class="idle">idle</div>
+      </div>
+      <p class="bar-note">Every second of audio is decoded in 0.77 s. The queue drains. Utterance-end flush: 1.1 s. Memory footprint: 2.6 GB.</p>
+    </div>
+    <div>
+      <div class="bar-head">
+        <span class="bar-name">Kyutai STT 2.6b <span class="bad">— falls behind without bound</span></span>
+        <span class="bar-stat bad">1.7–2.3× slower than realtime</span>
+      </div>
+      <div class="bar" role="img" aria-label="2.6b model: busy the whole second with a growing backlog">
+        <div class="ticks"></div><div class="fill-bad"></div><div class="backlog"></div><div class="backlog-label">+ backlog, growing</div>
+      </div>
+      <p class="bar-note">Utterance-end flush: 5.6–7.5 s. Footprint: 5.7 GB — several hundred MB of it swapped out on a 16 GB machine also holding the LLM and TTS. Worst single decode frame: <span class="n bad">1682 ms</span> for 80 ms of audio, against <span class="n ok">92 ms</span> for a resident model.</p>
+    </div>
+    <div class="callout">
+      <p>The fix that mattered was not downstream engineering — it was choosing a model that fits the constraint, and then making the constraint impossible to violate accidentally. A probe tool now measures realtime factor and swap pressure on demand and <strong>exits non-zero if the configured model can't keep up</strong>, so any future model change has to argue with a measurement rather than an opinion.</p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap" style="padding-bottom:clamp(24px,4vw,40px)">
+  <div class="kicker">FOUR CASE STUDIES</div>
+  <h2 style="margin-bottom:10px">Problem, why it was hard, what was tried, what shipped, what it taught</h2>
+  <p class="intro" style="font-size:15.5px;color:var(--ink-4);max-width:64ch">Open one to see the full story.</p>
+
+  <div class="cases">
+    <details class="case" name="case" open>
+      <summary>
+        <span class="case-num">01</span>
+        <span class="case-head"><span class="case-title">“The app randomly disconnects” was a maths problem</span><span class="case-sub">A stability bug that no amount of reconnection logic could have fixed</span></span>
+        <span class="case-mark" aria-hidden="true"></span>
+      </summary>
+      <div class="case-body">
+        <div><h4 style="color:var(--accent)">THE PROBLEM</h4><p>Sessions would die, seemingly at random, forty seconds into a conversation. The obvious reading was a flaky WebSocket or an iOS backgrounding quirk — a networking bug.</p></div>
+        <div><h4 style="color:var(--gold)">WHY IT WAS HARD</h4><p>It presented as a transport failure but originated three layers away, in model choice. The transcriber was decoding slower than realtime, so audio piled up unprocessed. That backlog paused the TCP socket; with the socket paused, the keepalive PONG went unread; and the server, seeing no PONG, correctly concluded a dead client and hung up on a perfectly healthy phone. Every symptom pointed somewhere other than the cause.</p></div>
+        <div><h4 style="color:var(--ink-4)">WHAT WAS CONSIDERED</h4><p>Decoupling the socket read loop from processing was the intuitive fix, and it was applied. It worked, in the narrow sense: the disconnects stopped. But the behaviour simply changed shape — instead of disconnecting, the app now hung, because the backlog was still growing and the turn simply never began. That was the moment it became clear nothing downstream could fix this.</p></div>
+        <div><h4 style="color:var(--teal)">WHAT SHIPPED</h4><p>The 2.6b transcription model was replaced with the 1b, measured at 0.77× realtime against the 2.6b's 1.7–2.3× slower-than-realtime — and freeing 3.1 GB on a machine already holding two other models. The smaller model is less accurate, and that trade was accepted explicitly: accuracy is meaningless on a turn that never finishes. A probe tool was then written that measures the configured model's realtime factor and swap pressure, and exits non-zero if it cannot keep up.</p></div>
+        <div class="learned"><h4 style="color:var(--ink)">WHAT IT TAUGHT ME</h4><p>In a realtime system, throughput below 1× is not slowness — it is unbounded failure, and it will disguise itself as whatever component happens to break first. The durable fix was not the code change; it was turning the invariant into a check that a future me has to pass.</p></div>
+      </div>
+    </details>
+
+    <details class="case" name="case">
+      <summary>
+        <span class="case-num">02</span>
+        <span class="case-head"><span class="case-title">A three-minute silence, and the model was only thinking</span><span class="case-sub">The latency bug that looked like memory pressure for weeks</span></span>
+        <span class="case-mark" aria-hidden="true"></span>
+      </summary>
+      <div class="case-body">
+        <div><h4 style="color:var(--accent)">THE PROBLEM</h4><p>Replies would occasionally take minutes, or come back empty. With three models sharing 16 GB, memory pressure was the natural suspect, and swap statistics supported it.</p></div>
+        <div><h4 style="color:var(--gold)">WHY IT WAS HARD</h4><p>Two plausible causes were entangled. Swapping was genuinely happening and genuinely harmful, so every measurement seemed to confirm the memory theory. Meanwhile the app's own logs showed nothing between request and reply — just a gap.</p></div>
+        <div><h4 style="color:var(--ink-4)">WHAT WAS CONSIDERED</h4><p>The first response was to reduce the model: a 4B instead of the 9B. That helped a little, which was misleading, because it looked like confirmation. The decisive step was to stop measuring through the app entirely and run the model directly from the command line with one short prompt.</p></div>
+        <div><h4 style="color:var(--teal)">WHAT SHIPPED</h4><p>That run produced over a hundred lines of internal chain-of-thought and took about three minutes and nineteen seconds before emitting a single word of reply. The model defaults to a thinking mode this app has no use for — it needs one to three plain spoken sentences, and the story gains nothing from deep reasoning. Disabling thinking is a request-level flag, not a different model, so the 9B came back, and its better-reasoned replies came with it. Keep-alive was separately stretched to thirty minutes, because under memory pressure the runtime evicts the model and the next request pays a multi-gigabyte reload.</p></div>
+        <div class="learned"><h4 style="color:var(--ink)">WHAT IT TAUGHT ME</h4><p>When two candidate causes both look right, stop instrumenting the system and go measure the dependency on its own. Also: the fix that makes a symptom smaller is not necessarily on the path to the cause — shrinking the model was progress-shaped, not progress.</p></div>
+      </div>
+    </details>
+
+    <details class="case" name="case">
+      <summary>
+        <span class="case-num">03</span>
+        <span class="case-head"><span class="case-title">A segfault in PyTorch that was my own race condition</span><span class="case-sub">Issue #34 — the hardest class of bug to attribute correctly</span></span>
+        <span class="case-mark" aria-hidden="true"></span>
+      </summary>
+      <div class="case-body">
+        <div><h4 style="color:var(--accent)">THE PROBLEM</h4><p>The server would hard-crash with a SIGSEGV inside an LSTM kernel on Apple's Metal backend, deep in a third-party library, with no Python traceback worth reading.</p></div>
+        <div><h4 style="color:var(--gold)">WHY IT WAS HARD</h4><p>Every signal pointed outward. A native crash inside someone else's tensor kernel invites you to blame the kernel, or the backend, or the OS — and there was a ready-made escape route, since moving speech synthesis to CPU makes that class of crash structurally impossible. Taking the escape route would have hidden a real defect in this codebase.</p></div>
+        <div><h4 style="color:var(--ink-4)">WHAT WAS CONSIDERED</h4><p>Falling back to CPU was measured and kept in reserve: it costs roughly 0.3 s of extra latency to first audio, with synthesis still running about 4.5× faster than realtime. But it was rejected as the answer, because the crash needed explaining first.</p></div>
+        <div><h4 style="color:var(--teal)">WHAT SHIPPED</h4><p>The real cause was in this project's own synthesis module: when a synthesis was cancelled — which happens every time a child barges in — the Metal cache was being released from a second, unlocked thread while the cancelled synthesis was still running on the worker. A race, in code written here, that only ever fired during the exact interaction the whole app is built around. Fixed under the lock. CPU remains a configured fallback, documented as insurance rather than a fix.</p></div>
+        <div class="learned"><h4 style="color:var(--ink)">WHAT IT TAUGHT ME</h4><p>A crash inside a dependency is evidence about where memory was touched, not about whose bug it is. And an available workaround is dangerous precisely when it works: it lets you ship past a concurrency bug in your own code without ever learning it existed.</p></div>
+      </div>
+    </details>
+
+    <details class="case" name="case">
+      <summary>
+        <span class="case-num">04</span>
+        <span class="case-head"><span class="case-title">Barge-in broke three more times after it worked</span><span class="case-sub">Interruption is not a feature; it is an invariant every change can violate</span></span>
+        <span class="case-mark" aria-hidden="true"></span>
+      </summary>
+      <div class="case-body">
+        <div><h4 style="color:var(--accent)">THE PROBLEM</h4><p>Interrupting the storyteller mid-sentence was the point of the entire project, and it was verified working on real hardware early. Then it broke repeatedly, each time via a change that had nothing obviously to do with it.</p></div>
+        <div><h4 style="color:var(--gold)">WHY IT WAS HARD</h4><p>Barge-in is a property of the whole loop, not of one module. Pipelined playback — speaking sentence one while sentence two is still synthesising — was a clear latency win, but it let the session look idle between buffers, so an interrupt arriving in that window found nothing to cancel. A hang-guard timer measured its deadline from when an audio buffer was scheduled rather than when its turn to play actually began, so it could declare the storyteller finished while she was still talking. And interrupting the story's final reply could strand the child with no reply and no ending screen at all.</p></div>
+        <div><h4 style="color:var(--ink-4)">WHAT WAS CONSIDERED</h4><p>Each of these could have been patched locally — a longer timer, a guard flag, a special case for the last turn. What they had in common was more useful: all three were about the difference between what the system had scheduled and what the child had actually heard.</p></div>
+        <div><h4 style="color:var(--teal)">WHAT SHIPPED</h4><p>The fixes were made in those terms. Playback state now reflects audible progress rather than scheduling progress; the hang guard starts from the moment a buffer's turn to play begins; and the end-of-story path handles interruption as a normal case rather than an exception. A latched flag means a story concluded during an interrupted turn saves on the next completed turn instead of being lost or duplicated. All confirmed by hand on a real phone — including one further bug found during that same testing session, where the ending screen failed to re-arm for a second story.</p></div>
+        <div class="learned"><h4 style="color:var(--ink)">WHAT IT TAUGHT ME</h4><p>Cross-cutting invariants need naming, because nobody remembers to check an unnamed one. The useful abstraction here turned out not to be a module but a distinction: the system knows what it scheduled; only the child knows what they heard, and every timer should be measured against the second one.</p></div>
+      </div>
+    </details>
+  </div>
+</section>
+
+<section class="wrap">
+  <div class="kicker">HOW THINGS ACTUALLY GOT VERIFIED</div>
+  <h2 style="margin-bottom:16px">There is no CI that can hear a child interrupt</h2>
+  <div class="grid verify">
+    <div class="tile"><h3>Tests prove the logic, not the experience</h3><p>The server suite is large and genuinely useful — it catches protocol regressions, state-machine holes and parser edge cases. It cannot tell you whether barge-in feels instant, whether echo cancellation stops the storyteller interrupting itself, or whether a voice sounds warm.</p></div>
+    <div class="tile"><h3>So “done” means on-device</h3><p>The project's own working rules require that every change ship with concrete device-test instructions — which worktree, whether the server needs restarting, whether the phone needs rebuilding, and a numbered script of what to say and what confirms it worked. “Tests pass” is explicitly not sufficient.</p></div>
+    <div class="tile"><h3>Which makes human time the most valuable</h3><p>If every fix needs a person, a phone and a five-year-old, then testing — not coding — is the scarce resource. That single realisation is what shaped the development workflow on the next page.</p></div>
+  </div>
+</section>
+
+<footer class="wrap">
+  <div>
+    <div class="footer-line">Next: the workflow that came out of all this.</div>
+    <p class="footer-sub">Context as a managed resource, parallel sessions in isolated worktrees, designing before coding, and batching fixes so testing happens once.</p>
+  </div>
+  <a class="cta" href="claude-code.html">Working with Claude Code →</a>
+</footer>
+
+<div class="wrap credits">
+  <div class="credits-by">Tiny Talk was co-developed by <a href="https://jessvb.github.io/" target="_blank" rel="noopener">Jessica Van Brummelen</a> and Claude.</div>
+  <div class="credits-links">
+    <a href="https://github.com/jessvb/tiny-talk-adventures" target="_blank" rel="noopener">Source on GitHub ↗</a>
+    <a href="https://jessvb.github.io/" target="_blank" rel="noopener">Website ↗</a>
+    <a href="https://www.linkedin.com/in/jessicavanbrummelen/" target="_blank" rel="noopener">LinkedIn ↗</a>
+    <a href="https://scholar.google.com/citations?user=6d4tBYwAAAAJ&amp;hl=en" target="_blank" rel="noopener">Google Scholar ↗</a>
+  </div>
+</div>
+
+</div>
+</body>
+</html>

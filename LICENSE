@@ -1,0 +1,26 @@
+Copyright (c) 2026 Jessica Van Brummelen. All rights reserved.
+
+This repository is published so that people can read it and learn from it.
+Making it public does not grant a license to use it.
+
+No permission is granted to copy, modify, merge, publish, distribute,
+sublicense, sell, or otherwise use any part of this repository -- including
+its source code, documentation, design specs, website, and images -- except:
+
+  1. as allowed by the GitHub Terms of Service for public repositories
+     (viewing the repository and forking it on GitHub), or
+  2. with prior written permission from the copyright holder.
+
+This applies in particular to the name "Tiny Talk Adventures", the character
+"Elsie the Elephant", and all associated artwork, app icons, and logos.
+
+Third-party components included in or used by this repository remain under
+their own licenses and are not covered by this notice. See
+THIRD_PARTY_NOTICES.md.
+
+To ask about permission, contact the author via https://jessvb.github.io/.
+
+THIS REPOSITORY IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR
+OTHER LIABILITY ARISING FROM, OUT OF, OR IN CONNECTION WITH THIS REPOSITORY
+OR ITS USE.

@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What if? — Tiny Talk Adventures</title>
+<meta name="description" content="Four constraints Tiny Talk Adventures hasn't been built for yet, and what each would change in the architecture.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+<style>
+section.wrap > .kicker{margin-bottom:12px}
+h1{max-width:20ch}
+.lede{margin-bottom:28px}
+.jump{display:flex;gap:10px;flex-wrap:wrap}
+.jump a{padding:8px 14px;border-radius:10px;border:1px solid var(--line);background:var(--panel);font:500 14px var(--sans);color:var(--ink-2);text-decoration:none}
+.jump a:hover{border-color:var(--line-hover);color:var(--ink)}
+
+/* scenario diagram */
+.diagram{padding:clamp(14px,2.2vw,26px)}
+.diagram-bar{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px}
+.tabs{display:flex;gap:4px;padding:4px;background:var(--bg);border:1px solid var(--line);border-radius:12px;flex-wrap:wrap}
+.tabs button{border:0;cursor:pointer;padding:8px 14px;border-radius:9px;font:600 13.5px var(--sans);background:transparent;color:var(--ink-4)}
+.tabs button:hover{color:var(--ink)}
+.tabs button[aria-pressed=true]{background:var(--accent);color:#17120f}
+.tabs button[aria-pressed=true].is-today{background:var(--line-strong);color:var(--ink)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font:500 11.5px var(--mono);letter-spacing:.06em;color:var(--ink-4)}
+.legend span{display:flex;align-items:center;gap:6px}
+.swatch{width:12px;height:12px;border-radius:3px}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
+.col{min-width:0;padding:14px;border-radius:14px;background:var(--col);border:1px solid var(--line-soft);display:flex;flex-direction:column;gap:8px}
+.col-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:4px}
+.col-head .label{color:var(--gold)}
+.col-sub{font:400 12px var(--mono);color:var(--ink-5)}
+.box{padding:10px 12px;border-radius:10px;border:1px solid var(--line-strong);background:var(--box);transition:all .25s}
+.box-top{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.box-t{font:600 14.5px/1.3 var(--sans);color:var(--ink)}
+.box-tag{font:600 10.5px var(--mono);letter-spacing:.08em;white-space:nowrap}
+.box-m{font:400 12.5px/1.4 var(--mono);color:var(--ink-4);margin-top:3px}
+.box.changed{border:1.5px solid var(--teal);background:#1b2220}
+.box.changed .box-tag{color:var(--teal-ink)}
+.box.new{border:1.5px solid var(--gold);background:var(--gold-bg)}
+.box.new .box-tag{color:var(--gold)}
+.box.gone{border:1px dashed #6b5d51;background:transparent;opacity:.6}
+.box.gone .box-t{text-decoration:line-through}
+.box.gone .box-tag{color:var(--accent)}
+.note{font:400 14.5px/1.55 var(--sans);color:var(--ink-2);margin:16px 0 0;max-width:80ch}
+
+/* comparison table */
+.table{margin-top:14px;overflow-x:auto}
+.table-inner{min-width:760px}
+.grid-row{display:grid;grid-template-columns:1.1fr repeat(5,1fr)}
+.th{padding:14px 12px;color:var(--ink-5);letter-spacing:.1em}
+.th:first-child{padding-left:16px}
+.table-head{border-bottom:1px solid var(--line)}
+.row{cursor:pointer;border-bottom:1px solid var(--line-soft);transition:background .2s}
+.row:last-child{border-bottom:0}
+.row:hover{background:var(--hover)}
+.row.is-selected{background:var(--gold-bg)}
+.row-name{padding:14px 16px;font:600 15px var(--sans);color:var(--ink)}
+.row.is-selected .row-name{color:var(--gold)}
+.cell{padding:14px 12px}
+.dots{font:500 13px var(--mono);letter-spacing:.1em}
+.dots.d3{color:var(--teal-ink)} .dots.d2{color:var(--gold)} .dots.d1{color:var(--accent)}
+.cell-text{font:400 13px/1.4 var(--sans);color:var(--ink-3);margin-top:4px}
+.lean{font:400 14.5px/1.55 var(--sans);color:var(--ink-4);margin:12px 0 0;max-width:80ch}
+
+/* changes / stays / risks */
+.trio{margin-top:14px}
+.trio > div{padding:20px 22px;background:var(--panel);border:1px solid var(--line);border-radius:14px}
+.trio .label{margin-bottom:12px}
+.trio .list{display:grid;gap:10px}
+.trio p{font:400 14.5px/1.5 var(--sans);color:var(--ink-3);margin:0}
+
+/* principles */
+.principles{padding-top:clamp(40px,6vw,80px)!important;padding-bottom:clamp(40px,6vw,80px)!important}
+.principles h2{margin-bottom:26px;max-width:26ch}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:16px;overflow:hidden}
+.pgrid > div{background:var(--panel);padding:22px 24px}
+.pgrid h3{font:600 17px var(--sans);color:var(--ink);margin:0 0 6px}
+.pgrid p{font:400 14.5px/1.55 var(--sans);color:var(--ink-4);margin:0}
+</style>
+</head>
+<body>
+<div class="page">
+
+<nav>
+  <a class="brand" href="index.html">
+    <span class="brand-mark">T</span>
+    <span class="brand-name">Tiny Talk Adventures</span>
+  </a>
+  <div class="nav-links">
+    <a href="index.html">The system</a>
+    <a href="journey.html">Journey</a>
+    <a href="claude-code.html">Working with Claude Code</a>
+    <a href="what-if.html" aria-current="page">What if?</a>
+    <a href="https://github.com/jessvb/tiny-talk-adventures" target="_blank" rel="noopener">GitHub ↗</a>
+  </div>
+</nav>
+
+<header class="wrap">
+  <div class="kicker">WHAT IF?</div>
+  <h1>Built for one family. What would it take to reach every child?</h1>
+  <p class="lede">Tiny Talk was built for one household with a Mac at home. Here are four constraints I haven't built for yet, what each one would change in the architecture, and what I'm still unsure about. Toggle each diagram between today and the what-if.</p>
+  <div class="jump" id="jump"></div>
+</header>
+
+<main id="scenarios"></main>
+
+<section class="wrap principles">
+  <div class="kicker">IN EVERY SCENARIO</div>
+  <h2>The architecture changes. These principles don't.</h2>
+  <div class="pgrid">
+    <div><h3>The child can always interrupt</h3><p>Stopping Elsie is decided on the device, never across a network. Every design keeps that path local.</p></div>
+    <div><h3>A child's voice travels as little as possible</h3><p>Audio and photos stay on the closest hardware that can handle them. When they have to leave, they're processed and not stored.</p></div>
+    <div><h3>Grown-ups can see where Elsie's brain is</h3><p>Whichever path is active, settings name it in plain words, like the away-mode warning does today.</p></div>
+    <div><h3>One safety gate, on every path</h3><p>Swapping a model never means swapping the rules. Every route passes through the same check before anything reaches the child.</p></div>
+    <div><h3>Facts come from sources</h3><p>Whether fetched live or bundled for offline use, facts come from a reference, not the model's memory.</p></div>
+    <div><h3>Measure on the real hardware first</h3><p>Each scenario starts the same way the Mac version did: probe the target device, then choose the models.</p></div>
+  </div>
+</section>
+
+<footer class="wrap">
+  <div class="footer-line">Back to where it runs today.</div>
+  <a class="cta" href="index.html">← The system</a>
+</footer>
+
+<div class="wrap credits">
+  <div class="credits-by">Tiny Talk was co-developed by <a href="https://jessvb.github.io/" target="_blank" rel="noopener">Jessica Van Brummelen</a> and Claude.</div>
+  <div class="credits-links">
+    <a href="https://github.com/jessvb/tiny-talk-adventures" target="_blank" rel="noopener">Source on GitHub ↗</a>
+    <a href="https://jessvb.github.io/" target="_blank" rel="noopener">Website ↗</a>
+    <a href="https://www.linkedin.com/in/jessicavanbrummelen/" target="_blank" rel="noopener">LinkedIn ↗</a>
+    <a href="https://scholar.google.com/citations?user=6d4tBYwAAAAJ&amp;hl=en" target="_blank" rel="noopener">Google Scholar ↗</a>
+  </div>
+</div>
+
+</div>
+
+<script>
+// Content: each scenario has a "Today" state plus one or more what-if states.
+// A box's kind (k) is base | changed | new | gone and drives its styling.
+const B = (t, m, k) => ({ t, m, k: k || "base" });
+const TODAY = [
+  { title: "DEVICE", sub: "iPhone", boxes: [B("Voice detection", "Silero VAD"), B("Object recognition", "FastViT-T8 · Core ML"), B("Playback + barge-in stop", "local, no round trip")] },
+  { title: "HOME", sub: "family's Mac", boxes: [B("Speech-to-text", "Kyutai STT 1b"), B("Story brain", "Qwen 3.5 9B"), B("Elsie's voice", "Kokoro-82M"), B("Illustrations", "SD 1.5 + LoRA"), B("Safety gate", "every reply")] },
+  { title: "INTERNET", sub: "outside the home", boxes: [B("Animal facts", "API Ninjas · cached")] },
+];
+const TODAY_NOTE = "Today: the phone listens and decides when to stop; the family's Mac does the heavy thinking; only a fact lookup leaves the house.";
+
+const SCENARIOS = [
+  {
+    id: "appstore", num: "01", kicker: "ON THE APP STORE", jump: "On the App Store", title: "What if any family could download it — and it stayed private?",
+    intro: "No guarantee of a Mac at home, strangers' children, and App Store Kids rules: no ads, no third-party tracking, grown-up gates. There are three ways to answer this, and they trade off differently.",
+    states: [
+      { label: "Today", cols: TODAY, note: TODAY_NOTE },
+      { label: "Family hub", note: "Today's architecture, packaged: a companion Mac app pairs with the phone by QR code. Nothing new to trust — but it needs an Apple-silicon Mac.", cols: [
+        { title: "DEVICE", sub: "iPhone · App Store", boxes: [B("Voice detection", "Silero VAD"), B("Object recognition", "FastViT-T8 · Core ML"), B("Playback + barge-in stop", "local"), B("Pair with home Mac", "QR code, local network", "new")] },
+        { title: "HOME", sub: "Mac companion app", boxes: [B("One-click server app", "replaces the dev setup", "new"), B("Speech-to-text", "Kyutai STT 1b"), B("Story brain", "Qwen 3.5 9B"), B("Elsie's voice", "Kokoro-82M"), B("Illustrations", "SD 1.5 + LoRA"), B("Safety gate", "every reply")] },
+        { title: "INTERNET", sub: "outside the home", boxes: [B("Animal facts", "API Ninjas · cached"), B("Model downloads", "once, at setup", "new")] },
+      ] },
+      { label: "On-device", note: "Everything moves onto the phone. Strongest privacy and works anywhere — but the story brain gets much smaller, and illustrations can't be generated live.", cols: [
+        { title: "DEVICE", sub: "iPhone / iPad", boxes: [B("Voice detection", "Silero VAD"), B("Object recognition", "FastViT-T8 · Core ML"), B("Playback + barge-in stop", "local"), B("Speech-to-text", "on-device speech", "changed"), B("Story brain", "~3B on-device model", "changed"), B("Elsie's voice", "Kokoro-82M on device", "changed"), B("Illustrations", "pre-drawn scene library", "changed"), B("Safety gate", "on device", "changed"), B("Animal facts", "bundled fact pack", "changed")] },
+        { title: "HOME", sub: "no Mac needed", boxes: [B("Home server", "not required", "gone")] },
+        { title: "INTERNET", sub: "optional", boxes: [B("Content updates", "new scenes + facts, no user data", "new")] },
+      ] },
+      { label: "Private cloud", note: "The heavy models run on rented GPUs in attested, stateless enclaves: audio is processed and discarded, never stored or logged. Best stories, but it costs money per story and needs a connection.", cols: [
+        { title: "DEVICE", sub: "iPhone / iPad", boxes: [B("Voice detection", "Silero VAD"), B("Object recognition", "FastViT-T8 · Core ML"), B("Playback + barge-in stop", "local"), B("Verify server attestation", "before any audio is sent", "new")] },
+        { title: "HOME", sub: "no Mac needed", boxes: [B("Home server", "not required", "gone")] },
+        { title: "INTERNET", sub: "confidential compute", boxes: [B("Speech-to-text", "stateless, no retention", "changed"), B("Story brain", "larger model", "changed"), B("Elsie's voice", "streamed", "changed"), B("Illustrations", "faster, larger model", "changed"), B("Safety gate", "same rules", "changed"), B("Animal facts", "API Ninjas · cached")] },
+      ] },
+    ],
+    table: true,
+    changes: ["The phone app becomes the product; the server becomes something a family installs, or something they never see.", "Settings has to say which of the three is running, in plain words — the away-mode warning is the template.", "App Store Kids category rules shape the build: no analytics SDKs, a grown-up gate before settings or purchases."],
+    stays: ["Voice detection and the barge-in stop stay on the phone in all three.", "The same prompts and safety gate, whichever brain is answering."],
+    risks: ["Can a ~3B model follow a child's idea as well as the 9B does? That's testable — and it decides whether on-device is viable.", "Private cloud needs an ongoing cost per story, which means a subscription. Is that acceptable for a children's app?", "How many families have an Apple-silicon Mac? It could make the family hub a niche option."],
+  },
+  {
+    id: "classroom", num: "02", kicker: "IN A CLASSROOM", jump: "In a classroom", title: "What if a teacher ran it in their classroom?",
+    intro: "Children writing stories and learning facts on a tablet, and a teacher who needs to see who has played and how it went — under school privacy rules, and in a room that's never quiet.",
+    states: [
+      { label: "Today", cols: TODAY, note: TODAY_NOTE },
+      { label: "Classroom", note: "Each child picks their picture on a shared iPad. Stories and progress stay on a school-owned Mac in the room; the teacher sees them on their own device over the local network.", cols: [
+        { title: "DEVICE", sub: "shared class iPad", boxes: [B("Pick-your-picture sign-in", "no names or passwords", "new"), B("Voice detection", "tuned for a noisy room", "changed"), B("Object recognition", "FastViT-T8 · Core ML"), B("Playback + barge-in stop", "local"), B("Session timer", "fits a rotation slot", "new")] },
+        { title: "SCHOOL", sub: "Mac in the classroom", boxes: [B("Speech-to-text", "Kyutai STT 1b"), B("Story brain", "Qwen 3.5 9B"), B("Elsie's voice", "Kokoro-82M"), B("Illustrations", "SD 1.5 + LoRA"), B("Safety gate", "stricter school profile", "changed"), B("Per-child stories + progress", "stored on school hardware", "new")] },
+        { title: "TEACHER", sub: "teacher's device, local", boxes: [B("Class dashboard", "who's played, story history", "new"), B("Review before printing", "storybooks approved first", "new"), B("Animal facts", "API Ninjas · cached")] },
+      ] },
+    ],
+    changes: ["A child profile on the device, picked by picture: rotation needs to know whose story continues.", "The school Mac stores stories per child, so the teacher can see them without anything going to a cloud.", "Progress is described, not scored: stories told, turns taken, ideas the child introduced."],
+    stays: ["The same pipeline; one child at a time means no new concurrency problems.", "Interruption stays the core interaction."],
+    risks: ["Other children's voices will trigger barge-in. A close-talk microphone or a hold-to-talk fallback might be needed.", "A dashboard can turn play into assessment. What should a teacher see, and what should stay the child's?", "School privacy rules differ by district; storing on school hardware helps, but doesn't settle it."],
+  },
+  {
+    id: "lighter", num: "03", kicker: "NO MAC, NO INTERNET", jump: "No Mac, no internet", title: "What if it had to run on a $300 tablet in the back of a car?",
+    intro: "A road trip, a plane, or a family without a Mac. No home server and no connection, on hardware with a fraction of the memory — so everything has to fit on the tablet, and still respond while the child is mid-thought.",
+    states: [
+      { label: "Today", cols: TODAY, note: TODAY_NOTE },
+      { label: "Lighter hardware", note: "The hardware probe that gates model changes today becomes a runtime step: the app measures the tablet and picks the largest models that keep the conversation responsive.", cols: [
+        { title: "DEVICE", sub: "budget tablet", boxes: [B("Hardware probe → model tier", "picks models at first launch", "new"), B("Voice detection", "Silero VAD"), B("Object recognition", "FastViT-T8"), B("Playback + barge-in stop", "local"), B("Speech-to-text", "small on-device model", "changed"), B("Story brain", "1–3B, quantised", "changed"), B("Elsie's voice", "Kokoro-82M on device", "changed"), B("Illustrations", "pre-drawn scene library", "changed"), B("Safety gate", "on device", "changed"), B("Animal facts", "bundled fact pack", "changed")] },
+        { title: "HOME", sub: "none", boxes: [B("Home server", "not available", "gone")] },
+        { title: "INTERNET", sub: "none", boxes: [B("Fact lookups", "no connection", "gone")] },
+      ] },
+    ],
+    changes: ["Model choice becomes a runtime decision, based on what the probe measures on this tablet.", "Illustrations switch from generated to composed: a tagged library of scenes and characters, assembled to match the story.", "Facts ship with the app as a bundled pack — still sourced, just not live."],
+    stays: ["Kokoro-82M and the on-device voice detection are already small enough; they carry over.", "The conversation design: short turns, questions back to the child, instant stop."],
+    risks: ["Small models lose the thread over a long story. Shorter stories may be the honest trade.", "Tablets throttle when hot; the model tier may need to drop mid-session, not just at launch.", "A $300 tablet is probably Android, which means rebuilding the Core ML and Apple speech parts."],
+  },
+  {
+    id: "access", num: "04", kicker: "EVERY CHILD CAN PLAY", jump: "Every child can play", title: "What if a child speaks differently, doesn't speak, or can't hear Elsie?",
+    intro: "Tiny Talk assumes a child who speaks clearly and hears well. Children with speech delays, children who don't speak, and children who are deaf or hard of hearing should be able to lead the story too.",
+    states: [
+      { label: "Today", cols: TODAY, note: TODAY_NOTE },
+      { label: "Accessible", note: "Two new ways to take a turn — picture choices and more patient listening — and a visual channel for everything Elsie says, all set per child by a grown-up.", cols: [
+        { title: "DEVICE", sub: "iPhone / iPad", boxes: [B("Voice detection", "patient end-of-turn, set per child", "changed"), B("Picture choices", "tap a card to take your turn", "new"), B("Captions", "word by word, synced to Elsie's voice", "new"), B("Visual turn cue", "Elsie glows when it's your turn", "new"), B("Object recognition", "FastViT-T8 · Core ML"), B("Playback + barge-in stop", "local")] },
+        { title: "HOME", sub: "family's Mac", boxes: [B("Speech-to-text", "per-child word hints", "changed"), B("Story brain", "offers 3 choices each turn", "changed"), B("Elsie's voice", "Kokoro-82M + word timings", "changed"), B("Illustrations", "SD 1.5 + LoRA · choice cards", "changed"), B("Safety gate", "every reply")] },
+        { title: "INTERNET", sub: "outside the home", boxes: [B("Animal facts", "API Ninjas · cached")] },
+      ] },
+    ],
+    changes: ["Picture choices are a second input path into the story brain; a tap is a turn, just as a sentence is.", "Voice detection waits longer before deciding a child is finished, tuned per child.", "When unsure what it heard, Elsie checks with a picture ('Did you mean the dragon?') instead of guessing."],
+    stays: ["The child still leads — every input path ends with Elsie building on their choice.", "Nothing about a child's needs leaves the home; settings live on the family's hardware."],
+    risks: ["Waiting longer conflicts with instant interruption. How do you tell a pause from a finished turn?", "This has to be designed with speech therapists and families, not guessed at from outside.", "Adapting speech recognition to one child's voice may need training data I shouldn't collect. Could we make an interface for them to fine-tune their own model?"],
+  },
+];
+
+// Comparison table for the App Store scenario; each row selects its diagram state.
+const AXES = ["PRIVACY", "STORY QUALITY", "RESPONSE SPEED", "COST TO RUN", "WORKS OFFLINE"];
+const ROWS = [
+  { name: "Family hub", state: 1, cells: [[3, "Never leaves home"], [3, "Same as today"], [3, "Fastest at home"], [3, "Nothing per story; needs a Mac"], [2, "At home, yes"]] },
+  { name: "On-device", state: 2, cells: [[3, "Never leaves the device"], [1, "Smaller model"], [2, "Good; slows when hot"], [3, "Nothing per story"], [3, "Anywhere"]] },
+  { name: "Private cloud", state: 3, cells: [[2, "Processed, never stored"], [3, "Largest models"], [2, "Depends on network"], [1, "Per story → subscription"], [1, "No"]] },
+];
+const LEAN = "My lean: ship the family hub first, because it's the architecture that already works, with on-device as the fallback when there's no Mac. Private cloud is the one to watch if a small model can't keep up with a child's ideas.";
+const TAGS = { base: "", changed: "CHANGED", new: "NEW", gone: "REMOVED" };
+const RATING = ["", "weak", "fair", "strong"];
+
+// Each scenario opens on its first what-if, not on Today.
+const sel = Object.fromEntries(SCENARIOS.map(s => [s.id, 1]));
+
+function el(tag, attrs, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") n.className = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v);
+  }
+  for (const c of kids.flat()) if (c != null) n.append(c);
+  return n;
+}
+
+function renderDiagram(sc) {
+  const st = sc.states[sel[sc.id]];
+  return [
+    el("div", { class: "cols" }, st.cols.map(c =>
+      el("div", { class: "col" },
+        el("div", { class: "col-head" }, el("span", { class: "label" }, c.title), el("span", { class: "col-sub" }, c.sub)),
+        c.boxes.map(b => el("div", { class: "box " + b.k },
+          el("div", { class: "box-top" }, el("span", { class: "box-t" }, b.t), el("span", { class: "box-tag" }, TAGS[b.k])),
+          el("div", { class: "box-m" }, b.m))))
+    )),
+    el("p", { class: "note", "aria-live": "polite" }, st.note),
+  ];
+}
+
+function select(id, i) {
+  sel[id] = i;
+  const sc = SCENARIOS.find(s => s.id === id);
+  const root = document.getElementById(id);
+  root.querySelectorAll(".tabs button").forEach((b, j) => b.setAttribute("aria-pressed", String(j === i)));
+  root.querySelector(".diagram-body").replaceChildren(...renderDiagram(sc));
+  root.querySelectorAll(".row").forEach(r => {
+    const on = Number(r.dataset.state) === i;
+    r.classList.toggle("is-selected", on);
+    r.setAttribute("aria-pressed", String(on));
+  });
+}
+
+function renderTable(sc) {
+  return [
+    el("div", { class: "card table" }, el("div", { class: "table-inner" },
+      el("div", { class: "grid-row table-head" }, el("div", { class: "th label" }, "APPROACH"), AXES.map(a => el("div", { class: "th label" }, a))),
+      ROWS.map(r => el("div", {
+        class: "grid-row row", role: "button", tabindex: "0", "data-state": r.state,
+        "aria-label": "Show the " + r.name + " diagram",
+        onclick: () => select(sc.id, r.state),
+        onkeydown: e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(sc.id, r.state); } },
+      },
+        el("div", { class: "row-name" }, r.name),
+        r.cells.map(([n, text]) => el("div", { class: "cell" },
+          el("div", { class: "dots d" + n, "aria-label": RATING[n] }, "●".repeat(n) + "○".repeat(3 - n)),
+          el("div", { class: "cell-text" }, text)))
+      ))
+    )),
+    el("p", { class: "lean" }, LEAN),
+  ];
+}
+
+function renderList(label, color, items) {
+  return el("div", {},
+    el("div", { class: "label", style: "color:" + color }, label),
+    el("div", { class: "list" }, items.map(x => el("p", {}, x))));
+}
+
+function renderScenario(sc) {
+  return el("section", { class: "wrap", id: sc.id, "aria-labelledby": sc.id + "-h" },
+    el("div", { class: "kicker" }, sc.num + " — " + sc.kicker),
+    el("h2", { id: sc.id + "-h" }, sc.title),
+    el("p", { class: "intro" }, sc.intro),
+    el("div", { class: "card diagram" },
+      el("div", { class: "diagram-bar" },
+        el("div", { class: "tabs", role: "group", "aria-label": "Diagram state" }, sc.states.map((x, i) =>
+          el("button", { type: "button", class: i === 0 ? "is-today" : "", "aria-pressed": "false", onclick: () => select(sc.id, i) }, x.label))),
+        el("div", { class: "legend", "aria-hidden": "true" },
+          el("span", {}, el("span", { class: "swatch", style: "border:1.5px solid var(--teal)" }), "CHANGED"),
+          el("span", {}, el("span", { class: "swatch", style: "border:1.5px solid var(--gold);background:var(--gold-bg)" }), "NEW"),
+          el("span", {}, el("span", { class: "swatch", style: "border:1px dashed #6b5d51" }), "REMOVED"))),
+      el("div", { class: "diagram-body" })),
+    sc.table ? renderTable(sc) : null,
+    el("div", { class: "trio grid" },
+      renderList("WHAT CHANGES", "var(--teal-ink)", sc.changes),
+      renderList("WHAT STAYS", "var(--gold)", sc.stays),
+      renderList("OPEN QUESTIONS", "var(--accent)", sc.risks)));
+}
+
+document.getElementById("jump").append(...SCENARIOS.map(s => el("a", { href: "#" + s.id }, s.num + " " + s.jump)));
+document.getElementById("scenarios").append(...SCENARIOS.map(renderScenario));
+SCENARIOS.forEach(s => select(s.id, sel[s.id]));
+</script>
+</body>
+</html>

@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What I learned building with Claude Code — Tiny Talk Adventures</title>
+<meta name="description" content="Four habits for working with Claude Code when code is cheap and attention is scarce: /handoff, parallel worktrees, design before code, and /fix-issues.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+<style>
+.lede{max-width:60ch}
+.lede code{font-size:16px;font-weight:500}
+section.wrap{padding-top:clamp(32px,5vw,56px);padding-bottom:clamp(32px,5vw,56px)}
+.sec-head{display:flex;align-items:baseline;gap:16px;margin-bottom:8px;flex-wrap:wrap}
+.sec-head .kicker{margin:0}
+.sec-tool{font:500 12.5px var(--mono);color:var(--ink-5)}
+.intro{max-width:64ch}
+.intro code{font-size:14.5px;font-weight:500}
+.intro em{font-style:italic}
+.diagram-scroll{margin-bottom:14px}
+.tile code{font-size:14.5px;font-weight:500}
+
+/* /handoff */
+.file-name{font:500 12.5px var(--mono);color:var(--ink-4);margin-bottom:14px}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chips span{padding:6px 11px;border-radius:8px;background:var(--box);border:1px solid var(--line-strong);font:500 13px var(--mono);color:var(--ink-2)}
+.chips span.key{color:var(--gold)}
+.chips + p{margin-top:16px!important}
+.tile strong{color:var(--ink);font-weight:600}
+
+/* sequence */
+.stages{--min:220px;gap:12px;margin-bottom:14px}
+.stage{padding:22px;border-top-width:3px}
+.stage .step{font:500 12px var(--mono);letter-spacing:.08em;margin-bottom:8px}
+.stage h3{margin-bottom:6px}
+.stage p{line-height:1.5}
+.privacy{padding:16px 20px;background:#221a13;border:1px solid #4a3520;border-radius:13px;display:flex;gap:14px;align-items:baseline;flex-wrap:wrap}
+.privacy b{font:600 14.5px var(--sans);color:var(--gold)}
+.privacy span{font:400 14.5px/1.5 var(--sans);color:var(--ink-2);flex:1;min-width:240px}
+.privacy em{color:var(--ink)}
+
+/* batching */
+.batch h2{font-size:clamp(28px,3.6vw,46px);line-height:1.1;max-width:24ch}
+.batch h2 em{color:var(--gold)}
+.batch .grid{--min:300px}
+.batch .tile h3{margin-bottom:14px}
+.verdicts{display:grid;gap:8px;margin:0}
+.verdicts div{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
+.verdicts dt{font:500 12.5px var(--mono);min-width:128px}
+.verdicts dd{margin:0;font:400 14px/1.45 var(--sans);color:var(--ink-4);flex:1;min-width:160px}
+.rules{display:grid;gap:12px}
+.rules p{line-height:1.5}
+.rules strong{color:var(--ink-2)}
+</style>
+</head>
+<body>
+<div class="page">
+
+<nav>
+  <a class="brand" href="index.html">
+    <span class="brand-mark">T</span>
+    <span class="brand-name">Tiny Talk Adventures</span>
+  </a>
+  <div class="nav-links">
+    <a href="index.html">The system</a>
+    <a href="journey.html">Journey</a>
+    <a href="claude-code.html" aria-current="page">Working with Claude Code</a>
+    <a href="what-if.html">What if?</a>
+    <a href="https://github.com/jessvb/tiny-talk-adventures" target="_blank" rel="noopener">GitHub ↗</a>
+  </div>
+</nav>
+
+<header class="wrap">
+  <div class="kicker">WORKING WITH CLAUDE CODE</div>
+  <h1>AI made code cheap. My attention became the bottleneck.</h1>
+  <p class="lede">When generating changes is nearly free, two things become scarce: the model's useful context, and my time to verify. Four habits built around that — two of them skills I wrote with Claude, <code>/handoff</code> and <code>/fix-issues</code>.</p>
+</header>
+
+<section class="wrap">
+  <div class="sec-head"><span class="kicker">01 — CONTEXT</span><span class="sec-tool">/handoff</span></div>
+  <h2>Stop a session before it stops working well</h2>
+  <p class="intro">Long sessions degrade: settled decisions get re-debated, and automatic compaction keeps what's <em>recent</em> rather than what <em>matters</em>. So I start one session per substantial task, and at about 70% context I run my <code>/handoff</code> skill, <code>/clear</code>, and start fresh from the generated <code>progress.md</code> summary.</p>
+
+  <div class="card diagram-scroll">
+    <svg viewBox="0 0 1000 300" style="min-width:600px" role="img" aria-label="Output quality stays high early in a session and declines past about 70% context; /handoff resets to a fresh session">
+      <rect x="690" y="30" width="270" height="222" fill="#d2622f" opacity=".08"/>
+      <line x1="60" y1="252" x2="960" y2="252" stroke="#3c3129"/>
+      <line x1="60" y1="30" x2="60" y2="252" stroke="#3c3129"/>
+      <text x="60" y="278" fill="#7d7064" font-family="JetBrains Mono, monospace" font-size="12">0%</text>
+      <text x="960" y="278" text-anchor="end" fill="#7d7064" font-family="JetBrains Mono, monospace" font-size="12">100% context</text>
+      <text x="48" y="44" text-anchor="end" fill="#7d7064" font-family="JetBrains Mono, monospace" font-size="12" transform="rotate(-90 48 44)">quality</text>
+      <path d="M60 64 C380 62 560 70 690 104 S 860 200 960 236" fill="none" stroke="#7d7064" stroke-width="2.5" stroke-dasharray="7 6"/>
+      <path d="M60 64 C380 62 560 70 690 104" fill="none" stroke="#3a8d80" stroke-width="3.5"/>
+      <line x1="690" y1="30" x2="690" y2="252" stroke="#e8b44a" stroke-width="2" stroke-dasharray="4 5"/>
+      <circle cx="690" cy="104" r="7" fill="#e8b44a"/>
+      <text x="704" y="58" fill="#e8b44a" font-family="JetBrains Mono, monospace" font-size="14" font-weight="700">/handoff ≈ 70%</text>
+      <text x="704" y="78" fill="#c3b5a6" font-family="Instrument Sans, sans-serif" font-size="13.5">write state → clear → new session</text>
+      <text x="828" y="226" text-anchor="end" fill="#9d9083" font-family="Instrument Sans, sans-serif" font-size="13.5">keep going + auto-compact</text>
+      <text x="90" y="100" fill="#3a8d80" font-family="Instrument Sans, sans-serif" font-size="14" font-weight="600">one task, one session</text>
+    </svg>
+  </div>
+
+  <div class="grid" style="--min:300px">
+    <div class="tile">
+      <div class="file-name"><code>.claude/progress.md</code></div>
+      <div class="chips">
+        <span>Worktree</span><span>Current goal</span><span>Files touched</span><span class="key">Decisions (and why)</span>
+        <span>Known failing checks</span><span>Next 3 actions</span><span class="key">Do NOT redo</span><span>Related spec</span>
+      </div>
+      <p>Every section is required. Missing checks are written as “not run this session” — never implied to pass. <strong>Decisions and “do not redo”</strong> are the parts compaction loses first.</p>
+    </div>
+    <div class="tile">
+      <h3>One note per worktree, not per repo</h3>
+      <p>With several worktrees mid-task, “the progress note” is ambiguous. The skill resolves which checkout it's in and hands back an absolute path plus the exact directory to resume from — a session started one folder over would silently read the wrong note.</p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <div class="sec-head"><span class="kicker">02 — PARALLELISM</span><span class="sec-tool">git worktrees · /color · /rename</span></div>
+  <h2>Several sessions, each in its own worktree</h2>
+  <p class="intro">Each task gets its own checkout and branch, so sessions can't touch each other's files and nothing merges until it's ready. The bigger change is what gets worked on: with more than one slot, the small diagnostic or docs refresh no longer loses to the next feature.</p>
+
+  <div class="card diagram-scroll">
+    <svg viewBox="0 0 1000 290" style="min-width:640px" role="img" aria-label="Four worktree branches running in parallel off main, each with its own colour and name, merging back when ready">
+      <line x1="30" y1="40" x2="970" y2="40" stroke="#c3b5a6" stroke-width="3"/>
+      <text x="30" y="26" fill="#c3b5a6" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700">main</text>
+      <path d="M90 40 C120 40 110 95 150 95 H640 C690 95 690 40 730 40" fill="none" stroke="#3a8d80" stroke-width="3"/>
+      <path d="M130 40 C160 40 150 145 190 145 H760 C810 145 810 40 850 40" fill="none" stroke="#e8b44a" stroke-width="3"/>
+      <path d="M170 40 C200 40 190 195 230 195 H520 C570 195 570 40 610 40" fill="none" stroke="#d2622f" stroke-width="3"/>
+      <path d="M210 40 C240 40 230 245 270 245 H880 C920 245 920 40 950 40" fill="none" stroke="#a48fd6" stroke-width="3"/>
+      <g font-family="JetBrains Mono, monospace" font-size="13">
+        <rect x="280" y="80" width="276" height="30" rx="8" fill="#14110f" stroke="#3a8d80"/>
+        <text x="294" y="100" fill="#3a8d80">llm-backend-toggle</text>
+        <rect x="320" y="130" width="316" height="30" rx="8" fill="#14110f" stroke="#e8b44a"/>
+        <text x="334" y="150" fill="#e8b44a">storybook-page-art-design</text>
+        <rect x="260" y="180" width="236" height="30" rx="8" fill="#14110f" stroke="#d2622f"/>
+        <text x="274" y="200" fill="#d2622f">mic-open-offscreen-fix</text>
+        <rect x="360" y="230" width="276" height="30" rx="8" fill="#14110f" stroke="#a48fd6"/>
+        <text x="374" y="250" fill="#a48fd6">post-library-docs-refresh</text>
+      </g>
+      <g fill="#14110f" stroke-width="3"><circle cx="730" cy="40" r="7" stroke="#3a8d80"/><circle cx="850" cy="40" r="7" stroke="#e8b44a"/><circle cx="610" cy="40" r="7" stroke="#d2622f"/><circle cx="950" cy="40" r="7" stroke="#a48fd6"/></g>
+      <text x="700" y="178" fill="#9d9083" font-family="Instrument Sans, sans-serif" font-size="13">real worktree names from this repo</text>
+    </svg>
+  </div>
+
+  <div class="grid" style="--min:250px">
+    <div class="tile"><h3><code>/color</code> + <code>/rename</code></h3><p>Four identical terminals is how you test the wrong branch for twenty minutes. A colour and a name turn “which one was the mic fix?” into recognition, not recall.</p></div>
+    <div class="tile"><h3>Check before trusting local state</h3><p>A PR merged by one session once made another's branch look stale. New sessions now list open PRs and worktrees first.</p></div>
+    <div class="tile"><h3>Cap it at four</h3><p>Five heavy agents at once hit a rate limit and four died. The cap is an observed limit, not a guess.</p></div>
+  </div>
+</section>
+
+<section class="wrap">
+  <div class="sec-head"><span class="kicker">03 — SEQUENCE</span><span class="sec-tool">design → spec → implement</span></div>
+  <h2>Settle the design before the coding session starts</h2>
+  <p class="intro">Exploring layouts in code means every rejected idea becomes code to unwind. I explore visually first — in Claude's design tool or Google Stitch — then hand Claude Code a decision, not a conversation.</p>
+
+  <div class="grid stages">
+    <div class="tile stage" style="border-top-color:var(--violet)"><div class="step" style="color:var(--violet)">1 · DESIGN</div><h3>Divergent and disposable</h3><p>Many directions, real content, no code. Product questions get answered here.</p></div>
+    <div class="tile stage" style="border-top-color:var(--gold)"><div class="step" style="color:var(--gold)">2 · SPEC</div><h3>Written, approved, dated</h3><p>One per sub-project, with non-goals and rejected options — so no later session re-proposes them.</p></div>
+    <div class="tile stage" style="border-top-color:var(--teal)"><div class="step" style="color:var(--teal)">3 · IMPLEMENT</div><h3>Task by task, then on-device</h3><p>“Tests pass” isn't done. Every change ships with a numbered script for testing on the phone.</p></div>
+  </div>
+  <div class="privacy">
+    <b>Privacy check</b>
+    <span>In Google Stitch, turn off <em>Allow AI Model Training</em> when a project's material shouldn't be used for training.</span>
+  </div>
+</section>
+
+<section class="wrap batch">
+  <div class="sec-head"><span class="kicker">04 — BATCHING</span><span class="sec-tool">/fix-issues</span></div>
+  <h2>AI shortens the fixing. The scarce resource is <em>human testing time.</em></h2>
+  <p class="intro">Every fix here needs a person, a phone and real speech to verify. Fixing issues one at a time means a test session per fix and a context switch each time. So issues go into GitHub as a backlog, and get fixed in <b>batches that I test once</b> using my skill, <code>/fix-issues</code>.</p>
+
+  <div class="card diagram-scroll">
+    <svg viewBox="0 0 1000 300" style="min-width:640px" role="img" aria-label="Fixing one at a time needs four human test sessions; /fix-issues fixes in parallel, merges, and needs one">
+      <text x="0" y="22" fill="#9d9083" font-family="JetBrains Mono, monospace" font-size="13" letter-spacing="1.3">ONE AT A TIME</text>
+      <g font-family="Instrument Sans, sans-serif" font-size="12.5" font-weight="600">
+        <rect x="0" y="36" width="80" height="34" rx="7" fill="#2d6b62"/><text x="40" y="58" text-anchor="middle" fill="#e6f2ef">fix</text>
+        <rect x="86" y="36" width="130" height="34" rx="7" fill="#d2622f"/><text x="151" y="58" text-anchor="middle" fill="#1b1714">test on phone</text>
+        <rect x="236" y="36" width="80" height="34" rx="7" fill="#2d6b62"/><text x="276" y="58" text-anchor="middle" fill="#e6f2ef">fix</text>
+        <rect x="322" y="36" width="130" height="34" rx="7" fill="#d2622f"/><text x="387" y="58" text-anchor="middle" fill="#1b1714">test on phone</text>
+        <rect x="472" y="36" width="80" height="34" rx="7" fill="#2d6b62"/><text x="512" y="58" text-anchor="middle" fill="#e6f2ef">fix</text>
+        <rect x="558" y="36" width="130" height="34" rx="7" fill="#d2622f"/><text x="623" y="58" text-anchor="middle" fill="#1b1714">test on phone</text>
+        <rect x="708" y="36" width="80" height="34" rx="7" fill="#2d6b62"/><text x="748" y="58" text-anchor="middle" fill="#e6f2ef">fix</text>
+        <rect x="794" y="36" width="130" height="34" rx="7" fill="#d2622f"/><text x="859" y="58" text-anchor="middle" fill="#1b1714">test on phone</text>
+      </g>
+      <g stroke="#7d7064" stroke-width="1.5" fill="none"><path d="M219 53 l4 -6 l4 12 l4 -6"/><path d="M455 53 l4 -6 l4 12 l4 -6"/><path d="M691 53 l4 -6 l4 12 l4 -6"/></g>
+      <text x="0" y="96" fill="#7d7064" font-family="Instrument Sans, sans-serif" font-size="13">4 test sessions · 3 context switches</text>
+
+      <text x="0" y="146" fill="#e8b44a" font-family="JetBrains Mono, monospace" font-size="13" letter-spacing="1.3">/fix-issues</text>
+      <g font-family="Instrument Sans, sans-serif" font-size="12" font-weight="600">
+        <rect x="0" y="160" width="300" height="22" rx="6" fill="#2d6b62"/><text x="12" y="175" fill="#e6f2ef">agent · worktree · slice A</text>
+        <rect x="0" y="188" width="250" height="22" rx="6" fill="#2d6b62"/><text x="12" y="203" fill="#e6f2ef">agent · worktree · slice B</text>
+        <rect x="0" y="216" width="280" height="22" rx="6" fill="#2d6b62"/><text x="12" y="231" fill="#e6f2ef">agent · worktree · slice C</text>
+        <rect x="0" y="244" width="220" height="22" rx="6" fill="#2d6b62"/><text x="12" y="259" fill="#e6f2ef">agent · worktree · slice D</text>
+      </g>
+      <path d="M306 171 C340 171 330 213 360 213 M256 199 C300 199 320 213 360 213 M286 227 C320 227 330 213 360 213 M226 255 C300 255 330 213 360 213" fill="none" stroke="#8a7b6d" stroke-width="1.5"/>
+      <rect x="364" y="196" width="170" height="34" rx="7" fill="#3c3129"/>
+      <text x="449" y="218" text-anchor="middle" fill="#f2e9dd" font-family="Instrument Sans, sans-serif" font-size="12.5" font-weight="600">merge · re-run all tests</text>
+      <rect x="540" y="196" width="130" height="34" rx="7" fill="#d2622f"/>
+      <text x="605" y="218" text-anchor="middle" fill="#1b1714" font-family="Instrument Sans, sans-serif" font-size="12.5" font-weight="600">test once</text>
+      <text x="690" y="210" fill="#e8b44a" font-family="Instrument Sans, sans-serif" font-size="14" font-weight="600">1 test session</text>
+      <text x="690" y="228" fill="#9d9083" font-family="Instrument Sans, sans-serif" font-size="13">one draft PR, one numbered script</text>
+    </svg>
+  </div>
+
+  <div class="grid">
+    <div class="tile">
+      <h3>Triage: only fix what needs no human decision</h3>
+      <dl class="verdicts">
+        <div><dt style="color:var(--teal)">Fix</dt><dd>Cause and fix derivable from the issue and code; a test can verify it.</dd></div>
+        <div><dt style="color:var(--gold)">Diagnostics</dt><dd>Only reproducible on real hardware → add logging, change no behaviour.</dd></div>
+        <div><dt style="color:var(--accent)">Needs decision</dt><dd>Product or design choice → that's a conversation, not an agent.</dd></div>
+        <div><dt style="color:var(--ink-4)">Claimed</dt><dd>An open PR already addresses it, or touches the same files.</dd></div>
+        <div><dt style="color:var(--ink-4)">Can't verify</dt><dd>Needs credentials or hardware the agent can't reach.</dd></div>
+      </dl>
+    </div>
+    <div class="tile">
+      <h3>Rules learned the hard way</h3>
+      <div class="rules">
+        <p><strong>Issues that touch the same code share one agent</strong> — parallel edits to one file become merge conflicts.</p>
+        <p><strong>Re-run everything after merging.</strong> Clean textual merges were semantically broken twice.</p>
+        <p><strong>Say “compiled only” when that's all it is.</strong> Never imply on-device verification that didn't happen.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="wrap">
+  <div class="footer-line">Next: what would change at scale.</div>
+  <a class="cta" href="what-if.html">What if? →</a>
+</footer>
+
+<div class="wrap credits">
+  <div class="credits-by">Tiny Talk was co-developed by <a href="https://jessvb.github.io/" target="_blank" rel="noopener">Jessica Van Brummelen</a> and Claude.</div>
+  <div class="credits-links">
+    <a href="https://github.com/jessvb/tiny-talk-adventures" target="_blank" rel="noopener">Source on GitHub ↗</a>
+    <a href="https://jessvb.github.io/" target="_blank" rel="noopener">Website ↗</a>
+    <a href="https://www.linkedin.com/in/jessicavanbrummelen/" target="_blank" rel="noopener">LinkedIn ↗</a>
+    <a href="https://scholar.google.com/citations?user=6d4tBYwAAAAJ&amp;hl=en" target="_blank" rel="noopener">Google Scholar ↗</a>
+  </div>
+</div>
+
+</div>
+</body>
+</html>
