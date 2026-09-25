@@ -383,3 +383,10 @@ you only need to type it once per Mac.
 
 See `CLAUDE.md` for project conventions and context for AI-assisted
 development in this repo.
+
+## License
+
+Copyright (c) 2026 Jessica Van Brummelen. **All rights reserved.** This
+repository is public so people can read it, but no license to reuse it is
+granted; see `LICENSE`. Bundled and downloaded third-party components keep
+their own licenses; see `THIRD_PARTY_NOTICES.md`.
