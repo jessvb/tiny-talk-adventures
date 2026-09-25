@@ -402,7 +402,42 @@ final class DemoConnectionTests: XCTestCase {
         let events = await recorder.settle()
 
         XCTAssertEqual(events.count, 4)
-        XCTAssertFalse(recorder.messages.contains(.rewritingStarted))
+        XCTAssertFalse(recorder.messages.contains { if case .rewritingStarted = $0 { return true } else { return false } })
+    }
+
+    func testRewritingStartedCarriesTheStoryIdAndItsSharedFactEpilogue() async throws {
+        // Issue #77 parity: the real server sends the fact line with
+        // rewriting_started, so The End needn't wait on the whole rewrite.
+        let fetcher = FakeAnimalFactFetcher()
+        fetcher.factsToReturn["fox"] = ["foxes have excellent hearing"]
+        let stt = FakeSttClient()
+        stt.transcriptToReturn = "tell me about a fox"
+        let chat = ScriptedChatClient(Self.closingReply, storybookJSON())
+        let library = DemoStoryLibrary(store: makeStore(), writer: StorybookWriter(chat: chat))
+        var completed: PendingDemoStoryPayload?
+        let connection = DemoConnection(
+            chatClient: chat,
+            sttClient: stt,
+            ttsClient: FakeTtsClient(),
+            animalFactTracker: AnimalFactTracker(
+                fetcher: fetcher,
+                cache: AnimalFactsCache(path: FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json"))
+            ),
+            targetTurns: 7,
+            library: library,
+            onStoryCompleted: { completed = $0 }
+        )
+        let recorder = EventRecorder(connection)
+
+        try await speak(connection, recorder: recorder, turnId: 1, total: 6)
+
+        let started = recorder.messages.compactMap { message -> (String?, String?)? in
+            if case .rewritingStarted(let storyId, let epilogue) = message { return (storyId, epilogue) }
+            return nil
+        }
+        XCTAssertEqual(started.count, 1)
+        XCTAssertEqual(started.first?.0, try XCTUnwrap(completed?.id))
+        XCTAssertEqual(started.first?.1, "And one true thing we learned about the fox: foxes have excellent hearing")
     }
 
     func testAStorybookAsksForThePageCountInForceWhenItsStoryBegan() async throws {
@@ -465,7 +500,7 @@ final class DemoConnectionTests: XCTestCase {
         try await connection.send(.concludeStory(turnId: 3))
         await recorder.waitForCount(5)
 
-        XCTAssertTrue(recorder.messages.contains(.rewritingStarted),
+        XCTAssertTrue(recorder.messages.contains { if case .rewritingStarted = $0 { return true } else { return false } },
                       "an explicit request to finish must end the story regardless of the reply's wording")
     }
 

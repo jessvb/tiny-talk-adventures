@@ -143,6 +143,12 @@ public actor SessionCoordinator {
     /// ServerEvent cases' doc comments. A UI (e.g. TheEndView) polls this
     /// to show/hide a "still being created" state.
     public private(set) var isRewriting = false
+    /// Each concluded story's fact line as rewritingStarted carried it,
+    /// keyed by story id (issue #77) -- see
+    /// SavedStoryDetail.theEndEpilogue(early:). Accumulates, like
+    /// pageImages: keyed by id, a stale entry can never be shown for the
+    /// wrong story, so nothing needs clearing on New Story.
+    public private(set) var earlyEpilogues: [String: String] = [:]
     public private(set) var latestStoryList: [SavedStorySummary]?
     public private(set) var latestStoryDetail: SavedStoryDetail?
     /// The server's most recent llm_backend reply (issue #25), or nil if it
@@ -948,7 +954,10 @@ public actor SessionCoordinator {
                 lastTurnEndTurnId = turnId
             }
             switch event {
-            case .message(.rewritingStarted):
+            case .message(.rewritingStarted(let storyId, let epilogue)):
+                if let storyId, let epilogue {
+                    earlyEpilogues[storyId] = epilogue
+                }
                 isRewriting = true
                 sawRewritingStarted = true
                 // The concluding turn is no longer the current one: the

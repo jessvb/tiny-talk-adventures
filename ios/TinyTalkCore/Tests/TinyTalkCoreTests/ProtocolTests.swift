@@ -229,7 +229,25 @@ final class ProtocolTests: XCTestCase {
 
     func testDecodesRewritingStarted() throws {
         let event = try decodeServerEvent(#"{"type": "rewriting_started"}"#)
-        XCTAssertEqual(event, .rewritingStarted)
+        XCTAssertEqual(event, .rewritingStarted(storyId: nil, epilogue: nil))
+    }
+
+    func testDecodesRewritingStartedWithItsStoryIdAndEpilogue() throws {
+        let event = try decodeServerEvent(
+            #"{"type": "rewriting_started", "story_id": "abc", "epilogue": "And one true thing we learned about the fox: foxes hear well"}"#
+        )
+        XCTAssertEqual(event, .rewritingStarted(
+            storyId: "abc", epilogue: "And one true thing we learned about the fox: foxes hear well"
+        ))
+    }
+
+    func testTheEndPrefersTheStoredEpilogueElseTheEarlyOneForThatStory() {
+        let pending = SavedStoryDetail(id: "abc", title: nil, pages: [], epilogue: nil, rewriteStatus: .pending)
+        XCTAssertEqual(pending.theEndEpilogue(early: ["abc": "early fact"]), "early fact")
+        XCTAssertNil(pending.theEndEpilogue(early: ["other": "someone else's fact"]),
+                     "another story's fact must never show on this story's End screen")
+        let done = SavedStoryDetail(id: "abc", title: "T", pages: [], epilogue: "stored fact", rewriteStatus: .done)
+        XCTAssertEqual(done.theEndEpilogue(early: ["abc": "early fact"]), "stored fact")
     }
 
     func testDecodesRewritingDone() throws {

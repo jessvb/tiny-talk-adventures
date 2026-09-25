@@ -230,7 +230,7 @@ final class SessionCoordinatorTests: XCTestCase {
         // makes consumeServerEvents() wait for runTurn()'s own in-flight
         // enqueue() call before processing it, so it can arrive here, at
         // the client, while that buffer is still (simulated-)outstanding.
-        connection.emit(.message(.rewritingStarted))
+        connection.emit(.message(.rewritingStarted(storyId: nil, epilogue: nil)))
         try? await Task.sleep(nanoseconds: 5_000_000)
 
         var ready = await coordinator.readyToShowTheEnd
@@ -262,6 +262,25 @@ final class SessionCoordinatorTests: XCTestCase {
     /// first -- readyToShowTheEnd must still end up true, not stuck
     /// waiting on an event that already happened before the flag existed
     /// to combine with it.
+    /// Issue #77: rewriting_started's fact line is kept per story id, so
+    /// The End can show it right away -- and only for that story.
+    func testRewritingStartedRecordsItsEpilogueUnderItsStoryId() async {
+        let connection = FakeConnection()
+        let coordinator = SessionCoordinator(connection: connection, audio: FakeAudio(), vad: FakeVAD())
+        let runLoop = Task { await coordinator.start() }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        connection.emit(.message(.rewritingStarted(storyId: "abc", epilogue: "And one true thing we learned about the fox: foxes hear well")))
+        connection.emit(.message(.rewritingStarted(storyId: "def", epilogue: nil)))
+        connection.emit(.message(.rewritingStarted(storyId: nil, epilogue: "orphan fact")))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        let early = await coordinator.earlyEpilogues
+        XCTAssertEqual(early, ["abc": "And one true thing we learned about the fox: foxes hear well"])
+
+        runLoop.cancel()
+    }
+
     func testReadyToShowTheEndFiresWhenRewritingStartedArrivesAfterPlaybackFinishes() async {
         let connection = FakeConnection()
         let audio = FakeAudio() // instant playback -- turnEnd reaches runTurn almost immediately
@@ -282,7 +301,7 @@ final class SessionCoordinatorTests: XCTestCase {
         var ready = await coordinator.readyToShowTheEnd
         XCTAssertFalse(ready, "must not be ready before rewritingStarted has arrived at all")
 
-        connection.emit(.message(.rewritingStarted))
+        connection.emit(.message(.rewritingStarted(storyId: nil, epilogue: nil)))
         try? await Task.sleep(nanoseconds: 10_000_000)
 
         ready = await coordinator.readyToShowTheEnd
@@ -1029,7 +1048,7 @@ final class SessionCoordinatorTests: XCTestCase {
         var rewriting = await coordinator.isRewriting
         XCTAssertFalse(rewriting)
 
-        connection.emit(.message(.rewritingStarted))
+        connection.emit(.message(.rewritingStarted(storyId: nil, epilogue: nil)))
         try? await Task.sleep(nanoseconds: 10_000_000)
         rewriting = await coordinator.isRewriting
         XCTAssertTrue(rewriting)
@@ -2631,7 +2650,7 @@ final class SessionCoordinatorTests: XCTestCase {
         connection.emit(.message(.responseText("hi", turnId: 1)))
         connection.emit(.audio(Data([1])))
         connection.emit(.audio(Data([2])))
-        connection.emit(.message(.rewritingStarted))
+        connection.emit(.message(.rewritingStarted(storyId: nil, epilogue: nil)))
         connection.emit(.message(.turnEnd(turnId: 1)))
         try? await Task.sleep(nanoseconds: 20_000_000)
 
@@ -2906,7 +2925,7 @@ final class SessionCoordinatorTests: XCTestCase {
         connection.emit(.message(.responseText("The end.", turnId: 1)))
         connection.emit(.audio(Data([1])))
         connection.emit(.message(.turnEnd(turnId: 1)))
-        connection.emit(.message(.rewritingStarted))
+        connection.emit(.message(.rewritingStarted(storyId: nil, epilogue: nil)))
         await eventually { await coordinator.readyToShowTheEnd }
     }
 
@@ -2925,7 +2944,7 @@ final class SessionCoordinatorTests: XCTestCase {
         await driveTurnToTheAudiblePlaybackTail(
             coordinator: coordinator, connection: connection, audio: audio, vad: vad, chunk: Data([1, 2, 3])
         )
-        connection.emit(.message(.rewritingStarted))
+        connection.emit(.message(.rewritingStarted(storyId: nil, epilogue: nil)))
         await eventually { await coordinator.isRewriting }
         var ready = await coordinator.readyToShowTheEnd
         XCTAssertFalse(ready, "precondition: the concluding reply is still playing")
@@ -2979,7 +2998,7 @@ final class SessionCoordinatorTests: XCTestCase {
         // ignored that interrupt) and its concluding turn_end and
         // rewriting_started are already on the wire.
         connection.emit(.message(.turnEnd(turnId: 1)))
-        connection.emit(.message(.rewritingStarted))
+        connection.emit(.message(.rewritingStarted(storyId: nil, epilogue: nil)))
 
         await eventually { await coordinator.readyToShowTheEnd }
         var ready = await coordinator.readyToShowTheEnd
@@ -3024,7 +3043,7 @@ final class SessionCoordinatorTests: XCTestCase {
         var ready = await coordinator.readyToShowTheEnd
         XCTAssertFalse(ready, "precondition: rewriting_started has not arrived yet")
 
-        connection.emit(.message(.rewritingStarted))
+        connection.emit(.message(.rewritingStarted(storyId: nil, epilogue: nil)))
         await eventually { await coordinator.readyToShowTheEnd }
 
         ready = await coordinator.readyToShowTheEnd
@@ -3105,7 +3124,7 @@ final class SessionCoordinatorTests: XCTestCase {
         connection.emit(.message(.responseText("The end.", turnId: 1)))
         connection.emit(.audio(Data([1, 2, 3])))
         connection.emit(.message(.turnEnd(turnId: 1)))
-        connection.emit(.message(.rewritingStarted))
+        connection.emit(.message(.rewritingStarted(storyId: nil, epilogue: nil)))
         await eventually { audio.hasPlaybackWaiter }
 
         var ready = await coordinator.readyToShowTheEnd
@@ -3205,7 +3224,7 @@ final class SessionCoordinatorTests: XCTestCase {
         audio.autoFinishEnqueuedBuffers = true
         let runLoop = Task { await coordinator.start() }
 
-        connection.emit(.message(.rewritingStarted))
+        connection.emit(.message(.rewritingStarted(storyId: nil, epilogue: nil)))
         await eventually { await coordinator.isRewriting }
         connection.emit(.message(.rewritingDone))
         await eventually { await coordinator.isRewriting == false }
