@@ -85,8 +85,10 @@ figcaption{font:500 13px var(--mono);color:var(--ink-5);text-align:center;margin
 .goal .tag{font:500 11.5px var(--mono);color:var(--gold);letter-spacing:.08em;margin-bottom:4px}
 .goal h3{font:600 16.5px/1.3 var(--sans);color:var(--ink);margin:0}
 .goal p{font:400 14.5px/1.55 var(--sans);color:var(--ink-3)}
-.goal p.cost{color:var(--ink-4)}
-.cost strong{color:var(--accent);font-weight:600}
+.goal p.lesson{color:var(--ink-4)}
+.lesson strong{color:var(--teal-ink);font-weight:600}
+/* Inline emphasis in body copy: brighter ink rather than just heavier. */
+.tile p b,.steps p b,.goal p b{color:var(--ink);font-weight:600}
 
 /* details */
 .details{--min:280px}
@@ -138,7 +140,7 @@ figcaption{font:500 13px var(--mono);color:var(--ink-5);text-align:center;margin
     <div><div class="stat-n">16 GB</div><div class="stat-l">RAM shared by every model at once</div></div>
     <div><div class="stat-n">0.77×</div><div class="stat-l">speech-to-text realtime factor — the number the design hangs on</div></div>
     <div><div class="stat-n">6</div><div class="stat-l">models: voice detection, STT, LLM, TTS, vision, image</div></div>
-    <div><div class="stat-n">486</div><div class="stat-l">server tests, plus a hardware probe that gates model changes</div></div>
+    <div><div class="stat-n">486+</div><div class="stat-l">server tests, plus a hardware probe that gates model changes</div></div>
   </div>
 </div>
 
@@ -187,7 +189,7 @@ figcaption{font:500 13px var(--mono);color:var(--ink-5);text-align:center;margin
 
   <div class="grid tiles">
     <div class="tile"><h3>The child leads</h3><p>Interruptions are welcomed, never corrected, and most replies end by asking the child what happens next.</p></div>
-    <div class="tile"><h3>Learning woven in</h3><p>Real animal facts from an external source, not the model's memory — inside a story world that stays physically real.</p></div>
+    <div class="tile"><h3>Learning woven in</h3><p><b>Real animal facts</b> from an external source, not the model's memory — inside a story world that stays physically real.</p></div>
     <div class="tile"><h3>Private by architecture</h3><p>A child's voice is sensitive data. At home it stays on the family's own devices — no accounts, no analytics, no third-party inference.</p></div>
   </div>
 </section>
@@ -199,7 +201,7 @@ figcaption{font:500 13px var(--mono);color:var(--ink-5);text-align:center;margin
     <div>
       <img src="shots/landing.png" alt="Landing screen: Elsie invites the child to start a story">
       <h3>Children can talk, anytime</h3>
-      <p>No buttons to learn and no reading needed. Elsie is always listening; the mic is only a mute switch.</p>
+      <p>Elsie's <b>always ready to listen</b>, even when telling her part of the story. No buttons to learn — the child just speaks, and Elsie stops.</p>
     </div>
     <div>
       <img src="shots/story.png" alt="A story in progress about Squeaky the squirrel who loves cooking">
@@ -209,7 +211,7 @@ figcaption{font:500 13px var(--mono);color:var(--ink-5);text-align:center;margin
     <div>
       <img src="shots/read.png" alt="A storybook page with an illustration of Squeaky the squirrel in a kitchen">
       <h3>The conversation becomes a book</h3>
-      <p>Both voices are retold as picture-book pages, illustrated locally, with the same character on every page.</p>
+      <p>Both voices are <b>retold as picture-book</b> pages, illustrated locally, with the same character on every page.</p>
     </div>
     <div>
       <img src="shots/the-end.png" alt="The End celebration screen with the finished book">
@@ -393,33 +395,33 @@ figcaption{font:500 13px var(--mono);color:var(--ink-5);text-align:center;margin
 
 <section class="wrap wide">
   <div class="kicker">05 — DESIGN GOALS</div>
-  <h2 style="margin-bottom:10px">Five goals, and what each one cost</h2>
-  <p class="sub" style="margin-top:0;margin-bottom:30px;max-width:60ch">Each goal shaped the system — and each came with a trade-off somewhere else.</p>
+  <h2 style="margin-bottom:10px">Five goals, and what we learned from each</h2>
+  <p class="sub" style="margin-top:0;margin-bottom:30px;max-width:60ch">Each goal shaped the system — and each one taught us something, usually by making the build harder.</p>
   <div class="goals">
     <div class="goal">
-      <div><div class="tag">LEARNING</div><h3>Real facts, real world</h3></div>
+      <div><div class="tag">EDUCATION</div><h3>Real facts, real world</h3></div>
       <p>Animal facts come from an external API, not model memory. The story world stays physically real.</p>
-      <p class="cost"><strong>Trade-off — </strong>The book's closing fact is written by server code, after the model was caught inventing one.</p>
+      <p class="lesson"><strong>What we learned — </strong>A model will state a fact it never fetched. The book's closing fact is now written by <b>deterministic</b> server code, after the model was caught inventing one.</p>
     </div>
     <div class="goal">
       <div><div class="tag">ENGAGEMENT</div><h3>A story, not a chat</h3></div>
       <p>Five narrative stages over a turn budget, each adding its own guidance — including “introduce a problem”.</p>
-      <p class="cost"><strong>Trade-off — </strong>The target dropped from 12 turns to 7 after testing: longer stories simply never ended.</p>
+      <p class="lesson"><strong>What we learned — </strong>A good story needs an ending more than it needs length. Testing cut the target from 12 turns to 7, because longer stories simply never ended.</p>
     </div>
     <div class="goal">
       <div><div class="tag">EFFICIENCY</div><h3>Everything on one Mac</h3></div>
-      <p>No extra model call where determinism will do: safety and story staging are regex and arithmetic.</p>
-      <p class="cost"><strong>Trade-off — </strong>A coarser safety net, and staging that counts turns rather than understanding the plot.</p>
+      <p>Small, capable models, <b>measured on this Mac</b>: an 82M-parameter voice, a 1B transcriber, a 9B storyteller. Where a rule will do — the safety check, story staging — no model runs at all.</p>
+      <p class="lesson"><strong>What we learned — </strong>Models that each fit can still crowd each other out. Kept loaded side by side, the speech, voice and image models held 12 GB of a 16 GB Mac — before the storyteller itself — and every turn slowed as the machine swapped.</p>
     </div>
     <div class="goal">
       <div><div class="tag">PRIVACY</div><h3>Local by default</h3></div>
       <p>At home, a child's voice reaches only their phone and the family Mac. No accounts or analytics.</p>
-      <p class="cost"><strong>Trade-off — </strong>Cloud use exists only in the demo mode, behind a clearly worded switch for grown-ups.</p>
+      <p class="lesson"><strong>What we learned — </strong>The exception has to be as visible as the rule. Cloud use exists only in the away-from-home mode, and the switch says so <b>in plain words</b> for grown-ups.</p>
     </div>
     <div class="goal">
       <div><div class="tag">AI FOR CHILDREN</div><h3>Assume defaults aren't safe</h3></div>
       <p>Every place that generates text for the child has its own safeguards and retry logic.</p>
-      <p class="cost"><strong>Trade-off — </strong>Safeguards must be re-applied everywhere — a review found the storybook rewrite had none.</p>
+      <p class="lesson"><strong>What we learned — </strong>Every new way of generating text needs its own safeguards. A review found the storybook rewrite had shipped with none.</p>
     </div>
   </div>
 </section>

@@ -14,6 +14,7 @@ body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);-web
 a{color:var(--gold);text-decoration-color:rgba(232,180,74,.4);text-underline-offset:3px}
 a:hover{color:#f6d38a}
 p{text-wrap:pretty}
+h1,h2{text-wrap:balance}
 ::selection{background:var(--accent);color:var(--bg)}
 code{font-family:var(--mono);color:var(--gold)}
 :focus-visible{outline:2px solid var(--gold);outline-offset:2px}
