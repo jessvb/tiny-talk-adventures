@@ -2575,6 +2575,21 @@ final class SessionCoordinatorTests: XCTestCase {
         runLoop.cancel()
     }
 
+    func testUpdateSettingsSendsTheTtsVoice() async {
+        let connection = FakeConnection()
+        let coordinator = SessionCoordinator(connection: connection, audio: FakeAudio(), vad: FakeVAD())
+        let runLoop = Task { await coordinator.start() }
+
+        await coordinator.updateSettings(targetTurns: 9, pageCount: 4, llmBackend: "groq", ttsVoice: "bm_george")
+        try? await Task.sleep(nanoseconds: 5_000_000)
+
+        XCTAssertEqual(
+            connection.sentMessages,
+            [.updateSettings(targetTurns: 9, pageCount: 4, llmBackend: "groq", ttsVoice: "bm_george")]
+        )
+        runLoop.cancel()
+    }
+
     func testLlmBackendEventIsStoredAsLatestStatus() async {
         let connection = FakeConnection()
         let coordinator = SessionCoordinator(connection: connection, audio: FakeAudio(), vad: FakeVAD())

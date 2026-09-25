@@ -175,9 +175,11 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
                 objectTracker = ObjectTracker()
             }
             await animalFactTracker.reset()
-        case .updateSettings(let turns, let pages, _):
+        case .updateSettings(let turns, let pages, _, _):
             // llmBackend is ignored: away-from-home mode is always Groq,
-            // and it never replies with an llm_backend event.
+            // and it never replies with an llm_backend event. ttsVoice
+            // too: it names a home-server (Kokoro) voice, and this mode
+            // speaks with AVSpeech's own selectedVoiceIdentifier instead.
             // Same bounds SessionRunner.handle_update_settings enforces
             // server-side (turns 4-12, pages 3-10). Applies to the NEXT
             // story only: an arc that hasn't started is rebuilt now (so the

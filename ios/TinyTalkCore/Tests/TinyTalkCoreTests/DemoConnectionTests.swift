@@ -298,6 +298,17 @@ final class DemoConnectionTests: XCTestCase {
         XCTAssertTrue(events.isEmpty)
     }
 
+    func testUpdateSettingsIgnoresTheHomeServersTtsVoice() async throws {
+        // Issue #78: the phone sends its "Home voice" (a Kokoro ID) to
+        // whichever connection is live; demo mode speaks with AVSpeech,
+        // so the field must be a harmless no-op here.
+        let connection = makeConnection()
+        let recorder = EventRecorder(connection)
+        try await connection.send(.updateSettings(targetTurns: 6, pageCount: 4, llmBackend: "groq", ttsVoice: "bf_emma"))
+        let events = await recorder.settle()
+        XCTAssertTrue(events.isEmpty)
+    }
+
     // MARK: - list_stories / get_story
 
     func testListStoriesAnswersWithTheLibrarysStories() async throws {
