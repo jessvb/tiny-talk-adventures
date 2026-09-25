@@ -126,7 +126,7 @@ h1{max-width:20ch}
 </footer>
 
 <div class="wrap credits">
-  <div class="credits-by">Designed and built by <a href="https://jessvb.github.io/" target="_blank" rel="noopener">Jessica Van Brummelen</a></div>
+  <div class="credits-by">Tiny Talk was co-developed by <a href="https://jessvb.github.io/" target="_blank" rel="noopener">Jessica Van Brummelen</a> and Claude.</div>
   <div class="credits-links">
     <a href="https://jessvb.github.io/" target="_blank" rel="noopener">Website ↗</a>
     <a href="https://www.linkedin.com/in/jessicavanbrummelen/" target="_blank" rel="noopener">LinkedIn ↗</a>
@@ -175,8 +175,8 @@ const SCENARIOS = [
     risks: ["Can a ~3B model follow a child's idea as well as the 9B does? That's testable — and it decides whether on-device is viable.", "Private cloud needs an ongoing cost per story, which means a subscription. Is that acceptable for a children's app?", "How many families have an Apple-silicon Mac? It could make the family hub a niche option."],
   },
   {
-    id: "classroom", num: "02", kicker: "IN A CLASSROOM", jump: "In a classroom", title: "What if a teacher ran it for 25 children, one at a time?",
-    intro: "One shared iPad, children taking turns, and a teacher who needs to see who has played and how it went — under school privacy rules, and in a room that's never quiet.",
+    id: "classroom", num: "02", kicker: "IN A CLASSROOM", jump: "In a classroom", title: "What if a teacher ran it in their classroom?",
+    intro: "Children writing stories and learning facts on a tablet, and a teacher who needs to see who has played and how it went — under school privacy rules, and in a room that's never quiet.",
     states: [
       { label: "Today", cols: TODAY, note: TODAY_NOTE },
       { label: "Classroom", note: "Each child picks their picture on a shared iPad. Stories and progress stay on a school-owned Mac in the room; the teacher sees them on their own device over the local network.", cols: [
@@ -217,7 +217,7 @@ const SCENARIOS = [
     ],
     changes: ["Picture choices are a second input path into the story brain; a tap is a turn, just as a sentence is.", "Voice detection waits longer before deciding a child is finished, tuned per child.", "When unsure what it heard, Elsie checks with a picture ('Did you mean the dragon?') instead of guessing."],
     stays: ["The child still leads — every input path ends with Elsie building on their choice.", "Nothing about a child's needs leaves the home; settings live on the family's hardware."],
-    risks: ["Waiting longer conflicts with instant interruption. How do you tell a pause from a finished turn?", "This has to be designed with speech therapists and families, not guessed at from outside.", "Adapting speech recognition to one child's voice may need training data I shouldn't collect."],
+    risks: ["Waiting longer conflicts with instant interruption. How do you tell a pause from a finished turn?", "This has to be designed with speech therapists and families, not guessed at from outside.", "Adapting speech recognition to one child's voice may need training data I shouldn't collect. Could we make an interface for them to fine-tune their own model?"],
   },
 ];
 

@@ -74,13 +74,13 @@ section.wrap{padding-top:clamp(32px,5vw,56px);padding-bottom:clamp(32px,5vw,56px
 <header class="wrap">
   <div class="kicker">WORKING WITH CLAUDE CODE</div>
   <h1>AI made code cheap. My attention became the bottleneck.</h1>
-  <p class="lede">When generating changes is nearly free, two things become scarce: the model's useful context, and my time to verify. Four habits built around that — two of them skills I wrote, <code>/handoff</code> and <code>/fix-issues</code>.</p>
+  <p class="lede">When generating changes is nearly free, two things become scarce: the model's useful context, and my time to verify. Four habits built around that — two of them skills I wrote with Claude, <code>/handoff</code> and <code>/fix-issues</code>.</p>
 </header>
 
 <section class="wrap">
   <div class="sec-head"><span class="kicker">01 — CONTEXT</span><span class="sec-tool">/handoff</span></div>
   <h2>Stop a session before it stops working well</h2>
-  <p class="intro">Long sessions degrade: settled decisions get re-debated, and automatic compaction keeps what's <em>recent</em> rather than what <em>matters</em>. So I start one session per substantial task, and at about 70% context I run <code>/handoff</code>, clear, and start fresh from the note.</p>
+  <p class="intro">Long sessions degrade: settled decisions get re-debated, and automatic compaction keeps what's <em>recent</em> rather than what <em>matters</em>. So I start one session per substantial task, and at about 70% context I run my <code>/handoff</code> skill, <code>/clear</code>, and start fresh from the generated <code>progress.md</code> summary.</p>
 
   <div class="card diagram-scroll">
     <svg viewBox="0 0 1000 300" style="min-width:600px" role="img" aria-label="Output quality stays high early in a session and declines past about 70% context; /handoff resets to a fresh session">
@@ -103,7 +103,7 @@ section.wrap{padding-top:clamp(32px,5vw,56px);padding-bottom:clamp(32px,5vw,56px
 
   <div class="grid" style="--min:300px">
     <div class="tile">
-      <div class="file-name">.claude/progress.md</div>
+      <div class="file-name"><code>.claude/progress.md</code></div>
       <div class="chips">
         <span>Worktree</span><span>Current goal</span><span>Files touched</span><span class="key">Decisions (and why)</span>
         <span>Known failing checks</span><span>Next 3 actions</span><span class="key">Do NOT redo</span><span>Related spec</span>
@@ -155,7 +155,7 @@ section.wrap{padding-top:clamp(32px,5vw,56px);padding-bottom:clamp(32px,5vw,56px
 <section class="wrap">
   <div class="sec-head"><span class="kicker">03 — SEQUENCE</span><span class="sec-tool">design → spec → implement</span></div>
   <h2>Settle the design before the coding session starts</h2>
-  <p class="intro">Exploring layouts in code means every rejected idea becomes code to unwind. I explore visually first — in Claude's design tool or Google Stitch — then hand Claude Code a decision, not a conversation. That's where “is the mic a talk button or a mute button?” got answered cheaply. (Mute. Elsie always listens.)</p>
+  <p class="intro">Exploring layouts in code means every rejected idea becomes code to unwind. I explore visually first — in Claude's design tool or Google Stitch — then hand Claude Code a decision, not a conversation.</p>
 
   <div class="grid stages">
     <div class="tile stage" style="border-top-color:var(--violet)"><div class="step" style="color:var(--violet)">1 · DESIGN</div><h3>Divergent and disposable</h3><p>Many directions, real content, no code. Product questions get answered here.</p></div>
@@ -171,7 +171,7 @@ section.wrap{padding-top:clamp(32px,5vw,56px);padding-bottom:clamp(32px,5vw,56px
 <section class="wrap batch">
   <div class="sec-head"><span class="kicker">04 — BATCHING</span><span class="sec-tool">/fix-issues</span></div>
   <h2>AI shortens the fixing. The scarce resource is <em>human testing time.</em></h2>
-  <p class="intro">Every fix here needs a person, a phone and real speech to verify. Fixing issues one at a time means a test session per fix and a context switch each time. So issues go into GitHub as a backlog, and get fixed in batches that I test once.</p>
+  <p class="intro">Every fix here needs a person, a phone and real speech to verify. Fixing issues one at a time means a test session per fix and a context switch each time. So issues go into GitHub as a backlog, and get fixed in <b>batches that I test once</b> using my skill, <code>/fix-issues</code>.</p>
 
   <div class="card diagram-scroll">
     <svg viewBox="0 0 1000 300" style="min-width:640px" role="img" aria-label="Fixing one at a time needs four human test sessions; /fix-issues fixes in parallel, merges, and needs one">
@@ -234,7 +234,7 @@ section.wrap{padding-top:clamp(32px,5vw,56px);padding-bottom:clamp(32px,5vw,56px
 </footer>
 
 <div class="wrap credits">
-  <div class="credits-by">Designed and built by <a href="https://jessvb.github.io/" target="_blank" rel="noopener">Jessica Van Brummelen</a></div>
+  <div class="credits-by">Tiny Talk was co-developed by <a href="https://jessvb.github.io/" target="_blank" rel="noopener">Jessica Van Brummelen</a> and Claude.</div>
   <div class="credits-links">
     <a href="https://jessvb.github.io/" target="_blank" rel="noopener">Website ↗</a>
     <a href="https://www.linkedin.com/in/jessicavanbrummelen/" target="_blank" rel="noopener">LinkedIn ↗</a>
