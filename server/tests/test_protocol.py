@@ -204,6 +204,15 @@ def test_new_server_encoders_produce_expected_payloads():
         "page_index": 2,
     }
     assert json.loads(encode_rewriting_started()) == {"type": "rewriting_started"}
+    assert json.loads(encode_rewriting_started("abc")) == {
+        "type": "rewriting_started",
+        "story_id": "abc",
+    }
+    assert json.loads(encode_rewriting_started("abc", "And one true thing")) == {
+        "type": "rewriting_started",
+        "story_id": "abc",
+        "epilogue": "And one true thing",
+    }
     assert json.loads(encode_rewriting_done()) == {"type": "rewriting_done"}
 
 

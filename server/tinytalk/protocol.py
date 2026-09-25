@@ -323,8 +323,19 @@ def encode_page_image_done(story_id: str, page_index: int, has_image: bool) -> s
     )
 
 
-def encode_rewriting_started() -> str:
-    return json.dumps({"type": "rewriting_started"})
+def encode_rewriting_started(
+    story_id: str | None = None, epilogue: str | None = None
+) -> str:
+    """`story_id` names the story being rewritten; `epilogue` is its
+    fact line (storybook.early_epilogue()), sent now so The End can show
+    it without waiting on the whole rewrite (issue #77). Each key is
+    omitted when None, so an older client sees the same bare message."""
+    payload: dict = {"type": "rewriting_started"}
+    if story_id is not None:
+        payload["story_id"] = story_id
+    if epilogue is not None:
+        payload["epilogue"] = epilogue
+    return json.dumps(payload)
 
 
 def encode_rewriting_done() -> str:

@@ -65,6 +65,27 @@ _PARSE_RETRY_TEMPLATE = (
 )
 
 
+def derive_epilogue(shared_facts: list[tuple[str, str]]) -> str | None:
+    """The one place the epilogue's wording lives -- build_and_attach(),
+    synced_storybook.store_uploaded_storybook() and early_epilogue() all
+    format it through here, so they can't drift apart. Always a real fact
+    the story actually shared, never model-written; None when there is none."""
+    if not shared_facts:
+        return None
+    animal, fact = shared_facts[0]
+    return f"And one true thing we learned about the {animal}: {fact}"
+
+
+def early_epilogue(shared_facts: list[tuple[str, str]]) -> str | None:
+    """The epilogue as sent with rewriting_started, before any rewrite has
+    run (issue #77). Gets the same kid-safety check build_and_attach()
+    applies before persisting it: dropped (None) if anything is flagged."""
+    epilogue = derive_epilogue(shared_facts)
+    if epilogue is None or safety.find_blocked(epilogue):
+        return None
+    return epilogue
+
+
 def _format_transcript(turns: list[Turn]) -> str:
     lines = []
     for turn in turns:
@@ -227,11 +248,7 @@ async def build_and_attach(
             # server-side straight from shared_facts, in the same phrasing
             # style the design mock uses; when none exist, it's omitted
             # unconditionally, regardless of what the model volunteered.
-            if shared_facts:
-                animal, fact = shared_facts[0]
-                epilogue = f"And one true thing we learned about the {animal}: {fact}"
-            else:
-                epilogue = None
+            epilogue = derive_epilogue(shared_facts)
 
             texts_to_check = [title, *(page["text"] for page in pages)]
             if epilogue is not None:

@@ -155,6 +155,10 @@ class SessionRunner:
         self._machine = TurnStateMachine()
         self._turn_task: asyncio.Task | None = None
         self._rewrite_task: asyncio.Task | None = None
+        # The rewriting_started message last sent for a concluded story --
+        # kept so resend_current_status() can repeat its story_id/epilogue
+        # to a reconnecting phone instead of a bare one.
+        self._rewriting_started_message = encode_rewriting_started()
         # (sentence text, estimated real-world time.monotonic() at which
         # the child would actually have finished HEARING it) -- see
         # _run_turn()'s TTS loop and _cancel_turn() for why "sent" and
@@ -527,7 +531,7 @@ class SessionRunner:
         rewrite is still in flight must be told so immediately, not left
         to assume it's free to start a new story."""
         if self._machine.state is State.REWRITING:
-            await self._send_text_unbuffered(encode_rewriting_started())
+            await self._send_text_unbuffered(self._rewriting_started_message)
 
     @property
     def transport_generation(self) -> int:
@@ -995,7 +999,13 @@ class SessionRunner:
                 if saved_path is not None:
                     logger.info("story saved to %s", saved_path)
                     story_id = story_store.story_id_from_path(saved_path)
-                    await self._send_text_unbuffered(encode_rewriting_started())
+                    # The fact line goes out now, not with the finished
+                    # rewrite: it is already known and doesn't depend on
+                    # the slow LLM/illustration pass (issue #77).
+                    self._rewriting_started_message = encode_rewriting_started(
+                        story_id, storybook.early_epilogue(shared_facts)
+                    )
+                    await self._send_text_unbuffered(self._rewriting_started_message)
                     logger.info(
                         "storybook rewrite for %s using %s", story_id, story_llm_name
                     )
