@@ -492,9 +492,11 @@ public actor SessionCoordinator {
     /// themselves live in AppModel/UserDefaults, not this actor); when
     /// llmBackend is non-nil the server replies with an llm_backend
     /// event, which the event loop below stores into
-    /// latestLlmBackendStatus.
-    public func updateSettings(targetTurns: Int, pageCount: Int, llmBackend: String? = nil) async {
-        try? await connection.send(.updateSettings(targetTurns: targetTurns, pageCount: pageCount, llmBackend: llmBackend))
+    /// latestLlmBackendStatus. ttsVoice (issue #78) is the parent's
+    /// "Home voice" -- the server applies it from the next sentence and
+    /// sends nothing back.
+    public func updateSettings(targetTurns: Int, pageCount: Int, llmBackend: String? = nil, ttsVoice: String? = nil) async {
+        try? await connection.send(.updateSettings(targetTurns: targetTurns, pageCount: pageCount, llmBackend: llmBackend, ttsVoice: ttsVoice))
     }
 
     /// Appends to the pre-roll ring buffer, evicting the oldest chunks once

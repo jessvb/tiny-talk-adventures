@@ -1098,6 +1098,45 @@ async def test_handle_update_settings_clamps_values_below_the_range(transport):
     assert session._page_count == 3
 
 
+async def test_update_settings_with_a_known_tts_voice_switches_the_voice(transport, caplog):
+    tts = FakeTts()
+    session = make_session(transport, tts=tts)
+    with caplog.at_level(logging.INFO, logger="tinytalk.session"):
+        await session.handle_text(
+            '{"type": "update_settings", "target_turns": 7, "page_count": 5, "tts_voice": "bf_emma"}'
+        )
+    assert tts.voices_set == ["bf_emma"]
+    assert "tts: voice set to bf_emma" in caplog.text
+
+
+async def test_update_settings_repeating_the_current_voice_does_not_reset_it(transport):
+    tts = FakeTts()
+    session = make_session(transport, tts=tts)
+    for _ in range(2):
+        await session.handle_text(
+            '{"type": "update_settings", "target_turns": 7, "page_count": 5, "tts_voice": "bf_emma"}'
+        )
+    assert tts.voices_set == ["bf_emma"]
+
+
+async def test_update_settings_with_an_unknown_tts_voice_keeps_the_current_one(transport, caplog):
+    tts = FakeTts()
+    session = make_session(transport, tts=tts)
+    with caplog.at_level(logging.WARNING, logger="tinytalk.session"):
+        await session.handle_text(
+            '{"type": "update_settings", "target_turns": 7, "page_count": 5, "tts_voice": "zz_nope"}'
+        )
+    assert tts.voices_set == []
+    assert "zz_nope" in caplog.text
+
+
+async def test_update_settings_without_a_tts_voice_leaves_the_voice_alone(transport):
+    tts = FakeTts()
+    session = make_session(transport, tts=tts)
+    await session.handle_text('{"type": "update_settings", "target_turns": 7, "page_count": 5}')
+    assert tts.voices_set == []
+
+
 async def test_update_settings_does_not_change_the_currently_in_progress_story(transport):
     """Confirms the spec's "applies to the next story, never retroactively"
     requirement: an already-constructed StoryArc keeps its original

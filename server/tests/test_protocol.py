@@ -159,6 +159,24 @@ def test_decode_rejects_update_settings_non_integer_target_turns():
         )
 
 
+def test_decode_update_settings_carries_an_optional_tts_voice():
+    decoded = decode_client_message(
+        '{"type": "update_settings", "target_turns": 7, "page_count": 5, "tts_voice": "bf_emma"}'
+    )
+    assert decoded == UpdateSettings(target_turns=7, page_count=5, tts_voice="bf_emma")
+    absent = decode_client_message(
+        '{"type": "update_settings", "target_turns": 7, "page_count": 5}'
+    )
+    assert absent.tts_voice is None
+
+
+def test_decode_rejects_update_settings_non_string_tts_voice():
+    with pytest.raises(ProtocolError, match="tts_voice"):
+        decode_client_message(
+            '{"type": "update_settings", "target_turns": 7, "page_count": 5, "tts_voice": 3}'
+        )
+
+
 def test_encoders_produce_expected_payloads():
     assert json.loads(encode_transcript_partial("a fox", 1)) == {
         "type": "transcript_partial",

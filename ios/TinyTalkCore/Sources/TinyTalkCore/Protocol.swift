@@ -53,8 +53,9 @@ public enum ClientMessage: Sendable, Equatable {
     /// protocol.py's UpdateSettings. Sent once after connecting and
     /// again whenever changed while connected. llmBackend ("ollama" /
     /// "groq", issue #25) is omitted from the JSON when nil, so the
-    /// server keeps its current choice.
-    case updateSettings(targetTurns: Int, pageCount: Int, llmBackend: String? = nil)
+    /// server keeps its current choice. ttsVoice (a KokoroVoices ID,
+    /// issue #78) works the same way; demo mode ignores it.
+    case updateSettings(targetTurns: Int, pageCount: Int, llmBackend: String? = nil, ttsVoice: String? = nil)
     /// Request the generated illustration for one page of a saved story
     /// -- see protocol.py's GetPageImage.
     case getPageImage(storyId: String, pageIndex: Int)
@@ -123,11 +124,15 @@ public enum ClientMessage: Sendable, Equatable {
             return #"{"type":"get_story","story_id":"\#(Self.jsonEscaped(storyId))"}"#
         case .concludeStory(let turnId):
             return #"{"type":"conclude_story","turn_id":\#(turnId)}"#
-        case .updateSettings(let targetTurns, let pageCount, let llmBackend):
+        case .updateSettings(let targetTurns, let pageCount, let llmBackend, let ttsVoice):
+            var json = #"{"type":"update_settings","target_turns":\#(targetTurns),"page_count":\#(pageCount)"#
             if let llmBackend {
-                return #"{"type":"update_settings","target_turns":\#(targetTurns),"page_count":\#(pageCount),"llm_backend":"\#(Self.jsonEscaped(llmBackend))"}"#
+                json += #","llm_backend":"\#(Self.jsonEscaped(llmBackend))""#
             }
-            return #"{"type":"update_settings","target_turns":\#(targetTurns),"page_count":\#(pageCount)}"#
+            if let ttsVoice {
+                json += #","tts_voice":"\#(Self.jsonEscaped(ttsVoice))""#
+            }
+            return json + "}"
         case .getPageImage(let storyId, let pageIndex):
             return #"{"type":"get_page_image","story_id":"\#(Self.jsonEscaped(storyId))","page_index":\#(pageIndex)}"#
         case .synthesizePage(let storyId, let pageIndex):

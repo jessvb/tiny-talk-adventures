@@ -118,6 +118,11 @@ class FakeTts:
         self.spoken: list[str] = []
         self.cancelled = False
         self._call_count = 0
+        # Every set_voice() call, in order (issue #78).
+        self.voices_set: list[str] = []
+
+    def set_voice(self, voice: str) -> None:
+        self.voices_set.append(voice)
 
     async def synthesize(self, text: str) -> AsyncIterator[bytes]:
         try:

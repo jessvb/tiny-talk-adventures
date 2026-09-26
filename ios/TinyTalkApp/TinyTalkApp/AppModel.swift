@@ -44,6 +44,12 @@ final class AppModel: ObservableObject {
     /// story-length settings and sent alongside them on every
     /// updateSettings. Ignored by away-from-home mode (always Groq).
     @Published var llmBackend: String
+    /// Elsie's voice on the HOME SERVER (a KokoroVoices ID, issue #78) --
+    /// separate from selectedVoiceIdentifier, which is away-from-home's
+    /// on-device AVSpeech voice. Persisted and sent like llmBackend, so
+    /// once a phone connects it overrides the Mac's TINYTALK_TTS_VOICE.
+    /// Takes effect from Elsie's next sentence, not the next story.
+    @Published var homeVoiceID: String
     /// The server's latest reply about which backend it will actually use
     /// -- nil until it sends one. Mirrored from the coordinator by the poll
     /// loop, same as isRewriting.
@@ -285,6 +291,7 @@ final class AppModel: ObservableObject {
         let storedPageCount = UserDefaults.standard.integer(forKey: "storybookPageCount")
         storybookPageCount = storedPageCount == 0 ? 5 : storedPageCount
         llmBackend = UserDefaults.standard.string(forKey: "llmBackend") ?? "ollama"
+        homeVoiceID = UserDefaults.standard.string(forKey: "homeVoiceID") ?? KokoroVoices.defaultID
         let hasOnboarded = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
         screen = hasOnboarded ? .landing : .onboarding
     }
@@ -634,7 +641,7 @@ final class AppModel: ObservableObject {
         // demo-story sync block below so a synced story's rewrite already
         // sees the parent's LLM choice, rather than the server's own
         // just-restarted startup default.
-        Task { await coordinator.updateSettings(targetTurns: storyTurnCount, pageCount: storybookPageCount, llmBackend: llmBackend) }
+        Task { await coordinator.updateSettings(targetTurns: storyTurnCount, pageCount: storybookPageCount, llmBackend: llmBackend, ttsVoice: homeVoiceID) }
         // Each pending transcript, plus its finished storybook (title, pages,
         // pictures) when one was built away from home -- so the Mac keeps
         // what the child already saw instead of redoing (or losing) it. A
@@ -815,7 +822,7 @@ final class AppModel: ObservableObject {
         // even the very first story of this connection uses them (until
         // now only the real-server path did this, so the Settings steppers
         // silently did nothing away from home).
-        Task { await coordinator.updateSettings(targetTurns: storyTurnCount, pageCount: storybookPageCount, llmBackend: llmBackend) }
+        Task { await coordinator.updateSettings(targetTurns: storyTurnCount, pageCount: storybookPageCount, llmBackend: llmBackend, ttsVoice: homeVoiceID) }
         // Same as connect(): fetch the Library now. This seeds the End-screen
         // baseline (hasEstablishedLibraryBaseline) and keeps Landing's "Read
         // Stories" accurate from a cold launch. Without it, the FIRST list of
@@ -1237,7 +1244,7 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(turnCount, forKey: "storyTurnCount")
         UserDefaults.standard.set(pageCount, forKey: "storybookPageCount")
         guard isConnected, let coordinator else { return }
-        Task { await coordinator.updateSettings(targetTurns: turnCount, pageCount: pageCount, llmBackend: llmBackend) }
+        Task { await coordinator.updateSettings(targetTurns: turnCount, pageCount: pageCount, llmBackend: llmBackend, ttsVoice: homeVoiceID) }
     }
 
     /// What the "Elsie's Brain" picker calls. Same shape as
@@ -1250,7 +1257,23 @@ final class AppModel: ObservableObject {
         guard isConnected, let coordinator else { return }
         Task {
             await coordinator.updateSettings(
-                targetTurns: storyTurnCount, pageCount: storybookPageCount, llmBackend: backend
+                targetTurns: storyTurnCount, pageCount: storybookPageCount, llmBackend: backend,
+                ttsVoice: homeVoiceID
+            )
+        }
+    }
+
+    /// What the "Home voice" picker calls. Same shape as setLlmBackend():
+    /// persists immediately, sends immediately only if connected
+    /// (otherwise connect() sends it).
+    func setHomeVoiceID(_ voiceID: String) {
+        homeVoiceID = voiceID
+        UserDefaults.standard.set(voiceID, forKey: "homeVoiceID")
+        guard isConnected, let coordinator else { return }
+        Task {
+            await coordinator.updateSettings(
+                targetTurns: storyTurnCount, pageCount: storybookPageCount, llmBackend: llmBackend,
+                ttsVoice: voiceID
             )
         }
     }

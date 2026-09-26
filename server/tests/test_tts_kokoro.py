@@ -122,6 +122,61 @@ async def test_pipeline_is_built_once_and_reused():
     assert built == ["a"]
 
 
+async def test_set_voice_applies_to_the_next_synthesis():
+    pipeline = FakePipeline("a")
+    tts = KokoroTts(lang_code="a", voice="af_heart", pipeline_factory=lambda code: pipeline)
+
+    [chunk async for chunk in tts.synthesize("One.")]
+    tts.set_voice("am_puck")
+    [chunk async for chunk in tts.synthesize("Two.")]
+
+    assert pipeline.calls == [("One.", "af_heart"), ("Two.", "am_puck")]
+
+
+async def test_british_voice_gets_a_british_pipeline_sharing_the_loaded_model():
+    # Kokoro's G2P is per-pipeline (lang_code 'a' = American, 'b' =
+    # British); a bf_/bm_ voice read through the American pipeline would
+    # get American pronunciations. The second pipeline must reuse the
+    # first one's model weights rather than load a second ~330MB copy.
+    built: list[tuple[str, object]] = []
+    shared_model = object()
+
+    def factory(lang_code: str, model=None):
+        built.append((lang_code, model))
+        pipeline = FakePipeline(lang_code)
+        pipeline.model = model or shared_model
+        return pipeline
+
+    tts = KokoroTts(lang_code="a", voice="af_heart", pipeline_factory=factory)
+    [chunk async for chunk in tts.synthesize("One.")]
+    tts.set_voice("bf_emma")
+    [chunk async for chunk in tts.synthesize("Two.")]
+    tts.set_voice("am_puck")
+    [chunk async for chunk in tts.synthesize("Three.")]
+    [chunk async for chunk in tts.synthesize("Four.")]
+
+    assert built == [("a", None), ("b", shared_model)]
+
+
+def test_default_factory_reuses_a_given_model(monkeypatch):
+    built: dict = {}
+
+    class FakeKPipeline:
+        def __init__(self, lang_code: str, device: str, model=True) -> None:
+            built.update(lang_code=lang_code, model=model)
+            self.model = types.SimpleNamespace(device=torch.device("cpu"))
+
+    fake_kokoro = types.ModuleType("kokoro")
+    fake_kokoro.KPipeline = FakeKPipeline
+    monkeypatch.setitem(sys.modules, "kokoro", fake_kokoro)
+    monkeypatch.setattr("tinytalk.tts_kokoro._configure_espeak_from_homebrew", lambda: None)
+    existing = object()
+
+    _default_pipeline_factory("b", model=existing)
+
+    assert built == {"lang_code": "b", "model": existing}
+
+
 async def test_model_failure_is_reported_as_engine_error():
     tts = KokoroTts(pipeline_factory=ExplodingPipeline)
     with pytest.raises(EngineError, match="Kokoro"):
