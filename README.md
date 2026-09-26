@@ -44,6 +44,19 @@ itself, with no network round trip.
 
 ![Annotated screenshots of story creation and reading, labelling which model powers each element: Silero VAD, Kyutai STT, Qwen 3.5 9B, a safety denylist, Kokoro TTS, FastViT-T8, API Ninjas facts, and Stable Diffusion 1.5 page art](docs/images/models-on-screen.png)
 
+### Real objects join the story
+
+The child taps the camera and shows Elsie something from the room. An
+on-device classifier (FastViT-T8 via Core ML) names it, and Elsie weaves it
+into her next turn. Here a teddy bear holding a banana turns into Benny the
+grizzly spotting a bright yellow banana. The photo stays on the phone; only
+the label is sent.
+
+<p align="center">
+  <img src="site/shots/camera.png" width="220" alt="The in-app camera pointed at a teddy bear holding a banana">
+  <img src="site/shots/camera-story.png" width="220" alt="The story continues: Benny the grizzly bear munches blueberries, then spots a bright yellow banana hanging on a tree (highlighted)">
+</p>
+
 ### Architecture
 
 ![Architecture: the iPhone runs voice detection, object recognition and playback; the Mac runs speech-to-text, the story model, a safety gate and speech, then the storybook rewrite and page art; animal facts come from an external API; an away-from-home mode uses Groq and Cloudflare instead](docs/images/architecture.png)
