@@ -271,6 +271,20 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(done.theEndEpilogue(early: ["abc": "early fact"]), "stored fact")
     }
 
+    func testReadingShowsTheEpilogueOnTheLastPageOnly() {
+        let page = StoryPage(text: "p", hasImage: false)
+        let story = SavedStoryDetail(id: "abc", title: "T", pages: [page, page, page], epilogue: "fact", rewriteStatus: .done)
+        XCTAssertNil(story.readingEpilogue(onPage: 0))
+        XCTAssertNil(story.readingEpilogue(onPage: 1))
+        XCTAssertEqual(story.readingEpilogue(onPage: 2), "fact")
+
+        let onePage = SavedStoryDetail(id: "abc", title: "T", pages: [page], epilogue: "fact", rewriteStatus: .done)
+        XCTAssertEqual(onePage.readingEpilogue(onPage: 0), "fact")
+
+        let noFact = SavedStoryDetail(id: "abc", title: "T", pages: [page, page], epilogue: nil, rewriteStatus: .done)
+        XCTAssertNil(noFact.readingEpilogue(onPage: 1), "no fact found -> no line")
+    }
+
     func testDecodesRewritingDone() throws {
         let event = try decodeServerEvent(#"{"type": "rewriting_done"}"#)
         XCTAssertEqual(event, .rewritingDone)
