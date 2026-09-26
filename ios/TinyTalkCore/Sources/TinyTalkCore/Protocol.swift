@@ -53,8 +53,9 @@ public enum ClientMessage: Sendable, Equatable {
     /// protocol.py's UpdateSettings. Sent once after connecting and
     /// again whenever changed while connected. llmBackend ("ollama" /
     /// "groq", issue #25) is omitted from the JSON when nil, so the
-    /// server keeps its current choice.
-    case updateSettings(targetTurns: Int, pageCount: Int, llmBackend: String? = nil)
+    /// server keeps its current choice. ttsVoice (a KokoroVoices ID,
+    /// issue #78) works the same way; demo mode ignores it.
+    case updateSettings(targetTurns: Int, pageCount: Int, llmBackend: String? = nil, ttsVoice: String? = nil)
     /// Request the generated illustration for one page of a saved story
     /// -- see protocol.py's GetPageImage.
     case getPageImage(storyId: String, pageIndex: Int)
@@ -123,11 +124,15 @@ public enum ClientMessage: Sendable, Equatable {
             return #"{"type":"get_story","story_id":"\#(Self.jsonEscaped(storyId))"}"#
         case .concludeStory(let turnId):
             return #"{"type":"conclude_story","turn_id":\#(turnId)}"#
-        case .updateSettings(let targetTurns, let pageCount, let llmBackend):
+        case .updateSettings(let targetTurns, let pageCount, let llmBackend, let ttsVoice):
+            var json = #"{"type":"update_settings","target_turns":\#(targetTurns),"page_count":\#(pageCount)"#
             if let llmBackend {
-                return #"{"type":"update_settings","target_turns":\#(targetTurns),"page_count":\#(pageCount),"llm_backend":"\#(Self.jsonEscaped(llmBackend))"}"#
+                json += #","llm_backend":"\#(Self.jsonEscaped(llmBackend))""#
             }
-            return #"{"type":"update_settings","target_turns":\#(targetTurns),"page_count":\#(pageCount)}"#
+            if let ttsVoice {
+                json += #","tts_voice":"\#(Self.jsonEscaped(ttsVoice))""#
+            }
+            return json + "}"
         case .getPageImage(let storyId, let pageIndex):
             return #"{"type":"get_page_image","story_id":"\#(Self.jsonEscaped(storyId))","page_index":\#(pageIndex)}"#
         case .synthesizePage(let storyId, let pageIndex):
@@ -177,11 +182,13 @@ public enum ServerEvent: Sendable, Equatable {
     case error(String, turnId: Int)
     /// A story just concluded and its background storybook rewrite has
     /// started -- see server/tinytalk/protocol.py's encode_rewriting_started().
-    /// Carries no turn_id or story_id: see SessionCoordinator's
-    /// readyToShowTheEnd doc comment for why arrival of this event alone
-    /// is NOT sufficient to know the concluding turn's audio has finished
-    /// playing.
-    case rewritingStarted
+    /// Carries no turn_id: see SessionCoordinator's readyToShowTheEnd doc
+    /// comment for why arrival of this event alone is NOT sufficient to
+    /// know the concluding turn's audio has finished playing. `storyId`
+    /// and `epilogue` (the story's fact line, known before the rewrite
+    /// runs -- issue #77) are nil from an older server, and `epilogue` is
+    /// nil whenever the story shared no fact.
+    case rewritingStarted(storyId: String?, epilogue: String?)
     /// The background rewrite finished (successfully or not) -- see
     /// encode_rewriting_done(). Carries no story_id; the client already
     /// knows which story it's waiting on (the most recent one) from
@@ -229,7 +236,9 @@ public func decodeServerEvent(_ raw: String) throws -> ServerEvent {
     case "error":
         return .error(json["message"] as? String ?? "", turnId: turnId)
     case "rewriting_started":
-        return .rewritingStarted
+        return .rewritingStarted(
+            storyId: json["story_id"] as? String, epilogue: json["epilogue"] as? String
+        )
     case "rewriting_done":
         return .rewritingDone
     case "story_list":

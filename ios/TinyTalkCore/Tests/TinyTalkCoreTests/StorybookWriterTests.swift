@@ -26,6 +26,20 @@ final class StorybookWriterTests: XCTestCase {
             .write(turns: turns, sharedFacts: facts, pageCount: pageCount)
     }
 
+    // MARK: - early epilogue (issue #77)
+
+    func testEarlyEpilogueUsesTheSameWordingAsTheRewrite() {
+        XCTAssertEqual(
+            StorybookWriter.earlyEpilogue(sharedFacts: [["fox", "foxes have excellent hearing"]]),
+            "And one true thing we learned about the fox: foxes have excellent hearing"
+        )
+        XCTAssertNil(StorybookWriter.earlyEpilogue(sharedFacts: []))
+    }
+
+    func testEarlyEpilogueIsDroppedWhenItFailsTheSafetyCheck() {
+        XCTAssertNil(StorybookWriter.earlyEpilogue(sharedFacts: [["shark", "sharks can kill"]]))
+    }
+
     // MARK: - happy path
 
     func testParsesAValidRewriteAndGroundsTheEpilogueInTheRealFact() async {

@@ -1098,6 +1098,45 @@ async def test_handle_update_settings_clamps_values_below_the_range(transport):
     assert session._page_count == 3
 
 
+async def test_update_settings_with_a_known_tts_voice_switches_the_voice(transport, caplog):
+    tts = FakeTts()
+    session = make_session(transport, tts=tts)
+    with caplog.at_level(logging.INFO, logger="tinytalk.session"):
+        await session.handle_text(
+            '{"type": "update_settings", "target_turns": 7, "page_count": 5, "tts_voice": "bf_emma"}'
+        )
+    assert tts.voices_set == ["bf_emma"]
+    assert "tts: voice set to bf_emma" in caplog.text
+
+
+async def test_update_settings_repeating_the_current_voice_does_not_reset_it(transport):
+    tts = FakeTts()
+    session = make_session(transport, tts=tts)
+    for _ in range(2):
+        await session.handle_text(
+            '{"type": "update_settings", "target_turns": 7, "page_count": 5, "tts_voice": "bf_emma"}'
+        )
+    assert tts.voices_set == ["bf_emma"]
+
+
+async def test_update_settings_with_an_unknown_tts_voice_keeps_the_current_one(transport, caplog):
+    tts = FakeTts()
+    session = make_session(transport, tts=tts)
+    with caplog.at_level(logging.WARNING, logger="tinytalk.session"):
+        await session.handle_text(
+            '{"type": "update_settings", "target_turns": 7, "page_count": 5, "tts_voice": "zz_nope"}'
+        )
+    assert tts.voices_set == []
+    assert "zz_nope" in caplog.text
+
+
+async def test_update_settings_without_a_tts_voice_leaves_the_voice_alone(transport):
+    tts = FakeTts()
+    session = make_session(transport, tts=tts)
+    await session.handle_text('{"type": "update_settings", "target_turns": 7, "page_count": 5}')
+    assert tts.voices_set == []
+
+
 async def test_update_settings_does_not_change_the_currently_in_progress_story(transport):
     """Confirms the spec's "applies to the next story, never retroactively"
     requirement: an already-constructed StoryArc keeps its original
@@ -1368,6 +1407,81 @@ async def test_a_concluding_turn_enters_rewriting_and_pushes_rewriting_started(t
 
     assert session.state is State.REWRITING
     assert "rewriting_started" in transport.types()
+
+
+def _seed_shared_fact(session, animal: str, fact: str) -> None:
+    """Stands in for AnimalFactTracker.record_turn() having already woven
+    this fact in earlier in the story -- and marks the animal as facted so
+    the concluding turn's own "tell me about a fox" transcript doesn't
+    trigger a real fact lookup."""
+    session._animal_facts._facted.add(animal)
+    session._animal_facts._shared_facts.append((animal, fact))
+
+
+async def test_rewriting_started_carries_the_story_id_and_the_shared_fact_epilogue(transport, monkeypatch):
+    # Issue #77: The End's fact line used to wait on the whole rewrite
+    # (LLM + illustrations) even though the fact is already known here.
+    monkeypatch.setattr("tinytalk.session.story_store.save_story", _fake_save_story)
+    monkeypatch.setattr(
+        "tinytalk.session.storybook.build_and_attach", _fake_build_and_attach()
+    )
+    session = make_session(transport, llm=FakeLlm(chunks=["The end."]))
+    _seed_shared_fact(session, "fox", "foxes have excellent hearing")
+
+    await run_full_turn(session)
+
+    [started] = transport.messages_of_type("rewriting_started")
+    assert started == {
+        "type": "rewriting_started",
+        "story_id": "fakestory0",
+        "epilogue": "And one true thing we learned about the fox: foxes have excellent hearing",
+    }
+
+
+async def test_rewriting_started_omits_the_epilogue_when_no_fact_was_shared(transport, monkeypatch):
+    monkeypatch.setattr("tinytalk.session.story_store.save_story", _fake_save_story)
+    monkeypatch.setattr(
+        "tinytalk.session.storybook.build_and_attach", _fake_build_and_attach()
+    )
+    session = make_session(transport, llm=FakeLlm(chunks=["The end."]))
+    session._animal_facts._facted.add("fox")
+
+    await run_full_turn(session)
+
+    [started] = transport.messages_of_type("rewriting_started")
+    assert started == {"type": "rewriting_started", "story_id": "fakestory0"}
+
+
+async def test_rewriting_started_omits_an_epilogue_that_fails_the_safety_check(transport, monkeypatch):
+    # Same last-line-of-defense check build_and_attach() applies before
+    # persisting the epilogue -- the early copy must not skip it.
+    monkeypatch.setattr("tinytalk.session.story_store.save_story", _fake_save_story)
+    monkeypatch.setattr(
+        "tinytalk.session.storybook.build_and_attach", _fake_build_and_attach()
+    )
+    session = make_session(transport, llm=FakeLlm(chunks=["The end."]))
+    _seed_shared_fact(session, "fox", "foxes sometimes kill their prey with a swift bite")
+
+    await run_full_turn(session)
+
+    [started] = transport.messages_of_type("rewriting_started")
+    assert started == {"type": "rewriting_started", "story_id": "fakestory0"}
+
+
+async def test_resend_current_status_repushes_the_same_epilogue(transport, monkeypatch):
+    monkeypatch.setattr("tinytalk.session.story_store.save_story", _fake_save_story)
+    monkeypatch.setattr(
+        "tinytalk.session.storybook.build_and_attach", _fake_build_and_attach()
+    )
+    session = make_session(transport, llm=FakeLlm(chunks=["The end."]))
+    _seed_shared_fact(session, "fox", "foxes have excellent hearing")
+    await run_full_turn(session)
+    first = transport.messages_of_type("rewriting_started")
+    transport.text.clear()
+
+    await session.resend_current_status()
+
+    assert transport.messages_of_type("rewriting_started") == first
 
 
 async def test_rewriting_releases_back_to_idle_once_the_rewrite_finishes(transport, monkeypatch):

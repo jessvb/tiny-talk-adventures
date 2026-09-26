@@ -36,6 +36,10 @@ struct SettingsView: View {
     /// speechVoices() entry) -- well past what UIMenu handles reliably;
     /// a List-based sheet has no such limit.
     @State private var showVoicePickerSheet = false
+    /// The home server's (Kokoro) voice list, issue #78 -- its own sheet
+    /// for the same UIMenu reason, and its own row because Kokoro voice
+    /// IDs and AVSpeech voices are unrelated catalogs.
+    @State private var showHomeVoicePickerSheet = false
     /// Issue #56 item 2: the Cloudflare account id is a 32-character
     /// string with no natural error-checking of its own (unlike an API key,
     /// nothing rejects a mistyped one until the first illustration call
@@ -68,6 +72,9 @@ struct SettingsView: View {
         }
         .sheet(isPresented: $showVoicePickerSheet) {
             VoicePickerSheet(model: model)
+        }
+        .sheet(isPresented: $showHomeVoicePickerSheet) {
+            HomeVoicePickerSheet(model: model)
         }
     }
 
@@ -293,6 +300,12 @@ struct SettingsView: View {
                         )
                 }
 
+                homeVoicePickerRow
+
+                Text("Elsie's voice when she talks through your Mac. Changes from her next sentence; works even while not connected (sent when the app next connects).")
+                    .font(TTA.Typography.body(12.5))
+                    .foregroundColor(TTA.Palette.inkSoft)
+
                 Divider().padding(.vertical, 4)
 
                 Text("Away from home")
@@ -303,6 +316,7 @@ struct SettingsView: View {
                     .font(TTA.Typography.body(12.5))
                     .foregroundColor(TTA.Palette.inkSoft)
 
+                keyFieldLabel("GROQ API KEY")
                 SecureField("Groq API key", text: $groqApiKey)
                     .font(.system(.body, design: .monospaced))
                     .padding(11)
@@ -316,6 +330,7 @@ struct SettingsView: View {
                         }
                     }
 
+                keyFieldLabel("API NINJAS KEY (ANIMAL FACTS)")
                 SecureField("API Ninjas key (optional -- animal facts)", text: $animalFactsApiKey)
                     .font(.system(.body, design: .monospaced))
                     .padding(11)
@@ -333,6 +348,7 @@ struct SettingsView: View {
                     .font(TTA.Typography.body(12.5))
                     .foregroundColor(TTA.Palette.inkSoft)
 
+                keyFieldLabel("CLOUDFLARE ACCOUNT ID")
                 HStack(spacing: 8) {
                     Group {
                         if showCloudflareAccountId {
@@ -361,6 +377,7 @@ struct SettingsView: View {
                     }
                 }
 
+                keyFieldLabel("CLOUDFLARE API TOKEN")
                 SecureField("Cloudflare API token (optional -- pictures)", text: $cloudflareApiToken)
                     .font(.system(.body, design: .monospaced))
                     .padding(11)
@@ -424,7 +441,7 @@ struct SettingsView: View {
     /// -- see showVoicePickerSheet's own doc comment for why.
     private var voicePickerRow: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("STORYTELLER VOICE")
+            Text("AWAY-FROM-HOME VOICE")
                 .font(TTA.Typography.display(12))
                 .tracking(1.5)
                 .foregroundColor(TTA.Palette.inkSoft)
@@ -444,6 +461,43 @@ struct SettingsView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
             }
         }
+    }
+
+    /// Issue #78: the home server's (Kokoro) voice -- see
+    /// showHomeVoicePickerSheet's doc comment for why this is separate
+    /// from voicePickerRow.
+    private var homeVoicePickerRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("HOME VOICE")
+                .font(TTA.Typography.display(12))
+                .tracking(1.5)
+                .foregroundColor(TTA.Palette.inkSoft)
+
+            Button {
+                showHomeVoicePickerSheet = true
+            } label: {
+                HStack {
+                    Text(KokoroVoices.displayName(for: model.homeVoiceID))
+                        .foregroundColor(TTA.Palette.ink)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .foregroundColor(TTA.Palette.inkSoft)
+                }
+                .padding(11)
+                .background(TTA.Palette.paper)
+                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+            }
+        }
+    }
+
+    /// Always-visible name for a key field: the placeholder alone
+    /// disappears once a key is saved, leaving four identical rows of dots.
+    private func keyFieldLabel(_ text: String) -> some View {
+        Text(text)
+            .font(TTA.Typography.display(12))
+            .tracking(1.5)
+            .foregroundColor(TTA.Palette.inkSoft)
+            .padding(.bottom, -4)
     }
 
     private func infoRow(_ label: String, _ value: String) -> some View {
@@ -561,7 +615,7 @@ struct VoicePickerSheet: View {
             // already uses regardless of system appearance.
             .scrollContentBackground(.hidden)
             .background(TTA.Palette.outerPaper)
-            .navigationTitle("Storyteller voice")
+            .navigationTitle("Away-from-home voice")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -587,5 +641,46 @@ struct VoicePickerSheet: View {
             }
         }
         .listRowBackground(TTA.Palette.paper)
+    }
+}
+
+/// Issue #78: picks Elsie's voice on the home server (Kokoro TTS) from
+/// the fixed KokoroVoices list -- same List-in-a-sheet shape and paper
+/// background as VoicePickerSheet above, for the same reasons.
+struct HomeVoicePickerSheet: View {
+    @ObservedObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationView {
+            List {
+                ForEach(KokoroVoices.all) { voice in
+                    Button {
+                        model.setHomeVoiceID(voice.id)
+                        dismiss()
+                    } label: {
+                        HStack {
+                            Text(voice.displayName)
+                                .foregroundColor(TTA.Palette.ink)
+                            Spacer()
+                            if model.homeVoiceID == voice.id {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(TTA.Palette.wood)
+                            }
+                        }
+                    }
+                    .listRowBackground(TTA.Palette.paper)
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(TTA.Palette.outerPaper)
+            .navigationTitle("Home voice")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
     }
 }

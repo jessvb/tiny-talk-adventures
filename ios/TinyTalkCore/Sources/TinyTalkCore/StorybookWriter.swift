@@ -58,22 +58,41 @@ public struct StorybookWriter: Sendable {
         self.maxAttempts = max(1, maxAttempts)
     }
 
+    private static func pairs(_ sharedFacts: [[String]]) -> [(animal: String, fact: String)] {
+        sharedFacts.compactMap { pair in
+            pair.count == 2 ? (animal: pair[0], fact: pair[1]) : nil
+        }
+    }
+
+    /// The one place the epilogue's wording lives on the phone (mirrors
+    /// storybook.py's derive_epilogue()); nil when no fact was shared.
+    public static func epilogue(sharedFacts: [[String]]) -> String? {
+        pairs(sharedFacts).first.map {
+            "And one true thing we learned about the \($0.animal): \($0.fact)"
+        }
+    }
+
+    /// The epilogue as sent with rewriting_started, before the rewrite
+    /// runs (issue #77) -- with the same kid-safety check write() applies
+    /// before saving it: nil if anything is flagged.
+    public static func earlyEpilogue(sharedFacts: [[String]]) -> String? {
+        guard let epilogue = epilogue(sharedFacts: sharedFacts),
+              Safety.findBlocked(epilogue).isEmpty else { return nil }
+        return epilogue
+    }
+
     /// Returns nil for "failed": the reply never parsed, or stayed unsafe,
     /// after every attempt -- or the chat call itself threw. The caller
     /// keeps the raw transcript either way (same as storybook.py's
     /// "failed" status leaving `turns` untouched).
     public func write(turns: [PendingDemoStoryTurn], sharedFacts: [[String]], pageCount: Int) async -> WrittenStorybook? {
-        let facts: [(animal: String, fact: String)] = sharedFacts.compactMap { pair in
-            pair.count == 2 ? (animal: pair[0], fact: pair[1]) : nil
-        }
+        let facts = Self.pairs(sharedFacts)
         // The spec requires the epilogue to always be a real fact the story
         // actually shared, never something the model invents -- so the
         // model's own "epilogue" text (whatever it is) is never used. When
         // real facts exist it is always formatted here, from the first one;
         // otherwise it is omitted, regardless of what the model volunteered.
-        let epilogue: String? = facts.first.map {
-            "And one true thing we learned about the \($0.animal): \($0.fact)"
-        }
+        let epilogue = Self.epilogue(sharedFacts: sharedFacts)
 
         var messages: [[String: String]] = [
             ["role": "system", "content": Self.systemPrompt],

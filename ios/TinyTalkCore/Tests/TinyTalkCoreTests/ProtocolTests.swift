@@ -159,6 +159,27 @@ final class ProtocolTests: XCTestCase {
         )
     }
 
+    func testUpdateSettingsEncodesTtsVoiceWhenPresent() {
+        XCTAssertEqual(
+            ClientMessage.updateSettings(targetTurns: 7, pageCount: 5, ttsVoice: "bf_emma").encode(),
+            #"{"type":"update_settings","target_turns":7,"page_count":5,"tts_voice":"bf_emma"}"#
+        )
+        XCTAssertEqual(
+            ClientMessage.updateSettings(targetTurns: 7, pageCount: 5, llmBackend: "groq", ttsVoice: "af_heart").encode(),
+            #"{"type":"update_settings","target_turns":7,"page_count":5,"llm_backend":"groq","tts_voice":"af_heart"}"#
+        )
+    }
+
+    func testKokoroVoiceCatalogHasTheServerDefaultAndLooksUpNames() {
+        XCTAssertEqual(KokoroVoices.defaultID, "af_heart")
+        XCTAssertTrue(KokoroVoices.all.contains { $0.id == KokoroVoices.defaultID })
+        XCTAssertEqual(Set(KokoroVoices.all.map(\.id)).count, KokoroVoices.all.count)
+        XCTAssertEqual(KokoroVoices.displayName(for: "bf_emma"), "Emma (British, female)")
+        // An ID this build doesn't know (e.g. a stale persisted value)
+        // still shows something rather than a blank row.
+        XCTAssertEqual(KokoroVoices.displayName(for: "zz_gone"), "zz_gone")
+    }
+
     func testDecodesLlmBackendStatus() throws {
         let event = try decodeServerEvent(
             #"{"type": "llm_backend", "requested": "groq", "active": "ollama", "groq_available": false}"#
@@ -229,7 +250,25 @@ final class ProtocolTests: XCTestCase {
 
     func testDecodesRewritingStarted() throws {
         let event = try decodeServerEvent(#"{"type": "rewriting_started"}"#)
-        XCTAssertEqual(event, .rewritingStarted)
+        XCTAssertEqual(event, .rewritingStarted(storyId: nil, epilogue: nil))
+    }
+
+    func testDecodesRewritingStartedWithItsStoryIdAndEpilogue() throws {
+        let event = try decodeServerEvent(
+            #"{"type": "rewriting_started", "story_id": "abc", "epilogue": "And one true thing we learned about the fox: foxes hear well"}"#
+        )
+        XCTAssertEqual(event, .rewritingStarted(
+            storyId: "abc", epilogue: "And one true thing we learned about the fox: foxes hear well"
+        ))
+    }
+
+    func testTheEndPrefersTheStoredEpilogueElseTheEarlyOneForThatStory() {
+        let pending = SavedStoryDetail(id: "abc", title: nil, pages: [], epilogue: nil, rewriteStatus: .pending)
+        XCTAssertEqual(pending.theEndEpilogue(early: ["abc": "early fact"]), "early fact")
+        XCTAssertNil(pending.theEndEpilogue(early: ["other": "someone else's fact"]),
+                     "another story's fact must never show on this story's End screen")
+        let done = SavedStoryDetail(id: "abc", title: "T", pages: [], epilogue: "stored fact", rewriteStatus: .done)
+        XCTAssertEqual(done.theEndEpilogue(early: ["abc": "early fact"]), "stored fact")
     }
 
     func testDecodesRewritingDone() throws {

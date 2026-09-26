@@ -143,6 +143,9 @@ class SessionRunner:
         self._groq_llm = groq_llm
         self._llm_backend = llm_backend
         self._tts = tts
+        # What self._tts was last told to use (issue #78) -- starts at the
+        # engine's own startup default, config.KOKORO_VOICE.
+        self._tts_voice = config.KOKORO_VOICE
         self._image_backend = image_backend
         self._system_prompt = system_prompt
         self._conversation = conversation or Conversation()
@@ -155,6 +158,10 @@ class SessionRunner:
         self._machine = TurnStateMachine()
         self._turn_task: asyncio.Task | None = None
         self._rewrite_task: asyncio.Task | None = None
+        # The rewriting_started message last sent for a concluded story --
+        # kept so resend_current_status() can repeat its story_id/epilogue
+        # to a reconnecting phone instead of a bare one.
+        self._rewriting_started_message = encode_rewriting_started()
         # (sentence text, estimated real-world time.monotonic() at which
         # the child would actually have finished HEARING it) -- see
         # _run_turn()'s TTS loop and _cancel_turn() for why "sent" and
@@ -227,9 +234,14 @@ class SessionRunner:
             case SyncDemoStories(stories=stories):
                 await self.handle_sync_demo_stories(stories)
             case UpdateSettings(
-                target_turns=target_turns, page_count=page_count, llm_backend=llm_backend
+                target_turns=target_turns,
+                page_count=page_count,
+                llm_backend=llm_backend,
+                tts_voice=tts_voice,
             ):
-                await self.handle_update_settings(target_turns, page_count, llm_backend)
+                await self.handle_update_settings(
+                    target_turns, page_count, llm_backend, tts_voice
+                )
 
     async def handle_conclude_story(self, turn_id: int) -> None:
         """The "Finish this story" action: cancels whatever's in flight
@@ -327,7 +339,11 @@ class SessionRunner:
         logger.info("next story llm: %s", self._story_llm_name)
 
     async def handle_update_settings(
-        self, target_turns: int, page_count: int, llm_backend: str | None = None
+        self,
+        target_turns: int,
+        page_count: int,
+        llm_backend: str | None = None,
+        tts_voice: str | None = None,
     ) -> None:
         """Parent-adjustable story-length settings from the Settings
         screen -- see protocol.py's UpdateSettings and this project's
@@ -353,6 +369,8 @@ class SessionRunner:
         # retroactively" half of the requirement.
         if not self._story_arc.has_started:
             self._begin_story()
+        if tts_voice is not None:
+            self._apply_tts_voice(tts_voice)
         _, active = self._resolve_llm()
         logger.info(
             "update_settings: target_turns=%d, page_count=%d, llm_backend=%s "
@@ -366,6 +384,25 @@ class SessionRunner:
             await self._send_text_unbuffered(
                 encode_llm_backend(self._llm_backend, active, self._groq_llm is not None)
             )
+
+    def _apply_tts_voice(self, voice: str) -> None:
+        """The parent's "Home voice" choice (issue #78). Unlike the story
+        settings above, this takes effect from the next synthesized
+        sentence, not the next story -- a voice isn't part of a story.
+        An ID outside config.KOKORO_VOICES (e.g. from a newer phone build
+        that knows voices this server doesn't) is ignored rather than
+        handed to Kokoro, which would try to download it from Hugging
+        Face and fail the turn if it doesn't exist."""
+        if voice not in config.KOKORO_VOICES:
+            logger.warning("tts: ignoring unknown voice %r (keeping %s)", voice, self._tts_voice)
+            return
+        if voice == self._tts_voice:
+            return
+        # Runs on the event loop, same thread every synthesize() call
+        # reads the voice from -- see KokoroTts.set_voice.
+        self._tts.set_voice(voice)
+        self._tts_voice = voice
+        logger.info("tts: voice set to %s", voice)
 
     async def handle_get_story(self, story_id: str) -> None:
         story = story_store.load_story(story_id)
@@ -527,7 +564,7 @@ class SessionRunner:
         rewrite is still in flight must be told so immediately, not left
         to assume it's free to start a new story."""
         if self._machine.state is State.REWRITING:
-            await self._send_text_unbuffered(encode_rewriting_started())
+            await self._send_text_unbuffered(self._rewriting_started_message)
 
     @property
     def transport_generation(self) -> int:
@@ -995,7 +1032,13 @@ class SessionRunner:
                 if saved_path is not None:
                     logger.info("story saved to %s", saved_path)
                     story_id = story_store.story_id_from_path(saved_path)
-                    await self._send_text_unbuffered(encode_rewriting_started())
+                    # The fact line goes out now, not with the finished
+                    # rewrite: it is already known and doesn't depend on
+                    # the slow LLM/illustration pass (issue #77).
+                    self._rewriting_started_message = encode_rewriting_started(
+                        story_id, storybook.early_epilogue(shared_facts)
+                    )
+                    await self._send_text_unbuffered(self._rewriting_started_message)
                     logger.info(
                         "storybook rewrite for %s using %s", story_id, story_llm_name
                     )
