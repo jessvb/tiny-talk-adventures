@@ -41,7 +41,7 @@ struct ReadingView: View {
 
             TabView(selection: $pageIndex) {
                 ForEach(Array(detail.pages.enumerated()), id: \.offset) { index, page in
-                    pageView(page, index: index)
+                    pageView(page, index: index, epilogue: detail.readingEpilogue(onPage: index))
                         .tag(index)
                 }
             }
@@ -82,25 +82,69 @@ struct ReadingView: View {
         model.requestPageImage(storyId: storyId, pageIndex: index)
     }
 
-    private func pageView(_ page: StoryPage, index: Int) -> some View {
+    private func pageView(_ page: StoryPage, index: Int, epilogue: String?) -> some View {
         VStack(spacing: 0) {
             pageArt(for: page, storyId: model.selectedStory?.id, index: index)
                 .frame(height: 260)
 
-            VStack(alignment: .leading, spacing: 10) {
-                Text("PAGE \(index + 1)")
-                    .font(TTA.Typography.display(14))
-                    .tracking(2)
-                    .foregroundColor(TTA.Palette.scarf)
-                Text(page.text)
-                    .font(TTA.Typography.story(22))
-                    .foregroundColor(TTA.Palette.ink)
+            // Scrolls only when the text doesn't fit (a long last page plus
+            // its fact line on a small phone). pageText's bottom padding
+            // keeps the page dots overlay (plus home indicator -- the
+            // TabView ignores the safe area) out of what counts as "fits",
+            // and lets the last line scroll clear of it.
+            ViewThatFits(in: .vertical) {
+                pageText(page, index: index, epilogue: epilogue)
+                ScrollView {
+                    pageText(page, index: index, epilogue: epilogue)
+                }
             }
-            .padding(28)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(TTA.Palette.paper)
         }
         .background(TTA.Palette.paper)
+    }
+
+    private func pageText(_ page: StoryPage, index: Int, epilogue: String?) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("PAGE \(index + 1)")
+                .font(TTA.Typography.display(14))
+                .tracking(2)
+                .foregroundColor(TTA.Palette.scarf)
+            Text(page.text)
+                .font(TTA.Typography.story(22))
+                .foregroundColor(TTA.Palette.ink)
+                .fixedSize(horizontal: false, vertical: true)
+            if let epilogue {
+                factLine(epilogue)
+                    .padding(.top, 8)
+            }
+        }
+        .padding([.horizontal, .top], 28)
+        .padding(.bottom, 110)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    /// The story's "one true thing we learned" line (issue #81), the same
+    /// fact The End shows, so a child re-reading a saved book sees it too.
+    /// Visual only: the 🔊 replay still reads just the page text.
+    private func factLine(_ epilogue: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(TTA.Palette.gold)
+            Text(epilogue)
+                .font(TTA.Typography.story(18, italic: true))
+                .foregroundColor(TTA.Palette.inkSoft)
+                .fixedSize(horizontal: false, vertical: true)
+            Image(systemName: "sparkles")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(TTA.Palette.gold)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(TTA.Palette.gold.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     @ViewBuilder
