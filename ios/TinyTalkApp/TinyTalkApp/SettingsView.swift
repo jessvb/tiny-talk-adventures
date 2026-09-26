@@ -316,6 +316,7 @@ struct SettingsView: View {
                     .font(TTA.Typography.body(12.5))
                     .foregroundColor(TTA.Palette.inkSoft)
 
+                keyFieldLabel("GROQ API KEY")
                 SecureField("Groq API key", text: $groqApiKey)
                     .font(.system(.body, design: .monospaced))
                     .padding(11)
@@ -329,6 +330,7 @@ struct SettingsView: View {
                         }
                     }
 
+                keyFieldLabel("API NINJAS KEY (ANIMAL FACTS)")
                 SecureField("API Ninjas key (optional -- animal facts)", text: $animalFactsApiKey)
                     .font(.system(.body, design: .monospaced))
                     .padding(11)
@@ -346,6 +348,7 @@ struct SettingsView: View {
                     .font(TTA.Typography.body(12.5))
                     .foregroundColor(TTA.Palette.inkSoft)
 
+                keyFieldLabel("CLOUDFLARE ACCOUNT ID")
                 HStack(spacing: 8) {
                     Group {
                         if showCloudflareAccountId {
@@ -374,6 +377,7 @@ struct SettingsView: View {
                     }
                 }
 
+                keyFieldLabel("CLOUDFLARE API TOKEN")
                 SecureField("Cloudflare API token (optional -- pictures)", text: $cloudflareApiToken)
                     .font(.system(.body, design: .monospaced))
                     .padding(11)
@@ -484,6 +488,16 @@ struct SettingsView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
             }
         }
+    }
+
+    /// Always-visible name for a key field: the placeholder alone
+    /// disappears once a key is saved, leaving four identical rows of dots.
+    private func keyFieldLabel(_ text: String) -> some View {
+        Text(text)
+            .font(TTA.Typography.display(12))
+            .tracking(1.5)
+            .foregroundColor(TTA.Palette.inkSoft)
+            .padding(.bottom, -4)
     }
 
     private func infoRow(_ label: String, _ value: String) -> some View {
