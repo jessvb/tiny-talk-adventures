@@ -79,6 +79,14 @@ public struct SavedStoryDetail: Equatable, Sendable {
         self.rewriteStatus = rewriteStatus
         self.illustrationsStatus = illustrationsStatus
     }
+
+    /// The End's fact line: the stored epilogue once the rewrite has
+    /// saved one, else the one rewriting_started carried for THIS story id
+    /// (issue #77) -- the rewrite can take minutes, or fail outright.
+    /// Keyed by id so one story's fact never shows on another's End screen.
+    public func theEndEpilogue(early: [String: String]) -> String? {
+        epilogue ?? early[id]
+    }
 }
 
 /// Library card caption text ("today" / "yesterday" / "N days ago" / "N

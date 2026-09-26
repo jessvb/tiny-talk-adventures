@@ -177,11 +177,13 @@ public enum ServerEvent: Sendable, Equatable {
     case error(String, turnId: Int)
     /// A story just concluded and its background storybook rewrite has
     /// started -- see server/tinytalk/protocol.py's encode_rewriting_started().
-    /// Carries no turn_id or story_id: see SessionCoordinator's
-    /// readyToShowTheEnd doc comment for why arrival of this event alone
-    /// is NOT sufficient to know the concluding turn's audio has finished
-    /// playing.
-    case rewritingStarted
+    /// Carries no turn_id: see SessionCoordinator's readyToShowTheEnd doc
+    /// comment for why arrival of this event alone is NOT sufficient to
+    /// know the concluding turn's audio has finished playing. `storyId`
+    /// and `epilogue` (the story's fact line, known before the rewrite
+    /// runs -- issue #77) are nil from an older server, and `epilogue` is
+    /// nil whenever the story shared no fact.
+    case rewritingStarted(storyId: String?, epilogue: String?)
     /// The background rewrite finished (successfully or not) -- see
     /// encode_rewriting_done(). Carries no story_id; the client already
     /// knows which story it's waiting on (the most recent one) from
@@ -229,7 +231,9 @@ public func decodeServerEvent(_ raw: String) throws -> ServerEvent {
     case "error":
         return .error(json["message"] as? String ?? "", turnId: turnId)
     case "rewriting_started":
-        return .rewritingStarted
+        return .rewritingStarted(
+            storyId: json["story_id"] as? String, epilogue: json["epilogue"] as? String
+        )
     case "rewriting_done":
         return .rewritingDone
     case "story_list":

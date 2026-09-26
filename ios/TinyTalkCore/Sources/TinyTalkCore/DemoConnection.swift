@@ -522,9 +522,11 @@ public final class DemoConnection: ServerConnecting, @unchecked Sendable {
         // backgrounded) would wrongly mark the story failed.
         guard let library else { return }
         library.begin(payload, pageCount: pageCount)
-        continuation.yield(.message(.rewritingStarted))
-        let continuation = self.continuation
         let storyId = payload.id
+        continuation.yield(.message(.rewritingStarted(
+            storyId: storyId, epilogue: StorybookWriter.earlyEpilogue(sharedFacts: payload.sharedFacts)
+        )))
+        let continuation = self.continuation
         Task {
             await library.buildStorybook(id: storyId)
             continuation.yield(.message(.rewritingDone))

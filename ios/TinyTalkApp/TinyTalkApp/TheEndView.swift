@@ -47,7 +47,11 @@ struct TheEndView: View {
                         .foregroundColor(Color(hex: 0xffe9b8))
                         .padding(.top, 26)
 
-                    if let epilogue = detail.epilogue {
+                    // Not just detail.epilogue: that only arrives once the
+                    // whole rewrite (pages + illustrations) finishes, while
+                    // the fact itself is known the moment the story ends
+                    // (issue #77).
+                    if let epilogue = detail.theEndEpilogue(early: model.earlyEpilogues) {
                         Text(epilogue)
                             .font(TTA.Typography.body(16))
                             .foregroundColor(Color(hex: 0xe6dcf5))

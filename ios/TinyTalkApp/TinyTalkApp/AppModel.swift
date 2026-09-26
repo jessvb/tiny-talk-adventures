@@ -133,6 +133,12 @@ final class AppModel: ObservableObject {
     /// from is harmless (ReadingView only ever reads the key for its
     /// own selectedStory).
     @Published private(set) var pageImages: [String: Data] = [:]
+    /// Each concluded story's fact line, keyed by story id, as
+    /// rewriting_started carried it -- so TheEndView can show it before
+    /// the rewrite saves selectedStory.epilogue (issue #77). Merged from
+    /// the coordinator like pageImages and, like it, never cleared: keyed
+    /// by id, an old entry can't show on another story's End screen.
+    @Published private(set) var earlyEpilogues: [String: String] = [:]
     /// Mirrors the coordinator's isRewriting -- a UI (TheEndView) polls
     /// this to show/hide a "still being created" state.
     @Published var isRewriting = false
@@ -1444,6 +1450,7 @@ final class AppModel: ObservableObject {
                 let storyDetail = await coordinator.latestStoryDetail
                 let llmStatus = await coordinator.latestLlmBackendStatus
                 let coordinatorPageImages = await coordinator.pageImages
+                let coordinatorEarlyEpilogues = await coordinator.earlyEpilogues
                 // Read regardless of `closed` (cheap, and reading it only
                 // inside the `guard closed` branch below would still be
                 // correct -- kept alongside the other coordinator reads
@@ -1598,6 +1605,11 @@ final class AppModel: ObservableObject {
                     // whichever request's response arrived first.
                     for (key, data) in coordinatorPageImages where self.pageImages[key] == nil {
                         self.pageImages[key] = data
+                    }
+                    // Same union merge, so a fact survives the coordinator
+                    // being replaced (disconnect/backgrounding).
+                    for (storyId, epilogue) in coordinatorEarlyEpilogues where self.earlyEpilogues[storyId] != epilogue {
+                        self.earlyEpilogues[storyId] = epilogue
                     }
 
                     // The rewrite just finished (isRewriting's true->false
