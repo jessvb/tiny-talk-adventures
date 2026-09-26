@@ -87,6 +87,14 @@ public struct SavedStoryDetail: Equatable, Sendable {
     public func theEndEpilogue(early: [String: String]) -> String? {
         epilogue ?? early[id]
     }
+
+    /// Reading's fact line for page `index`: the stored epilogue, on the
+    /// last page only (issue #81). No early fallback needed -- Reading
+    /// only has pages to show once the rewrite has saved them, and the
+    /// epilogue is saved in that same step.
+    public func readingEpilogue(onPage index: Int) -> String? {
+        index == pages.count - 1 ? epilogue : nil
+    }
 }
 
 /// Library card caption text ("today" / "yesterday" / "N days ago" / "N
