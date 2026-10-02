@@ -74,14 +74,14 @@ section.wrap{padding-top:clamp(32px,5vw,56px);padding-bottom:clamp(32px,5vw,56px
 
 <header class="wrap">
   <div class="kicker">WORKING WITH CLAUDE CODE</div>
-  <h1>Claude wrote code quickly, so my own time became the bottleneck</h1>
-  <p class="lede">When generating changes is nearly free, two things become scarce: the model's useful context, and my time to verify. Here are four habits I built around that, including two skills I wrote with Claude: <code>/handoff</code> and <code>/fix-issues</code>.</p>
+  <h1>Habits for coding with Claude</h1>
+  <p class="lede">When generating changes is fast, two things become scarce: the model's useful context, and my time to verify. Here are four habits I built around that, including two skills I wrote with Claude: <code>/handoff</code> and <code>/fix-issues</code>.</p>
 </header>
 
 <section class="wrap">
   <div class="sec-head"><span class="kicker">01 · CONTEXT</span><span class="sec-tool">/handoff</span></div>
   <h2>Stop a session before it stops working well</h2>
-  <p class="intro">Long sessions degrade: settled decisions get re-debated, and automatic compaction keeps what's <em>recent</em> rather than what <em>matters</em>. So I start one session per substantial task, and at about 70% context I run my <code>/handoff</code> skill, <code>/clear</code>, and start fresh from the generated <code>progress.md</code> summary.</p>
+  <p class="intro">Long sessions degrade: settled decisions get re-debated, and automatic compaction keeps what's <em>recent</em> rather than what <em>matters</em>. So, I start one session per substantial task, and at about 70% context I run my <code>/handoff</code> skill, <code>/clear</code>, and start fresh from the generated <code>progress.md</code> summary.</p>
 
   <div class="card diagram-scroll">
     <svg viewBox="0 0 1000 300" style="min-width:600px" role="img" aria-label="Output quality stays high early in a session and declines past about 70% context; /handoff resets to a fresh session">
@@ -120,7 +120,7 @@ section.wrap{padding-top:clamp(32px,5vw,56px);padding-bottom:clamp(32px,5vw,56px
 
 <section class="wrap">
   <div class="sec-head"><span class="kicker">02 · PARALLELISM</span><span class="sec-tool">git worktrees · /color · /rename</span></div>
-  <h2>Several sessions, each in its own worktree</h2>
+  <h2>Several sessions with "coloured" worktrees</h2>
   <p class="intro">Each task gets its own checkout and branch, so sessions can't touch each other's files and nothing merges until it's ready. The bigger change is what gets worked on: with more than one slot, the small diagnostic or docs refresh no longer loses to the next feature.</p>
 
   <div class="card diagram-scroll">
@@ -149,7 +149,7 @@ section.wrap{padding-top:clamp(32px,5vw,56px);padding-bottom:clamp(32px,5vw,56px
   <div class="grid" style="--min:250px">
     <div class="tile"><h3><code>/color</code> + <code>/rename</code></h3><p>Four identical terminals is how you test the wrong branch for twenty minutes. A colour and a name make it obvious which one is the mic fix.</p></div>
     <div class="tile"><h3>Check before trusting local state</h3><p>A PR merged by one session once made another's branch look stale. New sessions now list open PRs and worktrees first.</p></div>
-    <div class="tile"><h3>Cap it at four</h3><p>Five heavy agents at once hit a rate limit and four of them died, so four is the cap.</p></div>
+    <div class="tile"><h3>Cap it at four</h3><p>Five heavy agents at once hit a rate limit and four of them died, so four is the cap, given my current Claude plan.</p></div>
   </div>
 </section>
 
@@ -171,7 +171,7 @@ section.wrap{padding-top:clamp(32px,5vw,56px);padding-bottom:clamp(32px,5vw,56px
 
 <section class="wrap batch">
   <div class="sec-head"><span class="kicker">04 · BATCHING</span><span class="sec-tool">/fix-issues</span></div>
-  <h2>Fixes are quick now. <em>Testing them</em> takes the time.</h2>
+  <h2>Since fixes are quick, <em>test less</em> with batches.</h2>
   <p class="intro">Every fix here needs a person, a phone and real speech to verify. Fixing issues one at a time means a test session per fix and a context switch each time. So issues go into GitHub as a backlog, and get fixed in <b>batches that I test once</b> using my skill, <code>/fix-issues</code>.</p>
 
   <div class="card diagram-scroll">
