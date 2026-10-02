@@ -93,9 +93,8 @@ footer.wrap{align-items:flex-end}
 
 <header class="wrap">
   <div class="kicker">DEVELOPMENT JOURNEY</div>
-  <h1>The code was the easy part; testing on real hardware wasn't</h1>
-  <p class="lede">Tiny Talk was built as a sequence of small sub-projects, each with a written design spec before any code. Because every interesting failure ended up changing a spec, they're all written down in the repo.</p>
-  <p class="lede">Here are four of them.</p>
+  <h1>Timeline</h1>
+  <p class="lede">Tiny Talk was built as a sequence of small sub-projects, each with a written design spec before any code. Along the way, there were interesting failures and learnings, four of which I describe below.</p>
 </header>
 
 <div class="wrap timeline-wrap">
@@ -120,8 +119,8 @@ footer.wrap{align-items:flex-end}
 
 <section class="wrap">
   <div class="kicker">REALTIME FACTOR</div>
-  <h2 style="margin-bottom:16px">You cannot ask a five-year-old to talk more slowly</h2>
-  <p class="intro">Audio arrives from the phone at exactly one second per second. If the transcriber decodes a second of speech in more than a second, the backlog keeps growing and never recovers, because there's no slack anywhere in the system to catch up.</p>
+  <h2 style="margin-bottom:16px">You can't ask a five-year-old to talk more slowly</h2>
+  <p class="intro">If the audio transcriber takes longer than a second to decode a second of speech, the backlog keeps growing and never recovers, because there's no slack in the system to catch up.</p>
 
   <div class="card bars">
     <div>
@@ -152,7 +151,7 @@ footer.wrap{align-items:flex-end}
 
 <section class="wrap" style="padding-bottom:clamp(24px,4vw,40px)">
   <div class="kicker">FOUR CASE STUDIES</div>
-  <h2 style="margin-bottom:10px">Four bugs, start to finish</h2>
+  <h2 style="margin-bottom:10px">Four bugs and respective learnings</h2>
   <p class="intro" style="font-size:15.5px;color:var(--ink-4);max-width:64ch">Open one to see the full story.</p>
 
   <div class="cases">
@@ -166,7 +165,7 @@ footer.wrap{align-items:flex-end}
         <div><h4 style="color:var(--accent)">THE PROBLEM</h4><p>Sessions would die, seemingly at random, forty seconds into a conversation. It looked like a networking bug: a flaky WebSocket, or something iOS does when backgrounding.</p></div>
         <div><h4 style="color:var(--gold)">WHY IT WAS HARD</h4><p>It presented as a transport failure but originated three layers away, in model choice. The transcriber was decoding slower than realtime, so audio piled up unprocessed. That backlog paused the TCP socket; with the socket paused, the keepalive PONG went unread; and the server, seeing no PONG, correctly concluded a dead client and hung up on a perfectly healthy phone. None of the symptoms pointed at the transcriber.</p></div>
         <div><h4 style="color:var(--ink-4)">WHAT WAS CONSIDERED</h4><p>Decoupling the socket read loop from processing was the intuitive fix, and it was applied. It worked, in the narrow sense: the disconnects stopped. But instead of disconnecting, the app now hung, because the backlog was still growing and the turn never began. At that point it was clear nothing downstream could fix it.</p></div>
-        <div><h4 style="color:var(--teal)">WHAT SHIPPED</h4><p>The 2.6b transcription model was replaced with the 1b, measured at 0.77× realtime against the 2.6b's 1.7–2.3× slower-than-realtime, which also freed 3.1 GB on a machine already holding two other models. The smaller model is less accurate, but that's a fine trade when the alternative is turns that never finish. A probe tool was then written that measures the configured model's realtime factor and swap pressure, and exits non-zero if it cannot keep up.</p></div>
+        <div><h4 style="color:var(--teal)">WHAT WORKED</h4><p>The 2.6b transcription model was replaced with the 1b, measured at 0.77× realtime against the 2.6b's 1.7–2.3× slower-than-realtime, which also freed 3.1 GB on a machine already holding two other models. The smaller model is less accurate, but that's a fine trade when the alternative is turns that never finish. A probe tool was then written that measures the configured model's realtime factor and swap pressure, and exits non-zero if it cannot keep up.</p></div>
         <div class="learned"><h4 style="color:var(--ink)">WHAT IT TAUGHT ME</h4><p>In a realtime system, falling below 1× means the backlog grows forever, and the failure shows up in whichever component breaks first. The code change fixed it this time; the probe is what stops it from coming back.</p></div>
       </div>
     </details>
@@ -181,7 +180,7 @@ footer.wrap{align-items:flex-end}
         <div><h4 style="color:var(--accent)">THE PROBLEM</h4><p>Replies would occasionally take minutes, or come back empty. With three models sharing 16 GB, memory pressure was the natural suspect, and swap statistics supported it.</p></div>
         <div><h4 style="color:var(--gold)">WHY IT WAS HARD</h4><p>Two plausible causes were entangled. Swapping was genuinely happening and genuinely harmful, so every measurement seemed to confirm the memory theory. Meanwhile the app's own logs showed nothing between request and reply.</p></div>
         <div><h4 style="color:var(--ink-4)">WHAT WAS CONSIDERED</h4><p>The first response was to reduce the model: a 4B instead of the 9B. That helped a little, which was misleading because it looked like confirmation. What finally worked was running the model directly from the command line with one short prompt, outside the app.</p></div>
-        <div><h4 style="color:var(--teal)">WHAT SHIPPED</h4><p>That run produced over a hundred lines of internal chain-of-thought and took about three minutes and nineteen seconds before emitting a single word of reply. The model defaults to a thinking mode this app doesn't need, since each reply is one to three spoken sentences. Thinking can be turned off per request, so I switched back to the 9B and kept its better replies. Keep-alive was separately stretched to thirty minutes, because under memory pressure the runtime evicts the model and the next request pays a multi-gigabyte reload.</p></div>
+        <div><h4 style="color:var(--teal)">WHAT WORKED</h4><p>That run produced over a hundred lines of internal chain-of-thought and took about three minutes and nineteen seconds before emitting a single word of reply. The model defaults to a "thinking mode" this app doesn't need, since each reply is one to three spoken sentences. Thinking can be turned off per request, so I switched back to the 9B and kept its better replies. Keep-alive was separately stretched to thirty minutes, because under memory pressure the runtime evicts the model and the next request pays a multi-gigabyte reload.</p></div>
         <div class="learned"><h4 style="color:var(--ink)">WHAT IT TAUGHT ME</h4><p>When two candidate causes both look right, stop instrumenting the system and go measure the dependency on its own. Also, making a symptom smaller doesn't mean you're getting closer to the cause. Shrinking the model only looked like progress.</p></div>
       </div>
     </details>
@@ -196,8 +195,8 @@ footer.wrap{align-items:flex-end}
         <div><h4 style="color:var(--accent)">THE PROBLEM</h4><p>The server would hard-crash with a SIGSEGV inside an LSTM kernel on Apple's Metal backend, deep in a third-party library, with no Python traceback worth reading.</p></div>
         <div><h4 style="color:var(--gold)">WHY IT WAS HARD</h4><p>Every signal pointed outward. A native crash inside someone else's tensor kernel makes you want to blame the kernel, the backend or the OS. There was also an easy workaround, since moving speech synthesis to CPU avoids that kind of crash entirely. But taking it would have hidden a real bug in this codebase.</p></div>
         <div><h4 style="color:var(--ink-4)">WHAT WAS CONSIDERED</h4><p>Falling back to CPU was measured and kept in reserve: it costs roughly 0.3 s of extra latency to first audio, with synthesis still running about 4.5× faster than realtime. I didn't want to use it until I understood the crash.</p></div>
-        <div><h4 style="color:var(--teal)">WHAT SHIPPED</h4><p>The real cause was in this project's own synthesis module: when a synthesis was cancelled (which happens every time a child barges in), the Metal cache was being released from a second, unlocked thread while the cancelled synthesis was still running on the worker. So the race only fired during interruptions, which is the main thing the app does. The fix was to do the release under the lock. CPU is still available as a configured fallback, but it isn't the fix.</p></div>
-        <div class="learned"><h4 style="color:var(--ink)">WHAT IT TAUGHT ME</h4><p>A crash inside a dependency tells you where memory was touched, but it doesn't tell you whose bug it is. And a workaround that works can let you ship a concurrency bug in your own code without ever finding it.</p></div>
+        <div><h4 style="color:var(--teal)">WHAT WORKED</h4><p>The real cause was in this project's own synthesis module: when a synthesis was cancelled (which happens every time a child barges in), the Metal cache was being released from a second, unlocked thread while the cancelled synthesis was still running on the worker. So the race only fired during interruptions, which is the main thing the app does. The fix was to do the release under the lock. CPU is still available as a configured fallback, but it isn't the fix.</p></div>
+        <div class="learned"><h4 style="color:var(--ink)">WHAT IT TAUGHT ME</h4><p>A crash inside a dependency tells you where memory was touched, but it doesn't tell you whose bug it is. And a workaround that works can cause a concurrency bug in your own code without ever finding it.</p></div>
       </div>
     </details>
 
@@ -208,11 +207,11 @@ footer.wrap{align-items:flex-end}
         <span class="case-mark" aria-hidden="true"></span>
       </summary>
       <div class="case-body">
-        <div><h4 style="color:var(--accent)">THE PROBLEM</h4><p>Interrupting the storyteller mid-sentence was the point of the entire project, and it was verified working on real hardware early. Then it broke repeatedly, each time via a change that had nothing obviously to do with it.</p></div>
+        <div><h4 style="color:var(--accent)">THE PROBLEM</h4><p>Allowing kids to interrupt the storyteller mid-sentence was a key goal for the project, so we verified it working on real hardware early. Then it broke repeatedly, each time because of a change that didn't seem to have anything to do with it.</p></div>
         <div><h4 style="color:var(--gold)">WHY IT WAS HARD</h4><p>Barge-in depends on the whole loop, so a change almost anywhere can break it. Pipelined playback (speaking sentence one while sentence two is still synthesising) was a clear latency win, but it let the session look idle between buffers, so an interrupt arriving in that window found nothing to cancel. A hang-guard timer measured its deadline from when an audio buffer was scheduled rather than when its turn to play actually began, so it could declare the storyteller finished while she was still talking. And interrupting the story's final reply could strand the child with no reply and no ending screen at all.</p></div>
         <div><h4 style="color:var(--ink-4)">WHAT WAS CONSIDERED</h4><p>Each of these could have been patched on its own with a longer timer, a guard flag or a special case for the last turn. But all three came from the same mix-up between what the system had scheduled and what the child had actually heard.</p></div>
-        <div><h4 style="color:var(--teal)">WHAT SHIPPED</h4><p>So the fixes all track what's been heard. Playback state now reflects audible progress rather than scheduling progress; the hang guard starts from the moment a buffer's turn to play begins; and the end-of-story path handles interruption as a normal case rather than an exception. A latched flag means a story concluded during an interrupted turn saves on the next completed turn instead of being lost or duplicated. All confirmed by hand on a real phone, along with one more bug found during that same testing session, where the ending screen failed to re-arm for a second story.</p></div>
-        <div class="learned"><h4 style="color:var(--ink)">WHAT IT TAUGHT ME</h4><p>If something has to stay true across the whole app, give it a name, or nobody will remember to check it. Here that was the gap between what the system scheduled and what the child heard. Every timer should be measured against what the child heard.</p></div>
+        <div><h4 style="color:var(--teal)">WHAT WORKED</h4><p>The fixes all track what's been heard. Playback state now reflects audible progress rather than scheduling progress; the hang guard starts from the moment a buffer's turn to play begins; and the end-of-story path handles interruption as a normal case rather than an exception. A latched flag means a story concluded during an interrupted turn saves on the next completed turn instead of being lost or duplicated. All confirmed by hand on a real phone, along with one more bug found during that same testing session, where the ending screen failed to re-arm for a second story.</p></div>
+        <div class="learned"><h4 style="color:var(--ink)">WHAT IT TAUGHT ME</h4><p>If something has to stay true across the whole app, give it a name, or nobody will remember to continually check it. Here, that was the gap between what the system scheduled and what the child heard. Every timer should be measured against what the child heard, not what the system thought it had played.</p></div>
       </div>
     </details>
   </div>
@@ -223,7 +222,7 @@ footer.wrap{align-items:flex-end}
   <h2 style="margin-bottom:16px">There is no CI that can hear a child interrupt</h2>
   <div class="grid verify">
     <div class="tile"><h3>Tests only check the logic</h3><p>The server test suite is large and useful. It catches protocol regressions, state-machine holes and parser edge cases. It cannot tell you whether barge-in feels instant, whether echo cancellation stops the storyteller interrupting itself, or whether a voice sounds warm.</p></div>
-    <div class="tile"><h3>So “done” means on-device</h3><p>The project's working rules say every change ships with device-test instructions: which worktree, whether the server needs restarting, whether the phone needs rebuilding, and a numbered script of what to say and what confirms it worked. “Tests pass” isn't enough.</p></div>
+    <div class="tile"><h3>So “done” means on-device</h3><p>The project's working rules say every change needs device-test instructions: which worktree, whether the server needs restarting, whether the phone needs rebuilding, and a numbered script of what to say and what confirms it worked. “Tests pass” isn't enough.</p></div>
     <div class="tile"><h3>So human time is the bottleneck</h3><p>If every fix needs a person, a phone and a five-year-old, then testing takes more time than coding. That shaped the workflow on the next page.</p></div>
   </div>
 </section>
