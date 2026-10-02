@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>What if? — Tiny Talk Adventures</title>
+<title>What if? | Tiny Talk Adventures</title>
 <meta name="description" content="Four constraints Tiny Talk Adventures hasn't been built for yet, and what each would change in the architecture.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -101,8 +101,8 @@ h1{max-width:20ch}
 
 <header class="wrap">
   <div class="kicker">WHAT IF?</div>
-  <h1>Built for one family. What would it take to reach every child?</h1>
-  <p class="lede">Tiny Talk was built for one household with a Mac at home. Here are four constraints I haven't built for yet, what each one would change in the architecture, and what I'm still unsure about. Toggle each diagram between today and the what-if.</p>
+  <h1>What would it take for other families to use it?</h1>
+  <p class="lede">Tiny Talk was built for one household with a Mac at home. Below are four situations I haven't built for yet, what each one would change in the architecture, and what I'm still unsure about. Toggle each diagram between today and the what-if.</p>
   <div class="jump" id="jump"></div>
 </header>
 
@@ -110,13 +110,13 @@ h1{max-width:20ch}
 
 <section class="wrap principles">
   <div class="kicker">IN EVERY SCENARIO</div>
-  <h2>The architecture changes. These principles don't.</h2>
+  <h2>What stays the same in every version</h2>
   <div class="pgrid">
     <div><h3>The child can always interrupt</h3><p>Stopping Elsie is decided on the device, never across a network. Every design keeps that path local.</p></div>
     <div><h3>A child's voice travels as little as possible</h3><p>Audio and photos stay on the closest hardware that can handle them. When they have to leave, they're processed and not stored.</p></div>
     <div><h3>Grown-ups can see where Elsie's brain is</h3><p>Whichever path is active, settings name it in plain words, like the away-mode warning does today.</p></div>
     <div><h3>One safety gate, on every path</h3><p>Swapping a model never means swapping the rules. Every route passes through the same check before anything reaches the child.</p></div>
-    <div><h3>Facts come from sources</h3><p>Whether fetched live or bundled for offline use, facts come from a reference, not the model's memory.</p></div>
+    <div><h3>Facts come from sources</h3><p>Whether fetched live or bundled for offline use, facts come from a reference instead of the model's memory.</p></div>
     <div><h3>Measure on the real hardware first</h3><p>Each scenario starts the same way the Mac version did: probe the target device, then choose the models.</p></div>
   </div>
 </section>
@@ -151,16 +151,16 @@ const TODAY_NOTE = "Today: the phone listens and decides when to stop; the famil
 
 const SCENARIOS = [
   {
-    id: "appstore", num: "01", kicker: "ON THE APP STORE", jump: "On the App Store", title: "What if any family could download it — and it stayed private?",
+    id: "appstore", num: "01", kicker: "ON THE APP STORE", jump: "On the App Store", title: "What if any family could download it, and it stayed private?",
     intro: "No guarantee of a Mac at home, strangers' children, and App Store Kids rules: no ads, no third-party tracking, grown-up gates. There are three ways to answer this, and they trade off differently.",
     states: [
       { label: "Today", cols: TODAY, note: TODAY_NOTE },
-      { label: "Family hub", note: "Today's architecture, packaged: a companion Mac app pairs with the phone by QR code. Nothing new to trust — but it needs an Apple-silicon Mac.", cols: [
+      { label: "Family hub", note: "Today's architecture, packaged: a companion Mac app pairs with the phone by QR code. Nothing new to trust, but it needs an Apple-silicon Mac.", cols: [
         { title: "DEVICE", sub: "iPhone · App Store", boxes: [B("Voice detection", "Silero VAD"), B("Object recognition", "FastViT-T8 · Core ML"), B("Playback + barge-in stop", "local"), B("Pair with home Mac", "QR code, local network", "new")] },
         { title: "HOME", sub: "Mac companion app", boxes: [B("One-click server app", "replaces the dev setup", "new"), B("Speech-to-text", "Kyutai STT 1b"), B("Story brain", "Qwen 3.5 9B"), B("Elsie's voice", "Kokoro-82M"), B("Illustrations", "SD 1.5 + LoRA"), B("Safety gate", "every reply")] },
         { title: "INTERNET", sub: "outside the home", boxes: [B("Animal facts", "API Ninjas · cached"), B("Model downloads", "once, at setup", "new")] },
       ] },
-      { label: "On-device", note: "Everything moves onto the phone. Strongest privacy and works anywhere — but the story brain gets much smaller, and illustrations can't be generated live.", cols: [
+      { label: "On-device", note: "Everything moves onto the phone. Strongest privacy and works anywhere, but the story brain gets much smaller, and illustrations can't be generated live.", cols: [
         { title: "DEVICE", sub: "iPhone / iPad", boxes: [B("Voice detection", "Silero VAD"), B("Object recognition", "FastViT-T8 · Core ML"), B("Playback + barge-in stop", "local"), B("Speech-to-text", "on-device speech", "changed"), B("Story brain", "~3B on-device model", "changed"), B("Elsie's voice", "Kokoro-82M on device", "changed"), B("Illustrations", "pre-drawn scene library", "changed"), B("Safety gate", "on device", "changed"), B("Animal facts", "bundled fact pack", "changed")] },
         { title: "HOME", sub: "no Mac needed", boxes: [B("Home server", "not required", "gone")] },
         { title: "INTERNET", sub: "optional", boxes: [B("Content updates", "new scenes + facts, no user data", "new")] },
@@ -172,13 +172,13 @@ const SCENARIOS = [
       ] },
     ],
     table: true,
-    changes: ["The phone app becomes the product; the server becomes something a family installs, or something they never see.", "Settings has to say which of the three is running, in plain words — the away-mode warning is the template.", "App Store Kids category rules shape the build: no analytics SDKs, a grown-up gate before settings or purchases."],
+    changes: ["The phone app becomes the product; the server becomes something a family installs, or something they never see.", "Settings has to say which of the three is running, in plain words, like the away-mode warning does.", "App Store Kids category rules shape the build: no analytics SDKs, a grown-up gate before settings or purchases."],
     stays: ["Voice detection and the barge-in stop stay on the phone in all three.", "The same prompts and safety gate, whichever brain is answering."],
-    risks: ["Can a ~3B model follow a child's idea as well as the 9B does? That's testable — and it decides whether on-device is viable.", "Private cloud needs an ongoing cost per story, which means a subscription. Is that acceptable for a children's app?", "How many families have an Apple-silicon Mac? It could make the family hub a niche option."],
+    risks: ["Can a ~3B model follow a child's idea as well as the 9B does? That's testable, and it decides whether on-device is viable.", "Private cloud needs an ongoing cost per story, which means a subscription. Is that acceptable for a children's app?", "How many families have an Apple-silicon Mac? It could make the family hub a niche option."],
   },
   {
     id: "classroom", num: "02", kicker: "IN A CLASSROOM", jump: "In a classroom", title: "What if a teacher ran it in their classroom?",
-    intro: "Children writing stories and learning facts on a tablet, and a teacher who needs to see who has played and how it went — under school privacy rules, and in a room that's never quiet.",
+    intro: "Children writing stories and learning facts on a tablet, and a teacher who needs to see who has played and how it went, under school privacy rules, and in a room that's never quiet.",
     states: [
       { label: "Today", cols: TODAY, note: TODAY_NOTE },
       { label: "Classroom", note: "Each child picks their picture on a shared iPad. Stories and progress stay on a school-owned Mac in the room; the teacher sees them on their own device over the local network.", cols: [
@@ -187,13 +187,13 @@ const SCENARIOS = [
         { title: "TEACHER", sub: "teacher's device, local", boxes: [B("Class dashboard", "who's played, story history", "new"), B("Review before printing", "storybooks approved first", "new"), B("Animal facts", "API Ninjas · cached")] },
       ] },
     ],
-    changes: ["A child profile on the device, picked by picture: rotation needs to know whose story continues.", "The school Mac stores stories per child, so the teacher can see them without anything going to a cloud.", "Progress is described, not scored: stories told, turns taken, ideas the child introduced."],
+    changes: ["A child profile on the device, picked by picture: rotation needs to know whose story continues.", "The school Mac stores stories per child, so the teacher can see them without anything going to a cloud.", "Progress is described instead of scored: stories told, turns taken, ideas the child introduced."],
     stays: ["The same pipeline; one child at a time means no new concurrency problems.", "Interruption stays the core interaction."],
     risks: ["Other children's voices will trigger barge-in. A close-talk microphone or a hold-to-talk fallback might be needed.", "A dashboard can turn play into assessment. What should a teacher see, and what should stay the child's?", "School privacy rules differ by district; storing on school hardware helps, but doesn't settle it."],
   },
   {
     id: "lighter", num: "03", kicker: "NO MAC, NO INTERNET", jump: "No Mac, no internet", title: "What if it had to run on a $300 tablet in the back of a car?",
-    intro: "A road trip, a plane, or a family without a Mac. No home server and no connection, on hardware with a fraction of the memory — so everything has to fit on the tablet, and still respond while the child is mid-thought.",
+    intro: "A road trip, a plane, or a family without a Mac. No home server and no connection, on hardware with a fraction of the memory, so everything has to fit on the tablet, and still respond while the child is mid-thought.",
     states: [
       { label: "Today", cols: TODAY, note: TODAY_NOTE },
       { label: "Lighter hardware", note: "The hardware probe that gates model changes today becomes a runtime step: the app measures the tablet and picks the largest models that keep the conversation responsive.", cols: [
@@ -202,7 +202,7 @@ const SCENARIOS = [
         { title: "INTERNET", sub: "none", boxes: [B("Fact lookups", "no connection", "gone")] },
       ] },
     ],
-    changes: ["Model choice becomes a runtime decision, based on what the probe measures on this tablet.", "Illustrations switch from generated to composed: a tagged library of scenes and characters, assembled to match the story.", "Facts ship with the app as a bundled pack — still sourced, just not live."],
+    changes: ["Model choice becomes a runtime decision, based on what the probe measures on this tablet.", "Illustrations switch from generated to composed: a tagged library of scenes and characters, assembled to match the story.", "Facts ship with the app as a bundled pack, still from a real source but not live."],
     stays: ["Kokoro-82M and the on-device voice detection are already small enough; they carry over.", "The conversation design: short turns, questions back to the child, instant stop."],
     risks: ["Small models lose the thread over a long story. Shorter stories may be the honest trade.", "Tablets throttle when hot; the model tier may need to drop mid-session, not just at launch.", "A $300 tablet is probably Android, which means rebuilding the Core ML and Apple speech parts."],
   },
@@ -211,14 +211,14 @@ const SCENARIOS = [
     intro: "Tiny Talk assumes a child who speaks clearly and hears well. Children with speech delays, children who don't speak, and children who are deaf or hard of hearing should be able to lead the story too.",
     states: [
       { label: "Today", cols: TODAY, note: TODAY_NOTE },
-      { label: "Accessible", note: "Two new ways to take a turn — picture choices and more patient listening — and a visual channel for everything Elsie says, all set per child by a grown-up.", cols: [
+      { label: "Accessible", note: "Two new ways to take a turn (picture choices and more patient listening), and a visual channel for everything Elsie says, all set per child by a grown-up.", cols: [
         { title: "DEVICE", sub: "iPhone / iPad", boxes: [B("Voice detection", "patient end-of-turn, set per child", "changed"), B("Picture choices", "tap a card to take your turn", "new"), B("Captions", "word by word, synced to Elsie's voice", "new"), B("Visual turn cue", "Elsie glows when it's your turn", "new"), B("Object recognition", "FastViT-T8 · Core ML"), B("Playback + barge-in stop", "local")] },
         { title: "HOME", sub: "family's Mac", boxes: [B("Speech-to-text", "per-child word hints", "changed"), B("Story brain", "offers 3 choices each turn", "changed"), B("Elsie's voice", "Kokoro-82M + word timings", "changed"), B("Illustrations", "SD 1.5 + LoRA · choice cards", "changed"), B("Safety gate", "every reply")] },
         { title: "INTERNET", sub: "outside the home", boxes: [B("Animal facts", "API Ninjas · cached")] },
       ] },
     ],
     changes: ["Picture choices are a second input path into the story brain; a tap is a turn, just as a sentence is.", "Voice detection waits longer before deciding a child is finished, tuned per child.", "When unsure what it heard, Elsie checks with a picture ('Did you mean the dragon?') instead of guessing."],
-    stays: ["The child still leads — every input path ends with Elsie building on their choice.", "Nothing about a child's needs leaves the home; settings live on the family's hardware."],
+    stays: ["The child still leads: every input path ends with Elsie building on their choice.", "Nothing about a child's needs leaves the home; settings live on the family's hardware."],
     risks: ["Waiting longer conflicts with instant interruption. How do you tell a pause from a finished turn?", "This has to be designed with speech therapists and families, not guessed at from outside.", "Adapting speech recognition to one child's voice may need training data I shouldn't collect. Could we make an interface for them to fine-tune their own model?"],
   },
 ];
@@ -303,7 +303,7 @@ function renderList(label, color, items) {
 
 function renderScenario(sc) {
   return el("section", { class: "wrap", id: sc.id, "aria-labelledby": sc.id + "-h" },
-    el("div", { class: "kicker" }, sc.num + " — " + sc.kicker),
+    el("div", { class: "kicker" }, sc.num + " · " + sc.kicker),
     el("h2", { id: sc.id + "-h" }, sc.title),
     el("p", { class: "intro" }, sc.intro),
     el("div", { class: "card diagram" },
