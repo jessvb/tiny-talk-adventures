@@ -25,7 +25,7 @@ from .animal_facts import AnimalFactTracker
 from .audio import TTS_SAMPLE_RATE, split_sentences
 from .conversation import Conversation, Turn
 from .engines import EngineError, LlmEngine, SttEngine, TtsEngine
-from .image_gen import ImageGenBackend
+from .image_worker import ImageWorkerFactory
 from .object_recognition import ObjectTracker
 from .protocol import (
     ConcludeStory,
@@ -117,7 +117,7 @@ class SessionRunner:
         *,
         system_prompt: str = config.SYSTEM_PROMPT,
         conversation: Conversation | None = None,
-        image_backend: ImageGenBackend | None = None,
+        image_worker_factory: ImageWorkerFactory | None = None,
         groq_llm: LlmEngine | None = None,
         llm_backend: str = "ollama",
     ) -> None:
@@ -146,7 +146,7 @@ class SessionRunner:
         # What self._tts was last told to use (issue #78) -- starts at the
         # engine's own startup default, config.KOKORO_VOICE.
         self._tts_voice = config.KOKORO_VOICE
-        self._image_backend = image_backend
+        self._image_worker_factory = image_worker_factory
         self._system_prompt = system_prompt
         self._conversation = conversation or Conversation()
         self._target_turns = config.STORY_TARGET_TURNS
@@ -1075,7 +1075,7 @@ class SessionRunner:
             await storybook.build_and_attach(
                 story_id, turns, shared_facts, llm=llm,
                 page_count=page_count,
-                image_backend=self._image_backend,
+                image_worker_factory=self._image_worker_factory,
             )
         except Exception:  # noqa: BLE001 - the REWRITING gate must always release
             logger.exception("unexpected failure running storybook rewrite for %s", story_id)

@@ -18,7 +18,7 @@ from websockets.exceptions import ConnectionClosed
 from . import config
 from .audio import MIC_SAMPLE_RATE
 from .engines import EngineError, LlmEngine, SttEngine, TtsEngine
-from .image_gen import ImageGenBackend, StableDiffusionBackend
+from .image_worker import ImageWorkerFactory, build_image_worker
 from .llm_groq import GroqLlm
 from .llm_ollama import OllamaLlm
 from .protocol import encode_error
@@ -128,12 +128,13 @@ class NullTransport:
 
 def build_session(
     transport: Transport, *, stt: SttEngine, llm: LlmEngine, tts: TtsEngine,
-    image_backend: ImageGenBackend | None = None,
+    image_worker_factory: ImageWorkerFactory | None = None,
     groq_llm: LlmEngine | None = None,
     llm_backend: str = "ollama",
 ) -> SessionRunner:
     return SessionRunner(
-        transport=transport, stt=stt, llm=llm, tts=tts, image_backend=image_backend,
+        transport=transport, stt=stt, llm=llm, tts=tts,
+        image_worker_factory=image_worker_factory,
         groq_llm=groq_llm, llm_backend=llm_backend,
     )
 
@@ -370,11 +371,12 @@ async def serve() -> None:
     # / risks" for the separate, larger finding this benchmarking surfaced:
     # running all three models concurrently is a real memory-pressure risk
     # on a 16GB Mac, traced to Ollama's own inference rather than to engine
-    # construction here.
+    # construction here. Stable Diffusion is deliberately NOT built here: it
+    # runs in a short-lived worker process per picture pass (image_worker.py,
+    # issue #75) so its memory returns to macOS afterwards.
     stt = KyutaiStt()
     llm, groq_llm = build_llms()
     tts = KokoroTts()
-    image_backend = StableDiffusionBackend()
     # One SessionRunner for the server's whole lifetime, not one per
     # connection -- see session.py's module docstring. This is what lets a
     # reply survive the phone app being backgrounded and reconnecting:
@@ -382,7 +384,7 @@ async def serve() -> None:
     # connection in turn, rather than a fresh, memory-less session starting
     # over every time.
     session = build_session(
-        NullTransport(), stt=stt, llm=llm, tts=tts, image_backend=image_backend,
+        NullTransport(), stt=stt, llm=llm, tts=tts, image_worker_factory=build_image_worker,
         groq_llm=groq_llm, llm_backend=config.LLM_BACKEND,
     )
 

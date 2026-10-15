@@ -1,6 +1,7 @@
 import json
 from typing import AsyncIterator
 
+from image_worker_fakes import InProcessImageWorker
 from tinytalk import storybook
 from tinytalk.conversation import Turn
 from tinytalk.storybook import build_and_attach
@@ -403,7 +404,7 @@ async def test_build_and_attach_marks_failed_and_does_not_raise_on_an_unexpected
     assert story["rewrite_status"] == "failed"
 
 
-async def test_build_and_attach_runs_illustrations_when_backend_given(tmp_path):
+async def test_build_and_attach_runs_illustrations_when_worker_factory_given(tmp_path):
     turns = [Turn(speaker="child", text="a fox story", interrupted=False)]
     conversation = Conversation()
     conversation.add_child("a fox story")
@@ -416,7 +417,7 @@ async def test_build_and_attach_runs_illustrations_when_backend_given(tmp_path):
 
     await build_and_attach(
         story_id, turns, [], llm=llm, page_count=1, stories_dir=tmp_path,
-        image_backend=backend,
+        image_worker_factory=lambda: InProcessImageWorker(backend),
     )
 
     assert backend.calls == 1
@@ -451,7 +452,7 @@ async def test_build_and_attach_survives_illustrations_pass_raising(tmp_path, mo
 
     await build_and_attach(
         story_id, turns, [], llm=llm, page_count=1, stories_dir=tmp_path,
-        image_backend=FakeImageBackendForStorybook(),
+        image_worker_factory=lambda: InProcessImageWorker(FakeImageBackendForStorybook()),
     )
 
     story = load_story(story_id, stories_dir=tmp_path)
