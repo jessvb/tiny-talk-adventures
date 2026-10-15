@@ -11,11 +11,10 @@ import logging
 from pathlib import Path
 
 import httpx
-from PIL import Image
 
 from . import config, story_store
 from .engines import EngineError, LlmEngine
-from .image_gen import ImageGenBackend
+from .image_worker import FLAGGED, OK, WORKER_DEAD, ImageWorkerFactory
 from .story_store import STORIES_DIR
 
 logger = logging.getLogger(__name__)
@@ -27,24 +26,6 @@ _PROMPT_EXTRACTION_TEMPLATE = (
     "a story. Reply with ONLY the scene description, no other "
     "text.\n\nPage text: {text}"
 )
-
-
-def _generate_and_save(
-    image_backend: ImageGenBackend,
-    prompt: str,
-    reference_image: Image.Image | None,
-    path: Path,
-) -> Image.Image | None:
-    """Runs entirely off the event loop (see its asyncio.to_thread call
-    site in generate_and_attach()) -- both the backend's own generation
-    call (already the reason to_thread was used here) and the PNG
-    encode-and-write that follows a successful one. Encoding synchronously
-    on the event loop would stall it for the encode's own duration, same
-    concern as the generation call itself."""
-    image = image_backend.generate(prompt, reference_image=reference_image)
-    if image is not None:
-        image.save(path)
-    return image
 
 
 async def _extract_scene_prompt(llm: LlmEngine, page_text: str) -> str:
@@ -112,12 +93,14 @@ async def generate_and_attach(
     pages: list[dict],
     *,
     llm: LlmEngine,
-    image_backend: ImageGenBackend,
+    image_worker_factory: ImageWorkerFactory,
     stories_dir: Path = STORIES_DIR,
 ) -> None:
     """Generates one illustration per page, strictly in order (page 0
-    first, reference-free; later pages use page 0's own generated image
-    as an IP-Adapter reference for character consistency) and patches
+    first, reference-free; later pages use page 0's saved file as an
+    IP-Adapter reference for character consistency), drawn by a
+    short-lived worker process built by image_worker_factory so Stable
+    Diffusion's memory returns to macOS when the pass ends (issue #75), and patches
     image_path/illustrations_status into the already-saved,
     already-rewritten story -- or marks the whole pass "failed", logged,
     never raised. Called from storybook.py's build_and_attach()
@@ -162,59 +145,61 @@ async def generate_and_attach(
 
         # Phase 2: generate images, strictly in page order (page 0's own
         # output becomes the IP-Adapter reference for every later page).
-        reference_image = None
         image_filenames: list[str | None] = []
         any_succeeded = False
-        for index, scene_prompt in enumerate(scene_prompts):
-            if scene_prompt is None:
-                # That page's prompt extraction already failed in Phase 1
-                # -- no prompt to generate from, same as a None return
-                # from image_backend.generate() below: this page just has
-                # no illustration, not a reason to skip later pages.
-                image_filenames.append(None)
-                continue
-            filename = f"{story_id}-page-{index}.png"
-            try:
-                image = await asyncio.to_thread(
-                    _generate_and_save,
-                    image_backend,
-                    scene_prompt,
-                    reference_image,
-                    stories_dir / filename,
+        # Page 0's saved PNG, passed to every later page as the IP-Adapter
+        # reference. A path, not an in-memory image: the worker is a
+        # separate process and only text crosses to it.
+        reference_path: Path | None = None
+        worker_dead = False
+        worker = image_worker_factory()
+        try:
+            await asyncio.to_thread(worker.start)
+            for index, scene_prompt in enumerate(scene_prompts):
+                if scene_prompt is None or worker_dead:
+                    image_filenames.append(None)
+                    continue
+                filename = f"{story_id}-page-{index}.png"
+                path = stories_dir / filename
+                result = await asyncio.to_thread(
+                    worker.generate_to_file, scene_prompt, reference_path, path
                 )
-            except asyncio.CancelledError:
-                raise
-            except EngineError as exc:
-                logger.warning(
-                    "illustration for story %s page %d failed during image "
-                    "generation: %s",
-                    story_id,
-                    index,
-                    exc,
-                )
+                if result.kind == OK:
+                    if reference_path is None:
+                        reference_path = path
+                    image_filenames.append(filename)
+                    any_succeeded = True
+                    continue
+                if result.kind == FLAGGED:
+                    logger.warning(
+                        "illustration for story %s page %d has no image (safety "
+                        "check or generation failure)",
+                        story_id,
+                        index,
+                    )
+                elif result.kind == WORKER_DEAD:
+                    logger.error(
+                        "illustration for story %s page %d: the image worker died "
+                        "(%s) -- this page and any remaining pages get no picture",
+                        story_id,
+                        index,
+                        result.detail,
+                    )
+                    worker_dead = True
+                else:
+                    logger.warning(
+                        "illustration for story %s page %d failed during image "
+                        "generation: %s",
+                        story_id,
+                        index,
+                        result.detail,
+                    )
                 image_filenames.append(None)
-                continue
-            except Exception:  # noqa: BLE001 - one page's backend failure must not sink the pass
-                logger.exception(
-                    "unexpected failure generating image for story %s page %d",
-                    story_id,
-                    index,
-                )
-                image_filenames.append(None)
-                continue
-            if image is None:
-                logger.warning(
-                    "illustration for story %s page %d has no image (safety "
-                    "check or generation failure)",
-                    story_id,
-                    index,
-                )
-                image_filenames.append(None)
-                continue
-            if reference_image is None:
-                reference_image = image
-            image_filenames.append(filename)
-            any_succeeded = True
+        finally:
+            # Always: the child's exit is what hands Stable Diffusion's
+            # memory back to macOS. Awaited in a thread so a slow join never
+            # blocks the event loop; it also runs on cancellation.
+            await asyncio.to_thread(worker.close)
 
         if any_succeeded and all(name is not None for name in image_filenames):
             status = "done"

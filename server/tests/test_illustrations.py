@@ -1,9 +1,14 @@
+import asyncio
+import threading
 from typing import AsyncIterator
 
 import httpx
+import pytest
+from image_worker_fakes import InProcessImageWorker
 from PIL import Image
 
 from tinytalk import config
+from tinytalk.image_worker import ERROR, WORKER_DEAD, PageResult
 from tinytalk.engines import EngineError
 from tinytalk.illustrations import _release_ollama_memory, generate_and_attach
 from tinytalk.story_store import load_story, save_story, story_id_from_path, update_story_rewrite
@@ -108,7 +113,7 @@ async def test_generates_one_image_per_page_in_order(tmp_path):
     backend = FakeImageBackend()
 
     await generate_and_attach(
-        story_id, pages, llm=FakeExtractionLlm(), image_backend=backend, stories_dir=tmp_path
+        story_id, pages, llm=FakeExtractionLlm(), image_worker_factory=lambda: InProcessImageWorker(backend), stories_dir=tmp_path
     )
 
     assert len(backend.calls) == 3
@@ -125,7 +130,7 @@ async def test_page_one_generates_reference_free_later_pages_use_it(tmp_path):
     backend = FakeImageBackend()
 
     await generate_and_attach(
-        story_id, pages, llm=FakeExtractionLlm(), image_backend=backend, stories_dir=tmp_path
+        story_id, pages, llm=FakeExtractionLlm(), image_worker_factory=lambda: InProcessImageWorker(backend), stories_dir=tmp_path
     )
 
     first_prompt, first_reference = backend.calls[0]
@@ -140,7 +145,7 @@ async def test_flagged_page_gets_no_image_but_others_still_do(tmp_path):
     backend = FakeImageBackend(flagged_indices={1})
 
     await generate_and_attach(
-        story_id, pages, llm=FakeExtractionLlm(), image_backend=backend, stories_dir=tmp_path
+        story_id, pages, llm=FakeExtractionLlm(), image_worker_factory=lambda: InProcessImageWorker(backend), stories_dir=tmp_path
     )
 
     story = load_story(story_id, stories_dir=tmp_path)
@@ -156,7 +161,7 @@ async def test_every_page_flagged_marks_failed(tmp_path):
     backend = FakeImageBackend(flagged_indices={0})
 
     await generate_and_attach(
-        story_id, pages, llm=FakeExtractionLlm(), image_backend=backend, stories_dir=tmp_path
+        story_id, pages, llm=FakeExtractionLlm(), image_worker_factory=lambda: InProcessImageWorker(backend), stories_dir=tmp_path
     )
 
     story = load_story(story_id, stories_dir=tmp_path)
@@ -167,7 +172,7 @@ async def test_every_page_flagged_marks_failed(tmp_path):
 async def test_llm_failure_on_one_page_degrades_only_that_page(tmp_path):
     # A prompt-extraction failure on one page (e.g. the local LLM
     # raising EngineError) must degrade only that page -- the same way
-    # image_backend.generate() returning None already does -- not abort
+    # the worker returning a flagged result already does -- not abort
     # the whole pass and discard already-generated pages.
     pages = [{"text": "Page one."}, {"text": "Page two."}, {"text": "Page three."}]
     story_id = _saved_story_with_pages(tmp_path, pages)
@@ -175,7 +180,7 @@ async def test_llm_failure_on_one_page_degrades_only_that_page(tmp_path):
     llm = FakeRaisingExtractionLlm(raise_on_index=1)
 
     await generate_and_attach(
-        story_id, pages, llm=llm, image_backend=backend, stories_dir=tmp_path
+        story_id, pages, llm=llm, image_worker_factory=lambda: InProcessImageWorker(backend), stories_dir=tmp_path
     )
 
     story = load_story(story_id, stories_dir=tmp_path)
@@ -203,7 +208,7 @@ async def test_image_backend_failure_on_one_page_degrades_only_that_page_and_con
     backend = FakeRaisingImageBackend(raise_on_index=2)
 
     await generate_and_attach(
-        story_id, pages, llm=FakeExtractionLlm(), image_backend=backend, stories_dir=tmp_path
+        story_id, pages, llm=FakeExtractionLlm(), image_worker_factory=lambda: InProcessImageWorker(backend), stories_dir=tmp_path
     )
 
     story = load_story(story_id, stories_dir=tmp_path)
@@ -227,7 +232,7 @@ async def test_prompt_extraction_uses_each_pages_own_text(tmp_path):
     llm = FakeExtractionLlm()
 
     await generate_and_attach(
-        story_id, pages, llm=llm, image_backend=FakeImageBackend(), stories_dir=tmp_path
+        story_id, pages, llm=llm, image_worker_factory=lambda: InProcessImageWorker(FakeImageBackend()), stories_dir=tmp_path
     )
 
     assert len(llm.calls) == 2
@@ -251,7 +256,7 @@ async def test_sets_pending_status_before_generation_completes(tmp_path):
             return super().generate(prompt, reference_image=reference_image)
 
     await generate_and_attach(
-        story_id, pages, llm=FakeExtractionLlm(), image_backend=RecordingBackend(),
+        story_id, pages, llm=FakeExtractionLlm(), image_worker_factory=lambda: InProcessImageWorker(RecordingBackend()),
         stories_dir=tmp_path,
     )
 
@@ -276,7 +281,7 @@ async def test_all_prompt_extraction_happens_before_any_image_generation(tmp_pat
     backend = FakeImageBackend(call_order=call_order)
 
     await generate_and_attach(
-        story_id, pages, llm=llm, image_backend=backend, stories_dir=tmp_path
+        story_id, pages, llm=llm, image_worker_factory=lambda: InProcessImageWorker(backend), stories_dir=tmp_path
     )
 
     assert call_order == ["llm", "llm", "llm", "image", "image", "image"]
@@ -332,3 +337,117 @@ async def test_release_ollama_memory_failure_is_logged_not_raised(monkeypatch):
     # Must not raise -- this is a best-effort optimization, never a
     # correctness requirement (see its own doc comment).
     await _release_ollama_memory(transport=httpx.MockTransport(handler))
+
+
+class DyingWorker(InProcessImageWorker):
+    """Behaves normally for the first `alive_for` pages, then reports
+    worker_dead for every later request (a crashed child)."""
+
+    def __init__(self, backend, alive_for: int) -> None:
+        super().__init__(backend)
+        self.alive_for = alive_for
+        self.requests = 0
+
+    def generate_to_file(self, prompt, reference_path, out_path):
+        self.requests += 1
+        if self.requests > self.alive_for:
+            return PageResult(WORKER_DEAD, "exit code -11 (SIGSEGV)")
+        return super().generate_to_file(prompt, reference_path, out_path)
+
+
+async def test_worker_dying_mid_pass_leaves_earlier_pages_and_blanks_the_rest(tmp_path):
+    pages = [{"text": f"Page {n}."} for n in range(1, 5)]
+    story_id = _saved_story_with_pages(tmp_path, pages)
+    worker = DyingWorker(FakeImageBackend(), alive_for=2)
+
+    await generate_and_attach(
+        story_id, pages, llm=FakeExtractionLlm(), image_worker_factory=lambda: worker,
+        stories_dir=tmp_path,
+    )
+
+    story = load_story(story_id, stories_dir=tmp_path)
+    assert story["illustrations_status"] == "partial"
+    assert story["pages"][0]["image_path"] is not None
+    assert story["pages"][1]["image_path"] is not None
+    assert story["pages"][2]["image_path"] is None
+    assert story["pages"][3]["image_path"] is None
+    # Once dead, the pass stops asking: page 4 is never requested.
+    assert worker.requests == 3
+    assert worker.closed
+
+
+async def test_worker_dying_on_the_first_page_marks_the_story_failed(tmp_path):
+    pages = [{"text": "Page one."}, {"text": "Page two."}]
+    story_id = _saved_story_with_pages(tmp_path, pages)
+    worker = DyingWorker(FakeImageBackend(), alive_for=0)
+
+    await generate_and_attach(
+        story_id, pages, llm=FakeExtractionLlm(), image_worker_factory=lambda: worker,
+        stories_dir=tmp_path,
+    )
+
+    story = load_story(story_id, stories_dir=tmp_path)
+    assert story["illustrations_status"] == "failed"
+    assert worker.closed
+
+
+async def test_worker_is_started_and_closed_on_a_normal_pass(tmp_path):
+    pages = [{"text": "Page one."}]
+    story_id = _saved_story_with_pages(tmp_path, pages)
+    worker = InProcessImageWorker(FakeImageBackend())
+
+    await generate_and_attach(
+        story_id, pages, llm=FakeExtractionLlm(), image_worker_factory=lambda: worker,
+        stories_dir=tmp_path,
+    )
+
+    assert worker.started and worker.closed
+
+
+async def test_worker_that_fails_to_start_marks_the_story_failed_and_still_closes(tmp_path):
+    pages = [{"text": "Page one."}]
+    story_id = _saved_story_with_pages(tmp_path, pages)
+
+    class UnstartableWorker(InProcessImageWorker):
+        def start(self) -> None:
+            raise OSError("cannot spawn")
+
+    worker = UnstartableWorker(FakeImageBackend())
+
+    await generate_and_attach(
+        story_id, pages, llm=FakeExtractionLlm(), image_worker_factory=lambda: worker,
+        stories_dir=tmp_path,
+    )
+
+    story = load_story(story_id, stories_dir=tmp_path)
+    assert story["illustrations_status"] == "failed"
+    assert worker.closed
+
+
+async def test_cancellation_closes_the_worker(tmp_path):
+    pages = [{"text": "Page one."}]
+    story_id = _saved_story_with_pages(tmp_path, pages)
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingWorker(InProcessImageWorker):
+        def generate_to_file(self, prompt, reference_path, out_path):
+            entered.set()
+            release.wait(10)
+            return PageResult(ERROR, "released")
+
+    worker = BlockingWorker(FakeImageBackend())
+    task = asyncio.create_task(
+        generate_and_attach(
+            story_id, pages, llm=FakeExtractionLlm(), image_worker_factory=lambda: worker,
+            stories_dir=tmp_path,
+        )
+    )
+    assert await asyncio.to_thread(entered.wait, 10)
+
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert worker.closed
