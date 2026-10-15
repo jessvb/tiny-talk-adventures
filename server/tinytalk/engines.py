@@ -42,3 +42,7 @@ class TtsEngine(Protocol):
     def synthesize(self, text: str) -> AsyncIterator[bytes]:
         """Stream synthesized speech as PCM16 LE audio chunks."""
         ...
+
+    def set_voice(self, voice: str) -> None:
+        """Use this voice for every synthesize() call started from now on."""
+        ...

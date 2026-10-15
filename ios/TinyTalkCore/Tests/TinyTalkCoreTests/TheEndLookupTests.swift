@@ -66,7 +66,7 @@ final class TheEndLookupTests: XCTestCase {
         connection.emit(.audio(Data([1, 2, 3])))
         connection.emit(.message(.turnEnd(turnId: 1)))
         try? await Task.sleep(nanoseconds: 20_000_000)
-        connection.emit(.message(.rewritingStarted))
+        connection.emit(.message(.rewritingStarted(storyId: nil, epilogue: nil)))
         try? await Task.sleep(nanoseconds: 10_000_000)
 
         var ready = await coordinator.readyToShowTheEnd
@@ -94,7 +94,7 @@ final class TheEndLookupTests: XCTestCase {
         connection.emit(.audio(Data([1, 2, 3])))
         connection.emit(.message(.turnEnd(turnId: 2)))
         try? await Task.sleep(nanoseconds: 20_000_000)
-        connection.emit(.message(.rewritingStarted))
+        connection.emit(.message(.rewritingStarted(storyId: nil, epilogue: nil)))
         try? await Task.sleep(nanoseconds: 10_000_000)
 
         ready = await coordinator.readyToShowTheEnd

@@ -61,7 +61,9 @@ def _configure_espeak_from_homebrew() -> None:
     EspeakWrapper.set_data_path(str(data))
 
 
-def _default_pipeline_factory(lang_code: str):
+def _default_pipeline_factory(lang_code: str, model=None):
+    """`model`, if given, is an already-loaded KModel to share -- see
+    KokoroTts._pipeline_for."""
     try:
         from kokoro import KPipeline
     except ImportError as exc:  # pragma: no cover - depends on the environment
@@ -70,7 +72,10 @@ def _default_pipeline_factory(lang_code: str):
             "and `brew install espeak-ng`"
         ) from exc
     _configure_espeak_from_homebrew()
-    pipeline = KPipeline(lang_code=lang_code, device=config.KOKORO_DEVICE)
+    if model is not None:
+        pipeline = KPipeline(lang_code=lang_code, device=config.KOKORO_DEVICE, model=model)
+    else:
+        pipeline = KPipeline(lang_code=lang_code, device=config.KOKORO_DEVICE)
     # What the loaded model reports, not just what was asked for -- the one
     # line that confirms on real hardware which backend is actually live.
     logger.info("tts: Kokoro pipeline loaded on device=%s", pipeline.model.device)
@@ -85,12 +90,17 @@ class KokoroTts:
         lang_code: str = config.KOKORO_LANG_CODE,
         voice: str = config.KOKORO_VOICE,
         *,
-        pipeline_factory: Callable[[str], object] | None = None,
+        pipeline_factory: Callable[..., object] | None = None,
     ) -> None:
         self._lang_code = lang_code
+        # Only ever read or written on the event loop thread (set_voice,
+        # and synthesize() before it hands off to a worker) -- see
+        # set_voice for why that matters.
         self._voice = voice
         self._pipeline_factory = pipeline_factory or _default_pipeline_factory
-        self._pipeline = None
+        # One pipeline per G2P language code ('a' American, 'b' British),
+        # all sharing one set of model weights -- see _pipeline_for.
+        self._pipelines: dict[str, object] = {}
         # A real OS thread lock, not asyncio.Lock -- see synthesize()'s
         # comment on why an asyncio-level lock can't do this job.
         self._synthesis_lock = threading.Lock()
@@ -102,14 +112,39 @@ class KokoroTts:
             config.KOKORO_DEVICE,
         )
 
-    def _get_pipeline(self):
+    def set_voice(self, voice: str) -> None:
+        """Switch voice for every synthesize() call started from now on
+        (issue #78). Only assigns an attribute: must be called on the
+        event loop thread, the same thread synthesize() reads it from
+        before handing the value to its worker as an argument -- so a
+        worker thread already running (possibly an orphaned one, see
+        _run_pipeline) never sees the voice change underneath it. The new
+        voice's pack itself loads inside _run_pipeline, under the lock."""
+        self._voice = voice
+
+    def _pipeline_for(self, voice: str):
         # Built lazily and cached: loading weights takes seconds, and doing it
         # at import time would slow every test run and CLI invocation.
-        if self._pipeline is None:
-            self._pipeline = self._pipeline_factory(self._lang_code)
-        return self._pipeline
+        # Only called from _run_pipeline, inside _synthesis_lock.
+        #
+        # Kokoro's G2P (pronunciation) is per-pipeline: a British voice
+        # (bf_/bm_) read through the American pipeline gets American
+        # pronunciations (Kokoro just logs "Language mismatch"). So a
+        # voice gets the pipeline for its own prefix, and any pipeline
+        # after the first reuses the first one's model weights instead of
+        # loading a second copy -- only the (small) G2P side is new.
+        lang_code = voice[0] if voice[:1] in ("a", "b") else self._lang_code
+        pipeline = self._pipelines.get(lang_code)
+        if pipeline is None:
+            if self._pipelines:
+                shared = next(iter(self._pipelines.values())).model
+                pipeline = self._pipeline_factory(lang_code, model=shared)
+            else:
+                pipeline = self._pipeline_factory(lang_code)
+            self._pipelines[lang_code] = pipeline
+        return pipeline
 
-    def _run_pipeline(self, pipeline, text: str) -> list:
+    def _run_pipeline(self, text: str, voice: str) -> list:
         # Holds a real thread lock for the pipeline call itself (not just
         # the asyncio await around it). Confirmed on real hardware
         # (2026-08-28): a barge-in/reconnect can cancel a turn whose TTS
@@ -134,7 +169,12 @@ class KokoroTts:
         # done -- turning the crash into a bounded wait instead.
         with self._synthesis_lock:
             try:
-                return list(pipeline(text, voice=self._voice))
+                # Pipeline lookup/construction and the voice pack's own
+                # first-use load (inside Kokoro's pipeline call) both
+                # happen here, under the lock -- never alongside another
+                # thread's in-flight synthesis (issue #78).
+                pipeline = self._pipeline_for(voice)
+                return list(pipeline(text, voice=voice))
             finally:
                 # Inside the lock, on this same worker thread, on purpose
                 # (issue #34): this used to run from synthesize()'s own
@@ -170,9 +210,10 @@ class KokoroTts:
     async def synthesize(self, text: str) -> AsyncIterator[bytes]:
         if not text.strip():
             return
+        # Read here, on the event loop, and passed by value -- see set_voice.
+        voice = self._voice
         try:
-            pipeline = await asyncio.to_thread(self._get_pipeline)
-            segments = await asyncio.to_thread(self._run_pipeline, pipeline, text)
+            segments = await asyncio.to_thread(self._run_pipeline, text, voice)
         except EngineError:
             raise
         except Exception as exc:

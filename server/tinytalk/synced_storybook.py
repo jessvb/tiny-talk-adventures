@@ -23,6 +23,9 @@ from PIL import Image, UnidentifiedImageError
 
 from . import safety, story_store
 from .story_store import STORIES_DIR
+# The epilogue is always recomputed from shared_facts -- any epilogue text
+# the phone sent is ignored -- using the same formula as the live rewrite.
+from .storybook import derive_epilogue
 
 logger = logging.getLogger(__name__)
 
@@ -38,17 +41,6 @@ _ALLOWED_IMAGE_FORMATS = frozenset({"JPEG", "PNG"})
 
 class _Rejected(Exception):
     """A storybook failed validation; the message is the reason logged."""
-
-
-def derive_epilogue(shared_facts: list[tuple[str, str]]) -> str | None:
-    """The epilogue is always a real fact the story actually shared, never
-    model-written -- so it is recomputed here from shared_facts and any
-    epilogue text the phone sent is ignored. MUST match the formula in
-    storybook.build_and_attach() (a test pins both to the same literal)."""
-    if not shared_facts:
-        return None
-    animal, fact = shared_facts[0]
-    return f"And one true thing we learned about the {animal}: {fact}"
 
 
 def _validated_title(storybook: dict) -> str:

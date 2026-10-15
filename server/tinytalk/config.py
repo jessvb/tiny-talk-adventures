@@ -107,7 +107,36 @@ ANIMAL_FACTS_API_KEY = os.environ.get("ANIMAL_FACTS_API_KEY", "")
 STT_HF_REPO = os.environ.get("TINYTALK_STT_REPO", "kyutai/stt-1b-en_fr-mlx")
 
 KOKORO_LANG_CODE = os.environ.get("TINYTALK_TTS_LANG", "a")
+# The startup default only: a connected phone sends the parent's chosen
+# "Home voice" in update_settings (issue #78), which overrides this from
+# then on -- same startup-preference pattern as LLM_BACKEND above.
 KOKORO_VOICE = os.environ.get("TINYTALK_TTS_VOICE", "af_heart")
+# The voices a phone may pick (issue #78) -- anything else in
+# update_settings is ignored. Kokoro-82M's English voices (a* = American,
+# b* = British; checked against hexgrad/Kokoro-82M's voices/ folder and
+# VOICES.md on 2026-09-25), minus the ones VOICES.md grades D or lower
+# (thin training data) and am_santa (a novelty voice). Must match the
+# phone's list in ios/TinyTalkCore/Sources/TinyTalkCore/KokoroVoices.swift
+# (tests/test_config.py checks). Each voice is a ~0.5MB file Kokoro
+# downloads from Hugging Face on first use, then reads from the local cache.
+KOKORO_VOICES = (
+    "af_heart",
+    "af_bella",
+    "af_nicole",
+    "af_aoede",
+    "af_kore",
+    "af_sarah",
+    "af_alloy",
+    "af_nova",
+    "af_sky",
+    "am_fenrir",
+    "am_michael",
+    "am_puck",
+    "bf_emma",
+    "bf_isabella",
+    "bm_fable",
+    "bm_george",
+)
 # Kokoro's own device auto-detection (kokoro/pipeline.py) only checks
 # torch.cuda.is_available() -- never MPS -- so on Apple Silicon it silently
 # falls back to CPU even though the GPU is available. Benchmarked on this

@@ -158,11 +158,17 @@ class UpdateSettings:
     llm_backend is optional (docs/superpowers/specs/
     2026-09-22-server-llm-backend-toggle-design.md): absent means "keep
     whatever the server is already using", so an older phone build or
-    demo mode's own messages change nothing."""
+    demo mode's own messages change nothing.
+
+    tts_voice (issue #78) is optional the same way: a Kokoro voice ID for
+    the home server's voice. Only its type is checked here -- whether
+    it's a voice this server offers is SessionRunner's call (an unknown
+    one is ignored, not an error)."""
 
     target_turns: int
     page_count: int
     llm_backend: str | None = None
+    tts_voice: str | None = None
 
 
 ClientMessage = (
@@ -268,8 +274,14 @@ def decode_client_message(raw: str) -> ClientMessage:
             raise ProtocolError(
                 f"update_settings llm_backend must be one of {LLM_BACKENDS}: {raw!r}"
             )
+        tts_voice = payload.get("tts_voice")
+        if tts_voice is not None and not isinstance(tts_voice, str):
+            raise ProtocolError(f"update_settings tts_voice must be a string: {raw!r}")
         return UpdateSettings(
-            target_turns=target_turns, page_count=page_count, llm_backend=llm_backend
+            target_turns=target_turns,
+            page_count=page_count,
+            llm_backend=llm_backend,
+            tts_voice=tts_voice,
         )
     return message_type()
 
@@ -323,8 +335,19 @@ def encode_page_image_done(story_id: str, page_index: int, has_image: bool) -> s
     )
 
 
-def encode_rewriting_started() -> str:
-    return json.dumps({"type": "rewriting_started"})
+def encode_rewriting_started(
+    story_id: str | None = None, epilogue: str | None = None
+) -> str:
+    """`story_id` names the story being rewritten; `epilogue` is its
+    fact line (storybook.early_epilogue()), sent now so The End can show
+    it without waiting on the whole rewrite (issue #77). Each key is
+    omitted when None, so an older client sees the same bare message."""
+    payload: dict = {"type": "rewriting_started"}
+    if story_id is not None:
+        payload["story_id"] = story_id
+    if epilogue is not None:
+        payload["epilogue"] = epilogue
+    return json.dumps(payload)
 
 
 def encode_rewriting_done() -> str:
