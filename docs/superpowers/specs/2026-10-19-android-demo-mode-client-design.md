@@ -1,6 +1,6 @@
 # Android Demo-Mode Client — Design Spec
 
-Issue: #88. Status: draft, awaiting household approval.
+Issue: #88. Status: approved by the author 2026-10-19.
 
 ## Context and intent
 
@@ -91,6 +91,20 @@ Inherited from CLAUDE.md, applied to this platform:
   also allow the parents to change it in settings."
 - **Distribution:** a signed APK sent directly (sideloaded).
 - **Scope:** everything iOS demo mode does, minus server mode.
+
+## Decisions confirmed by the author after builder review
+
+(The author replied "Go ahead" to these two proposals.)
+
+- **Consent gate.** Onboarding includes a one-time parent "I agree" screen,
+  in plain wording written by the builder, before the mic or any network call.
+  It states that the child's speech and story text are sent to Groq and
+  Cloudflare using the app author's key (or the parent's own, if set).
+- **Exhausted/revoked/rate-limited key.** Elsie says a short friendly line
+  (e.g. asks a grown-up for help) and the parent sees an error banner pointing
+  to Settings to enter their own key. No kill switch beyond revoking the key.
+  Missing, invalid (401/403), and rate-limited (429) keys are all handled, not
+  just missing.
 
 ## Decisions made by Claude (the author may override)
 
