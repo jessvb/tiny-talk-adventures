@@ -530,13 +530,12 @@ async def test_stt_falling_behind_realtime_is_logged_loudly(caplog):
     )
 
 
-def test_build_session_forwards_image_backend():
-    class FakeBackend:
-        def generate(self, prompt, *, reference_image):
-            return None
+def test_build_session_forwards_image_worker_factory():
+    def factory():
+        raise AssertionError("not called by this test")
 
-    backend = FakeBackend()
     session = build_session(
-        NullTransport(), stt=FakeStt(), llm=FakeLlm(), tts=FakeTts(), image_backend=backend
+        NullTransport(), stt=FakeStt(), llm=FakeLlm(), tts=FakeTts(),
+        image_worker_factory=factory,
     )
-    assert session._image_backend is backend
+    assert session._image_worker_factory is factory

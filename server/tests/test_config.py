@@ -33,3 +33,10 @@ def test_kokoro_voice_catalog_matches_the_phones_list():
     )
     ids = re.findall(r'id: "([a-z]{2}_[a-z]+)"', swift.read_text())
     assert tuple(ids) == config.KOKORO_VOICES
+
+
+def test_image_worker_page_timeout_defaults_to_five_minutes():
+    # Issue #75: the per-page allowance for the short-lived Stable
+    # Diffusion worker. The first page's allowance includes the model
+    # load, so it must be generous.
+    assert config.IMAGE_WORKER_PAGE_TIMEOUT == 300.0

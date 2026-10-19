@@ -16,7 +16,7 @@ import logging
 from . import config, illustrations, safety, story_store
 from .conversation import Turn
 from .engines import EngineError, LlmEngine
-from .image_gen import ImageGenBackend
+from .image_worker import ImageWorkerFactory
 from .story_store import STORIES_DIR
 from pathlib import Path
 
@@ -166,7 +166,7 @@ async def build_and_attach(
     llm: LlmEngine,
     page_count: int = 5,
     stories_dir: Path = STORIES_DIR,
-    image_backend: ImageGenBackend | None = None,
+    image_worker_factory: ImageWorkerFactory | None = None,
 ) -> None:
     """Runs the rewrite and patches the result into the already-saved
     story -- or marks it "failed", logged, never raised. Called as a
@@ -299,7 +299,7 @@ async def build_and_attach(
         logger.info(
             "storybook rewrite done for story %s: %d pages", story_id, len(pages)
         )
-        if image_backend is not None:
+        if image_worker_factory is not None:
             # Wrapped in its own try/except, separate from this function's
             # outer one below -- illustrations.py's own generate_and_attach()
             # already catches everything except CancelledError internally,
@@ -312,7 +312,7 @@ async def build_and_attach(
             # already-successful text rewrite this call sits after.
             try:
                 await illustrations.generate_and_attach(
-                    story_id, pages, llm=llm, image_backend=image_backend, stories_dir=stories_dir,
+                    story_id, pages, llm=llm, image_worker_factory=image_worker_factory, stories_dir=stories_dir,
                 )
             except asyncio.CancelledError:
                 raise

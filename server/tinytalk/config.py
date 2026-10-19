@@ -239,6 +239,13 @@ IMAGE_GEN_NUM_INFERENCE_STEPS = int(
     os.environ.get("TINYTALK_IMAGE_GEN_NUM_INFERENCE_STEPS", "25")
 )
 
+# Issue #75: Stable Diffusion runs in a short-lived worker process per
+# picture pass (image_worker.py). This is how long the parent waits for
+# ONE page's reply before killing the worker and treating the rest of the
+# pass as failed. Generous on purpose: the first page's wait includes the
+# multi-second torch import and model load, on a Mac that may be swapping.
+IMAGE_WORKER_PAGE_TIMEOUT = float(os.environ.get("TINYTALK_IMAGE_WORKER_PAGE_TIMEOUT", "300"))
+
 SYSTEM_PROMPT = (
     "You are a warm, interesting storyteller telling a story out loud with a young, "
     "intelligent child, aged about three to six. You and the child are making the "

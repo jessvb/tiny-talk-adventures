@@ -196,6 +196,17 @@ passthrough.)
    nothing to install by hand. Like Kyutai STT, it installs automatically with
    `pip install -e ".[dev]"` in step 3 of "Running the server" below.
 
+   **Picture drawing and memory.** Stable Diffusion does not stay loaded in
+   the server. After a story ends, the server starts a short-lived worker
+   process to draw that story's pictures and stops it afterwards, so the
+   gigabytes it needs go back to macOS and live conversation (STT + TTS)
+   keeps the memory. The cost is a few seconds of start-up before the first
+   picture, all after The End. If a page takes longer than
+   `TINYTALK_IMAGE_WORKER_PAGE_TIMEOUT` seconds (default `300`; the first
+   page includes loading the model), the worker is stopped and the story
+   keeps whatever pictures it already has. Log lines to look for:
+   `image worker: started`, `image worker: exited`, `image worker died`.
+
 ### Phone (iOS) prerequisites
 
 - Xcode (latest stable), for building and running the iPhone 13 Pro client
