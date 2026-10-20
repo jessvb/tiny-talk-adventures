@@ -10,6 +10,7 @@ package com.jessvb.tinytalk.spike
 class BargeInSpike(
     private val tts: SentenceTts,
     private val startMic: () -> Boolean,
+    private val micRunning: () -> Boolean,
     private val stopMic: () -> Unit,
     private val onLog: (String) -> Unit,
     private val onSummary: (String) -> Unit,
@@ -22,13 +23,37 @@ class BargeInSpike(
     fun start(paragraph: String) {
         stats.reset()
         if (!active) {
-            micStartedByUs = startMic()
-            if (!micStartedByUs) onLog("barge-in: mic not started by this run (already running, or unavailable)")
+            val alreadyRunning = micRunning()
+            if (alreadyRunning) {
+                onLog("barge-in: mic already running (leaving it on after the run)")
+            } else {
+                startMic()
+            }
+            micStartedByUs = !alreadyRunning && micRunning()
+        }
+        if (!micRunning()) {
+            if (micStartedByUs) { stopMic(); micStartedByUs = false }
+            invalidate("mic failed to start")
+            return
         }
         active = true
         onSummary(stats.summary())
         onLog("barge-in run started")
         tts.speak(paragraph)
+    }
+
+    /** Poll from the UI: if the mic died mid-run (Stop mic tapped, read error) the run proves nothing. */
+    @Synchronized
+    fun checkMic() {
+        if (active && !micRunning()) invalidate("mic stopped mid-run")
+    }
+
+    private fun invalidate(reason: String) {
+        active = false
+        tts.stop()
+        stats.markInvalid("mic not running")
+        onLog("MIC NOT RUNNING - run invalid ($reason)")
+        onSummary(stats.summary())
     }
 
     /** Called on the capture thread for every SpeechStart event. */
@@ -45,7 +70,10 @@ class BargeInSpike(
     /** Idempotent. Stops speech, and the mic if this run started it. */
     @Synchronized
     fun stop() {
-        if (!active) return
+        if (!active) {
+            tts.stop()
+            return
+        }
         active = false
         tts.stop()
         if (micStartedByUs) stopMic()

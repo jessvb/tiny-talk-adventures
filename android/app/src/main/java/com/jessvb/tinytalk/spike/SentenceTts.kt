@@ -281,9 +281,10 @@ class SentenceTts(
             onLog("AudioTrack.getMinBufferSize failed: $minBuf")
             return null
         }
-        val audioSessionId = audioSessionIdProvider()
+        var audioSessionId = 0
         val usage = if (communicationMode) AudioAttributes.USAGE_VOICE_COMMUNICATION else AudioAttributes.USAGE_MEDIA
         val t = try {
+            audioSessionId = audioSessionIdProvider() // inside try: a throwing provider must not escape the lock
             AudioTrack(
                 AudioAttributes.Builder()
                     .setUsage(usage)

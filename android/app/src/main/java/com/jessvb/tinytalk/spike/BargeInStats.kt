@@ -11,8 +11,20 @@ class BargeInStats(private val clockMs: () -> Long) {
     private var falseTriggers = 0
     private val stops = mutableListOf<Long>()
 
+    private var invalidReason: String? = null
+
+    /** A run with no mic listening proves nothing; its summary must never look like a pass. */
+    @Synchronized
+    fun markInvalid(reason: String) {
+        invalidReason = reason
+    }
+
+    @Synchronized
+    fun isInvalid(): Boolean = invalidReason != null
+
     @Synchronized
     fun reset() {
+        invalidReason = null
         pendingStartMs = null
         falseTriggers = 0
         stops.clear()
@@ -38,5 +50,5 @@ class BargeInStats(private val clockMs: () -> Long) {
     }
 
     @Synchronized
-    fun summary(): String = "false triggers=$falseTriggers, stops=[${stops.joinToString(", ") { "$it ms" }}]"
+    fun summary(): String = invalidReason?.let { "INVALID: $it" } ?: "false triggers=$falseTriggers, stops=[${stops.joinToString(", ") { "$it ms" }}]"
 }

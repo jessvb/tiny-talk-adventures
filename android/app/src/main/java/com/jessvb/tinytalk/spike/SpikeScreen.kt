@@ -107,11 +107,18 @@ fun SpikeScreen() {
     val barge = remember(tts) {
         BargeInSpike(
             tts = tts,
-            startMic = { if (mic.isRunning) false else { vad.reset(); detector.reset(); mic.start() } },
+            startMic = { vad.reset(); detector.reset(); mic.start() },
+            micRunning = { mic.isRunning },
             stopMic = { mic.stop() },
             onLog = log,
             onSummary = { s -> main.post { bargeSummary = s } },
         )
+    }
+    LaunchedEffect(bargeRunning, barge) {
+        while (bargeRunning) {
+            barge.checkMic()
+            kotlinx.coroutines.delay(250)
+        }
     }
     DisposableEffect(tts) {
         onDispose {
@@ -192,7 +199,10 @@ fun SpikeScreen() {
                 log("Grant mic permission first (tap Start mic), then run the barge-in test")
             }
         }) { Text(if (bargeRunning) "Stop barge-in test" else "Barge-in test") }
-        if (bargeSummary.isNotEmpty()) Text("Barge-in: $bargeSummary")
+        if (bargeSummary.isNotEmpty()) {
+            Text("Barge-in: $bargeSummary")
+            Text("(software stop only; excludes ~100 ms VAD attack and output-buffer latency)")
+        }
         Text(
             "Test script (phone speaker, no headphones, quiet room, ~40 cm): " +
                 "1) stay SILENT through the whole paragraph, x3 -> false triggers must be 0. " +

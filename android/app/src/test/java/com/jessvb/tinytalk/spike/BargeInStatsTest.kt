@@ -41,6 +41,19 @@ class BargeInStatsTest {
         assertEquals("false triggers=1, stops=[10 ms]", stats.summary())
     }
 
+    @Test fun invalidRunSummaryNeverLooksLikeAPass() {
+        stats.markInvalid("mic not running")
+        assertTrue(stats.isInvalid())
+        assertEquals("INVALID: mic not running", stats.summary())
+    }
+
+    @Test fun resetClearsInvalid() {
+        stats.markInvalid("mic not running")
+        stats.reset()
+        assertFalse(stats.isInvalid())
+        assertEquals("false triggers=0, stops=[]", stats.summary())
+    }
+
     @Test fun resetClearsEverything() {
         stats.onSpeechStart(true); now += 10; stats.onStopped()
         stats.onSpeechStart(true)
