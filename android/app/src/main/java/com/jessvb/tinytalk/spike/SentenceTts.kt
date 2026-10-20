@@ -27,13 +27,14 @@ import java.util.concurrent.TimeUnit
  * [communicationMode]: while speaking, set AudioManager.MODE_IN_COMMUNICATION and force the
  * loudspeaker, with USAGE_VOICE_COMMUNICATION on the track, so the AEC on the mic has a render
  * reference. Pass false (or flip [DEFAULT_COMMUNICATION_MODE]) to A/B against plain media output.
- * [audioSessionId]: pass MicCapture.audioSessionId (read after start()) to share the session; 0 = new.
+ * [audioSessionIdProvider]: read each time the AudioTrack is created (so a mic session id that only exists
+ * after start() can be passed lazily); 0 = let the system allocate a new session (the default; no sharing).
  */
 class SentenceTts(
     context: Context,
     private val onLog: (String) -> Unit,
     private val communicationMode: Boolean = DEFAULT_COMMUNICATION_MODE,
-    private val audioSessionId: Int = 0,
+    private val audioSessionIdProvider: () -> Int = { 0 },
 ) {
     private class Item(val gen: Int, val idx: Int, val file: File?)
 
@@ -280,6 +281,7 @@ class SentenceTts(
             onLog("AudioTrack.getMinBufferSize failed: $minBuf")
             return null
         }
+        val audioSessionId = audioSessionIdProvider()
         val usage = if (communicationMode) AudioAttributes.USAGE_VOICE_COMMUNICATION else AudioAttributes.USAGE_MEDIA
         val t = try {
             AudioTrack(
