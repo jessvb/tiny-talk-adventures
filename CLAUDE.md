@@ -37,6 +37,14 @@ changes.
   the sub-project's `.venv`, not to a pyenv shim or system path). Docker is
   not used here: Kyutai STT's MLX backend needs native Metal/Neural Engine
   access, which Docker Desktop on macOS can't provide.
+- **No real audio from tests or commands without asking.** Never run a
+  test, script, or app launch that plays sound (phone or Mac speakers —
+  TTS, `afplay`/`say`, instrumented tests that speak) without confirming
+  with the author first; the author is often in the room and a phone that
+  suddenly talks is startling. Prefer silent verification (JVM/unit tests,
+  logs, mocks, muted streams). When real audio is unavoidable (e.g. an
+  echo/barge-in measurement), say what will play, on which device and for
+  how long, and wait for a yes. Subagent prompts must repeat this rule.
 
 ## Working process
 
