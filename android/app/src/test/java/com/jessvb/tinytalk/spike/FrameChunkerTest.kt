@@ -31,6 +31,16 @@ class FrameChunkerTest {
         assertEquals((0 until 1024).map { it.toShort() }, flat)
     }
 
+    @Test(expected = IllegalArgumentException::class)
+    fun `negative length is rejected`() {
+        FrameChunker().push(ShortArray(10), -3)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `length beyond array is rejected`() {
+        FrameChunker().push(ShortArray(10), 11)
+    }
+
     @Test
     fun `length smaller than array only uses length samples`() {
         val frames = FrameChunker(frameSize = 4).push(shortArrayOf(1, 2, 3, 4, 5, 6), 5)
