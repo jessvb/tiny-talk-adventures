@@ -39,6 +39,7 @@ fun SpikeScreen() {
     var level by remember { mutableStateOf(0f) }
     var running by remember { mutableStateOf(false) }
     var denied by remember { mutableStateOf(false) }
+    var unavailable by remember { mutableStateOf(false) }
 
     val log: (String) -> Unit = remember {
         { msg ->
@@ -60,8 +61,9 @@ fun SpikeScreen() {
     DisposableEffect(Unit) { onDispose { mic.stop() } }
 
     fun startMic() {
-        mic.start()
-        running = true
+        running = mic.start()
+        unavailable = !running
+        if (unavailable) log("Microphone unavailable")
     }
 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -98,6 +100,7 @@ fun SpikeScreen() {
             }
         }) { Text(if (running) "Stop mic" else "Start mic") }
         if (denied) Text("Microphone permission denied")
+        if (unavailable) Text("Microphone unavailable")
         Text("Level: ${"%.3f".format(level)}")
         LazyColumn(state = listState, modifier = Modifier.weight(1f)) {
             items(logLines) { Text(it) }

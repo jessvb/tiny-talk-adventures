@@ -29,28 +29,39 @@ class MicCapture(
     private var thread: Thread? = null
     @Volatile private var running = false
 
+    /** Returns true only if capture is actually recording. */
     @SuppressLint("MissingPermission")
     @Synchronized
-    fun start() {
-        if (running) return
+    fun start(): Boolean {
+        if (running) return true
+        teardown() // release anything left by a previous read-error stop
         onLog("device: ${Build.MODEL}, SDK_INT=${Build.VERSION.SDK_INT}")
         val minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         if (minBuf <= 0) {
             onLog("getMinBufferSize failed: $minBuf")
-            return
+            return false
         }
-        val rec = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-            SAMPLE_RATE,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            maxOf(minBuf, FRAME_SIZE * 2 * 4),
-        )
+        val rec = try {
+            AudioRecord(
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                maxOf(minBuf, FRAME_SIZE * 2 * 4),
+            )
+        } catch (e: SecurityException) {
+            onLog("AudioRecord construction denied: $e")
+            return false
+        } catch (e: IllegalArgumentException) {
+            onLog("AudioRecord construction failed: $e")
+            return false
+        }
         if (rec.state != AudioRecord.STATE_INITIALIZED) {
             onLog("AudioRecord failed to initialize")
             rec.release()
-            return
+            return false
         }
+        record = rec
         audioSessionId = rec.audioSessionId
 
         aecAvailable = AcousticEchoCanceler.isAvailable()
@@ -59,6 +70,7 @@ class MicCapture(
             val rc = aec?.setEnabled(true)
             aecEnabled = aec?.enabled == true
             onLog("AEC available=true, setEnabled(true) rc=$rc, enabled=$aecEnabled")
+            if (aec == null || !aecEnabled) onLog("AEC UNAVAILABLE (create/enable failed)")
         } else {
             onLog("AEC UNAVAILABLE")
         }
@@ -70,11 +82,22 @@ class MicCapture(
         onLog("NoiseSuppressor available=$nsAvailable, enabled=${ns?.enabled == true}")
         onLog("audioSessionId=$audioSessionId")
 
-        record = rec
+        try {
+            rec.startRecording()
+        } catch (e: IllegalStateException) {
+            onLog("startRecording threw: $e")
+            teardown()
+            return false
+        }
+        if (rec.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+            onLog("startRecording did not start (recordingState=${rec.recordingState}); mic busy?")
+            teardown()
+            return false
+        }
         running = true
-        rec.startRecording()
         thread = Thread({ readLoop(rec) }, "MicCapture").also { it.start() }
         onLog("mic started")
+        return true
     }
 
     private fun readLoop(rec: AudioRecord) {
@@ -95,6 +118,11 @@ class MicCapture(
 
     @Synchronized
     fun stop() {
+        teardown()
+        onLog("mic stopped")
+    }
+
+    private fun teardown() {
         running = false
         thread?.join(500)
         thread = null
@@ -106,7 +134,6 @@ class MicCapture(
         aec?.release(); aec = null
         ns?.release(); ns = null
         aecEnabled = false
-        onLog("mic stopped")
     }
 
     companion object {
