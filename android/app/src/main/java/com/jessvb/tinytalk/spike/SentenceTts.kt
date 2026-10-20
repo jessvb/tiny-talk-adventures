@@ -17,6 +17,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 /**
  * Speaks text one sentence at a time: each sentence is synthesized to a WAV in the cache dir, decoded
@@ -34,12 +35,13 @@ class SentenceTts(
     private val communicationMode: Boolean = DEFAULT_COMMUNICATION_MODE,
     private val audioSessionId: Int = 0,
 ) {
-    private class Item(val gen: Int, val file: File?, val last: Boolean)
+    private class Item(val gen: Int, val idx: Int, val file: File?)
 
     private val appContext = context.applicationContext
     private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val lock = Object()
     private val queue = LinkedBlockingQueue<Item>()
+    private val tracker = RunTracker(SYNTH_TIMEOUT_MS)
     private val main = Handler(Looper.getMainLooper())
 
     // All guarded by lock unless @Volatile.
@@ -156,6 +158,7 @@ class SentenceTts(
         synchronized(lock) {
             if (closed || !speaking) return // stopped while waiting for init
             gen = generation
+            tracker.begin(gen, sentences.size, nowMs())
             routeAudioLocked()
         }
         val engine = tts ?: return
@@ -170,31 +173,43 @@ class SentenceTts(
         }
     }
 
+    private fun nowMs() = System.nanoTime() / 1_000_000
+
     private fun finished(utteranceId: String?, ok: Boolean) {
         val parts = utteranceId?.split(":") ?: return
         if (parts.size != 3) return
         val gen = parts[0].toIntOrNull() ?: return
         val idx = parts[1].toIntOrNull() ?: return
-        val n = parts[2].toIntOrNull() ?: return
         val file = File(appContext.cacheDir, "$FILE_PREFIX${gen}_$idx.wav")
         val current = synchronized(lock) { gen == generation && !closed }
-        if (!current) {
-            file.delete() // stale utterance, finished after stop()
+        // Stale generation, duplicate, or already timed out: drop it.
+        if (!current || !tracker.arrived(gen, idx, nowMs())) {
+            file.delete()
             return
         }
         if (!ok) file.delete()
-        queue.put(Item(gen, if (ok) file else null, idx == n - 1))
+        queue.put(Item(gen, idx, if (ok) file else null))
     }
 
     private fun playbackLoop() {
         while (!closed) {
-            val item = try { queue.take() } catch (_: InterruptedException) { return }
+            val item = try { queue.poll(200, TimeUnit.MILLISECONDS) } catch (_: InterruptedException) { return }
+            if (item == null) {
+                tracker.expire(nowMs())?.let { e ->
+                    onLog("TTS synthesis timed out for sentence ${e.idx}; skipping")
+                    if (e.runFinished && isCurrent(e.gen)) {
+                        drain(e.gen)
+                        finishRun(e.gen)
+                    }
+                }
+                continue
+            }
             try {
                 play(item)
             } catch (e: Exception) {
                 onLog("TTS playback error: $e")
                 item.file?.delete()
-                if (item.last) finishRun(item.gen)
+                completeSentence(item)
             }
         }
     }
@@ -204,7 +219,7 @@ class SentenceTts(
     private fun play(item: Item) {
         val file = item.file
         if (file != null) {
-            if (!isCurrent(item.gen)) {
+            if (!isCurrent(item.gen) || tracker.isDone(item.gen, item.idx)) {
                 file.delete()
                 return
             }
@@ -215,7 +230,12 @@ class SentenceTts(
                 writePcm(item.gen, wav)
             }
         }
-        if (item.last && isCurrent(item.gen)) {
+        completeSentence(item)
+    }
+
+    /** Marks the sentence accounted for; finishes the run only once all sentences are. */
+    private fun completeSentence(item: Item) {
+        if (tracker.done(item.gen, item.idx) && isCurrent(item.gen)) {
             drain(item.gen)
             finishRun(item.gen)
         }
@@ -327,6 +347,7 @@ class SentenceTts(
         speaking = false
         try { tts?.stop() } catch (e: Exception) { onLog("tts.stop failed: $e") }
         queue.clear()
+        tracker.cancel()
         releaseTrackLocked()
         restoreAudioLocked()
         deleteTempFiles()
@@ -354,15 +375,19 @@ class SentenceTts(
             val speaker = audioManager.availableCommunicationDevices
                 .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
             val ok = speaker != null && audioManager.setCommunicationDevice(speaker)
-            onLog("MODE_IN_COMMUNICATION; setCommunicationDevice(speaker) ok=$ok")
+            onLog("setCommunicationDevice(speaker) ok=$ok, active=${audioManager.communicationDevice?.type} (speaker=${AudioDeviceInfo.TYPE_BUILTIN_SPEAKER})")
         } else {
             @Suppress("DEPRECATION")
             run {
                 savedSpeakerphone = audioManager.isSpeakerphoneOn
                 audioManager.isSpeakerphoneOn = true
             }
-            onLog("MODE_IN_COMMUNICATION; speakerphone on")
+            @Suppress("DEPRECATION")
+            onLog("isSpeakerphoneOn set true, now=${audioManager.isSpeakerphoneOn}")
         }
+        val effective = audioManager.mode
+        onLog("audio mode requested=${AudioManager.MODE_IN_COMMUNICATION}, effective=$effective" +
+            if (effective != AudioManager.MODE_IN_COMMUNICATION) " -- NOT APPLIED (permission/denied?)" else "")
         audioRouted = true
     }
 
@@ -397,6 +422,7 @@ class SentenceTts(
         const val DEFAULT_COMMUNICATION_MODE = true
         private const val FILE_PREFIX = "sentence_tts_"
         private const val INIT_TIMEOUT_MS = 10_000L
+        private const val SYNTH_TIMEOUT_MS = 20_000L // no synthesis progress for this long fails a sentence
         private const val CHUNK_SHORTS = 2048
 
         fun splitSentences(text: String): List<String> =
