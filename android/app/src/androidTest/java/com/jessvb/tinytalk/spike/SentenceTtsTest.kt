@@ -19,6 +19,10 @@ class SentenceTtsTest {
 
     @Before
     fun setUp() {
+        assumeTrue(
+            "audible test; pass -Pandroid.testInstrumentationRunnerArguments.audible=true",
+            InstrumentationRegistry.getArguments().getString("audible") == "true",
+        )
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
         tts = SentenceTts(ctx, { Log.i(TAG, it); logs += it })
         // Wait for engine init (ready or unavailable).
@@ -30,7 +34,9 @@ class SentenceTtsTest {
     }
 
     @After
-    fun tearDown() = tts.close()
+    fun tearDown() {
+        if (::tts.isInitialized) tts.close()
+    }
 
     @Test
     fun speaksParagraphAndFinishes() {

@@ -325,7 +325,12 @@ class SentenceTts(
                 t.playbackHeadPosition.toLong() >= framesInTrack
             }
             if (done) return
-            Thread.sleep(20)
+            try {
+                Thread.sleep(20)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt() // close() interrupts the playback thread
+                return
+            }
         }
         onLog("drain timed out")
     }

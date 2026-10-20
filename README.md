@@ -237,6 +237,7 @@ create an untracked `android/local.properties` containing
 
 ```bash
 cd ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/<name>/android
+# (after merging to main: cd ~/Development/claude-tests/tiny-talk-adventures/android)
 export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 ./gradlew assembleDebug
 ~/Library/Android/sdk/platform-tools/adb install -r app/build/outputs/apk/debug/app-debug.apk
@@ -244,7 +245,10 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 ```
 
 `./gradlew test` runs the unit tests. The Gradle wrapper pins Gradle 9.8.2;
-you don't need a system Gradle.
+you don't need a system Gradle. The instrumented `SentenceTtsTest` plays real
+audio, so it is skipped unless run with
+`-Pandroid.testInstrumentationRunnerArguments.audible=true`; don't run it
+without the author's OK (see CLAUDE.md).
 
 ### Running the server
 

@@ -194,7 +194,7 @@ fun SpikeScreen() {
                 bargeRunning = true
                 barge.start(TEST_PARAGRAPH)
                 running = mic.isRunning
-                log("AEC available=${mic.aecAvailable} enabled=${mic.aecEnabled}; media volume ${am.getStreamVolume(AudioManager.STREAM_MUSIC)}/${am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)}")
+                log("AEC available=${mic.aecAvailable} enabled=${mic.aecEnabled}; media volume ${am.getStreamVolume(AudioManager.STREAM_MUSIC)}/${am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)}; call-stream volume ${am.getStreamVolume(AudioManager.STREAM_VOICE_CALL)}/${am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)}")
             } else {
                 log("Grant mic permission first (tap Start mic), then run the barge-in test")
             }
