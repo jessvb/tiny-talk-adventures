@@ -31,6 +31,13 @@ import kotlin.math.sqrt
 
 private const val TAG = "TinyTalkSpike"
 
+const val TEST_PARAGRAPH =
+    "Once upon a time, a little fox found a shiny red key in the garden. " +
+        "She wondered what it could possibly open. " +
+        "Behind the old oak tree, she spotted a tiny wooden door! " +
+        "Did anyone know that doors could hide whole worlds? " +
+        "The fox smiled, turned the key, and stepped inside."
+
 @Composable
 fun SpikeScreen() {
     val context = LocalContext.current
@@ -80,8 +87,10 @@ fun SpikeScreen() {
             onLog = log,
         )
     }
+    val tts = remember { SentenceTts(context, log) }
     DisposableEffect(Unit) {
         onDispose {
+            tts.close()
             mic.stop()
             vad.close()
         }
@@ -128,6 +137,8 @@ fun SpikeScreen() {
                 launcher.launch(Manifest.permission.RECORD_AUDIO)
             }
         }) { Text(if (running) "Stop mic" else "Start mic") }
+        Button(onClick = { tts.speak(TEST_PARAGRAPH) }) { Text("Speak test paragraph") }
+        Button(onClick = { tts.stop() }) { Text("Stop speaking") }
         if (denied) Text("Microphone permission denied")
         if (unavailable) Text("Microphone unavailable")
         Text("Level: ${"%.3f".format(level)}  Speech prob: ${"%.2f".format(probability)}")
