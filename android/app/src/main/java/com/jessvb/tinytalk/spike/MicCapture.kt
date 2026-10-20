@@ -23,6 +23,8 @@ class MicCapture(
     var audioSessionId: Int = 0
         private set
 
+    val isRunning: Boolean get() = running
+
     private var record: AudioRecord? = null
     private var aec: AcousticEchoCanceler? = null
     private var ns: NoiseSuppressor? = null

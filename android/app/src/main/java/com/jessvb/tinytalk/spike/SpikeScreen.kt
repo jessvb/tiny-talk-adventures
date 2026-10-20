@@ -2,6 +2,9 @@ package com.jessvb.tinytalk.spike
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.Context
+import android.media.AudioManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -15,7 +18,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.Alignment
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -27,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.sqrt
 
 private const val TAG = "TinyTalkSpike"
@@ -47,6 +54,10 @@ fun SpikeScreen() {
     var running by remember { mutableStateOf(false) }
     var denied by remember { mutableStateOf(false) }
     var unavailable by remember { mutableStateOf(false) }
+    var commMode by remember { mutableStateOf(SentenceTts.DEFAULT_COMMUNICATION_MODE) }
+    var bargeRunning by remember { mutableStateOf(false) }
+    var bargeSummary by remember { mutableStateOf("") }
+    val bargeRef = remember { AtomicReference<BargeInSpike?>(null) }
 
     val log: (String) -> Unit = remember {
         { msg ->
@@ -76,7 +87,10 @@ fun SpikeScreen() {
                     if (frameCount % 100 == 0) log("VAD mean inference %.2f ms".format(totalMs / frameCount))
                     main.post { probability = p }
                     when (detector.onProbability(p)) {
-                        SpeechEvent.SpeechStart -> log("SpeechStart @ ${System.currentTimeMillis()}")
+                        SpeechEvent.SpeechStart -> {
+                            log("SpeechStart @ ${System.currentTimeMillis()}")
+                            bargeRef.get()?.onSpeechStart()
+                        }
                         SpeechEvent.SpeechEnd -> log("SpeechEnd @ ${System.currentTimeMillis()}")
                         SpeechEvent.None -> {}
                     }
@@ -87,10 +101,27 @@ fun SpikeScreen() {
             onLog = log,
         )
     }
-    val tts = remember { SentenceTts(context, log) }
+    // Rebuilt when the communication-mode toggle flips (it is fixed at SentenceTts construction).
+    // No AudioTrack/AudioRecord session sharing: audioSessionIdProvider keeps its default (0).
+    val tts = remember(commMode) { SentenceTts(context, log, communicationMode = commMode) }
+    val barge = remember(tts) {
+        BargeInSpike(
+            tts = tts,
+            startMic = { if (mic.isRunning) false else { vad.reset(); detector.reset(); mic.start() } },
+            stopMic = { mic.stop() },
+            onLog = log,
+            onSummary = { s -> main.post { bargeSummary = s } },
+        )
+    }
+    DisposableEffect(tts) {
+        onDispose {
+            bargeRef.compareAndSet(barge, null)
+            barge.stop()
+            tts.close()
+        }
+    }
     DisposableEffect(Unit) {
         onDispose {
-            tts.close()
             mic.stop()
             vad.close()
         }
@@ -137,6 +168,37 @@ fun SpikeScreen() {
                 launcher.launch(Manifest.permission.RECORD_AUDIO)
             }
         }) { Text(if (running) "Stop mic" else "Start mic") }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Switch(checked = commMode, enabled = !bargeRunning, onCheckedChange = { commMode = it })
+            Text("communicationMode ${if (commMode) "ON" else "OFF"}")
+        }
+        Button(onClick = {
+            if (bargeRunning) {
+                bargeRef.set(null)
+                barge.stop()
+                bargeRunning = false
+                running = mic.isRunning
+            } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                log("--- barge-in test: model=${Build.MODEL} SDK=${Build.VERSION.SDK_INT} communicationMode=${if (commMode) "ON" else "OFF"} ---")
+                bargeRef.set(barge)
+                bargeRunning = true
+                barge.start(TEST_PARAGRAPH)
+                running = mic.isRunning
+                log("AEC available=${mic.aecAvailable} enabled=${mic.aecEnabled}; media volume ${am.getStreamVolume(AudioManager.STREAM_MUSIC)}/${am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)}")
+            } else {
+                log("Grant mic permission first (tap Start mic), then run the barge-in test")
+            }
+        }) { Text(if (bargeRunning) "Stop barge-in test" else "Barge-in test") }
+        if (bargeSummary.isNotEmpty()) Text("Barge-in: $bargeSummary")
+        Text(
+            "Test script (phone speaker, no headphones, quiet room, ~40 cm): " +
+                "1) stay SILENT through the whole paragraph, x3 -> false triggers must be 0. " +
+                "2) say \"stop, wait!\" ~2 sentences in, x5 -> stops about 1 s or less. " +
+                "3) repeat 1 at medium and max media volume. Tap Stop between runs.",
+        )
         Button(onClick = { tts.speak(TEST_PARAGRAPH) }) { Text("Speak test paragraph") }
         Button(onClick = { tts.stop() }) { Text("Stop speaking") }
         if (denied) Text("Microphone permission denied")
