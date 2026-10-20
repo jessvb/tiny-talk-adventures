@@ -218,9 +218,33 @@ passthrough.)
 
 ### Android (Pixel 3): secondary target
 
-Not yet scoped in detail; deferred until the iOS path is working. Will need
-Android Studio and likely separate VAD/audio tuning given the older hardware
-(see the design spec's non-goals).
+Native Kotlin + Jetpack Compose app in `android/` (issue #88; design spec in
+`docs/superpowers/specs/2026-10-19-android-demo-mode-client-design.md`).
+Currently only a Phase 0 audio spike, no real client yet.
+
+Prerequisites: Android Studio (installs the SDK to `~/Library/Android/sdk`,
+needs platform 37), and USB debugging enabled on the Pixel 3. Check it's
+connected (should say `device`, not `unauthorized`):
+
+```bash
+~/Library/Android/sdk/platform-tools/adb devices
+```
+
+Build and install (substitute your worktree for `<name>`; use
+`/Applications/Android Studio.app`'s bundled JDK, there is no system JDK, and
+create an untracked `android/local.properties` containing
+`sdk.dir=/Users/<you>/Library/Android/sdk` on a fresh checkout):
+
+```bash
+cd ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/<name>/android
+export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+./gradlew assembleDebug
+~/Library/Android/sdk/platform-tools/adb install -r app/build/outputs/apk/debug/app-debug.apk
+~/Library/Android/sdk/platform-tools/adb shell am start -n com.jessvb.tinytalk/.MainActivity
+```
+
+`./gradlew test` runs the unit tests. The Gradle wrapper pins Gradle 9.8.2;
+you don't need a system Gradle.
 
 ### Running the server
 
