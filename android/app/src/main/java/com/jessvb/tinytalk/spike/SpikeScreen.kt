@@ -47,20 +47,49 @@ fun SpikeScreen() {
             main.post { logLines = logLines + msg }
         }
     }
+    var probability by remember { mutableStateOf(0f) }
+    val vad = remember { SileroVad(context) }
+    val detector = remember { SpeechDetector() }
     val mic = remember {
+        // onFrame runs on the capture thread only; vad/detector are touched nowhere else while running.
+        var inferenceFailures = 0
+        var frameCount = 0
+        var totalMs = 0.0
         MicCapture(
             onFrame = { frame ->
                 var sum = 0.0
                 for (s in frame) sum += s.toDouble() * s
                 val rms = sqrt(sum / frame.size).toFloat() / Short.MAX_VALUE
                 main.post { level = rms }
+                try {
+                    val t0 = System.nanoTime()
+                    val p = vad.probability(frame)
+                    totalMs += (System.nanoTime() - t0) / 1e6
+                    frameCount++
+                    if (frameCount % 100 == 0) log("VAD mean inference %.2f ms".format(totalMs / frameCount))
+                    main.post { probability = p }
+                    when (detector.onProbability(p)) {
+                        SpeechEvent.SpeechStart -> log("SpeechStart @ ${System.currentTimeMillis()}")
+                        SpeechEvent.SpeechEnd -> log("SpeechEnd @ ${System.currentTimeMillis()}")
+                        SpeechEvent.None -> {}
+                    }
+                } catch (e: Exception) {
+                    if (inferenceFailures++ < 5) log("VAD inference failed: $e")
+                }
             },
             onLog = log,
         )
     }
-    DisposableEffect(Unit) { onDispose { mic.stop() } }
+    DisposableEffect(Unit) {
+        onDispose {
+            mic.stop()
+            vad.close()
+        }
+    }
 
     fun startMic() {
+        vad.reset()
+        detector.reset()
         running = mic.start()
         unavailable = !running
         if (unavailable) log("Microphone unavailable")
@@ -101,7 +130,7 @@ fun SpikeScreen() {
         }) { Text(if (running) "Stop mic" else "Start mic") }
         if (denied) Text("Microphone permission denied")
         if (unavailable) Text("Microphone unavailable")
-        Text("Level: ${"%.3f".format(level)}")
+        Text("Level: ${"%.3f".format(level)}  Speech prob: ${"%.2f".format(probability)}")
         LazyColumn(state = listState, modifier = Modifier.weight(1f)) {
             items(logLines) { Text(it) }
         }
