@@ -5,6 +5,7 @@ import com.jessvb.tinytalk.core.chat.defaultGroqHttp
 import com.jessvb.tinytalk.core.chat.executeForBody
 import com.jessvb.tinytalk.core.chat.requireKey
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
@@ -36,10 +37,11 @@ class GroqWhisperClient(
             .post(body)
             .build()
         val text = executeForBody(http.newCall(request))
-        return try {
-            Json.parseToJsonElement(text).jsonObject["text"]!!.jsonPrimitive.content
+        val transcript = try {
+            Json.parseToJsonElement(text).jsonObject["text"]!!.jsonPrimitive.contentOrNull
         } catch (e: Exception) {
             throw GroqException.Failure("malformed response")
         }
+        return transcript ?: throw GroqException.Failure("response text was null")
     }
 }

@@ -1,7 +1,6 @@
 package com.jessvb.tinytalk.core.chat
 
 import java.io.IOException
-import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
@@ -26,34 +25,38 @@ internal fun requireKey(provider: () -> String?): String {
     return key
 }
 
+private class Reply(val code: Int, val retryAfter: String?, val body: String)
+
 /**
- * Runs [call] asynchronously (OkHttp's dispatcher thread, so no blocking
- * of the caller), cancelling it if the coroutine is cancelled. Returns the
- * response body of a 200, or throws a [GroqException].
+ * Runs [call] on OkHttp's dispatcher thread and reads the whole body there,
+ * before the continuation resumes, so nothing blocks the caller's thread
+ * (safe from any dispatcher, including Main) and cancelling the coroutine
+ * (Call.cancel) interrupts the download too. Returns the body of a 200, or
+ * throws a [GroqException]; coroutine cancellation propagates as such.
  */
 internal suspend fun executeForBody(call: Call): String {
-    val response: Response = suspendCancellableCoroutine { cont ->
-            cont.invokeOnCancellation { call.cancel() }
-            call.enqueue(object : Callback {
-                override fun onFailure(call: Call, e: IOException) {
-                    if (cont.isActive) cont.resumeWithException(GroqException.Network(e))
+    val reply: Reply = suspendCancellableCoroutine { cont ->
+        cont.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (cont.isActive) cont.resumeWithException(GroqException.Network(e))
+            }
+            override fun onResponse(call: Call, response: Response) {
+                val result: Result<Reply> = response.use { r ->
+                    try {
+                        Result.success(Reply(r.code, r.header("Retry-After"), r.body.string()))
+                    } catch (e: IOException) {
+                        Result.failure(GroqException.Network(e))
+                    }
                 }
-                override fun onResponse(call: Call, response: Response) {
-                    if (cont.isActive) cont.resume(response) else response.close()
-                }
-            })
+                if (cont.isActive) cont.resumeWith(result)
+            }
+        })
     }
-    response.use { r ->
-        val text = try {
-            r.body.string()
-        } catch (e: IOException) {
-            throw GroqException.Network(e)
-        }
-        when (r.code) {
-            200 -> return text
-            401, 403 -> throw GroqException.KeyRejected()
-            429 -> throw GroqException.RateLimited(r.header("Retry-After")?.trim()?.toIntOrNull())
-            else -> throw GroqException.Failure("HTTP ${r.code}: ${text.take(300)}")
-        }
+    when (reply.code) {
+        200 -> return reply.body
+        401, 403 -> throw GroqException.KeyRejected()
+        429 -> throw GroqException.RateLimited(reply.retryAfter?.trim()?.toIntOrNull())
+        else -> throw GroqException.Failure("HTTP ${reply.code}: ${reply.body.take(300)}")
     }
 }

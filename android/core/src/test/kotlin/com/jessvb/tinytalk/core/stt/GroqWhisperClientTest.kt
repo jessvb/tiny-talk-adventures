@@ -75,4 +75,9 @@ class GroqWhisperClientTest {
         assertTrue(expectError(client(key = " ")) is GroqException.KeyMissing)
         assertEquals(0, server.requestCount)
     }
+
+    @Test fun nullTextIsFailure() = runBlocking {
+        server.enqueue(MockResponse().setBody("""{"text":null}"""))
+        assertTrue(expectError() is GroqException.Failure)
+    }
 }

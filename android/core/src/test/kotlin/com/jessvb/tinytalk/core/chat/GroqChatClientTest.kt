@@ -2,6 +2,7 @@ package com.jessvb.tinytalk.core.chat
 
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -132,5 +133,25 @@ class GroqChatClientTest {
         withTimeout(1000) { job.join() }
         assertTrue(job.isCancelled)
         assertTrue((System.nanoTime() - t0) < 1_000_000_000L)
+    }
+
+    @Test fun cancellingDuringBodyDownloadCancelsPromptly() = runBlocking {
+        val big = "x".repeat(5000)
+        server.enqueue(ok(big).throttleBody(10, 1, TimeUnit.SECONDS))
+        val c = client()
+        val job = launch(Dispatchers.Default) { c.complete(msgs) }
+        withTimeout(5000) { server.takeRequest() }
+        delay(400) // headers are out; the body is trickling
+        assertTrue(job.isActive)
+        val t0 = System.nanoTime()
+        job.cancel()
+        withTimeout(2000) { job.join() }
+        assertTrue(job.isCancelled)
+        assertTrue((System.nanoTime() - t0) < 2_000_000_000L)
+    }
+
+    @Test fun worksFromUnconfinedDispatcher() = runBlocking(Dispatchers.Unconfined) {
+        server.enqueue(ok("hi there"))
+        assertEquals("hi there", client().complete(msgs))
     }
 }
