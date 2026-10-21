@@ -4,9 +4,11 @@ import android.content.Context
 import com.jessvb.tinytalk.core.settings.SttMode
 import com.jessvb.tinytalk.core.settings.SttModeStore
 
-class SettingsStores(context: Context) : SttModeStore {
+class SettingsStores internal constructor(context: Context, prefsName: String) : SttModeStore {
+    constructor(context: Context) : this(context, "tinytalk_settings")
+
     private val prefs = context.applicationContext
-        .getSharedPreferences("tinytalk_settings", Context.MODE_PRIVATE)
+        .getSharedPreferences(prefsName, Context.MODE_PRIVATE)
 
     override var mode: SttMode
         get() = prefs.getString(KEY_STT_MODE, null)
