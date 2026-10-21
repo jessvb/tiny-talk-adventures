@@ -4,6 +4,7 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.Context
+import com.jessvb.tinytalk.voice.SpeechProbability
 import java.nio.FloatBuffer
 import java.nio.LongBuffer
 
@@ -13,7 +14,7 @@ import java.nio.LongBuffer
  * sr int64 scalar (shape []) = 16000; outputs `output` ([1,1] probability) and `stateN`.
  * Not thread-safe: call from one thread.
  */
-class SileroVad(context: Context) : AutoCloseable {
+class SileroVad(context: Context) : AutoCloseable, SpeechProbability {
     private val env = OrtEnvironment.getEnvironment()
     private val session: OrtSession = context.assets.open(MODEL_ASSET).use {
         env.createSession(it.readBytes(), OrtSession.SessionOptions())
@@ -25,7 +26,7 @@ class SileroVad(context: Context) : AutoCloseable {
     fun modelInfo(): String =
         "inputs=${session.inputInfo} outputs=${session.outputInfo}"
 
-    fun probability(frame512: ShortArray): Float {
+    override fun probability(frame512: ShortArray): Float {
         require(frame512.size == FRAME) { "expected $FRAME samples, got ${frame512.size}" }
         val input = FloatArray(CONTEXT + FRAME)
         System.arraycopy(ctx, 0, input, 0, CONTEXT)
@@ -54,7 +55,7 @@ class SileroVad(context: Context) : AutoCloseable {
         }
     }
 
-    fun reset() {
+    override fun reset() {
         state = FloatArray(STATE_SIZE)
         ctx.fill(0f)
     }

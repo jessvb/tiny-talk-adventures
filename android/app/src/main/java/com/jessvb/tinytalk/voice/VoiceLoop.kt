@@ -2,60 +2,67 @@ package com.jessvb.tinytalk.voice
 
 import com.jessvb.tinytalk.core.audio.SpeechDetector
 import com.jessvb.tinytalk.core.audio.SpeechEvent
-import com.jessvb.tinytalk.core.session.DemoSession
 import com.jessvb.tinytalk.core.session.KeyProblemKind
 import com.jessvb.tinytalk.core.session.SessionEvent
+import com.jessvb.tinytalk.core.session.TurnSession
 import com.jessvb.tinytalk.core.voice.Action
 import com.jessvb.tinytalk.core.voice.LoopState
 import com.jessvb.tinytalk.core.voice.SpokenLines
 import com.jessvb.tinytalk.core.voice.TurnStateMachine
 import com.jessvb.tinytalk.core.voice.UtteranceAssembler
-import com.jessvb.tinytalk.spike.MicCapture
-import com.jessvb.tinytalk.spike.SentenceTts
-import com.jessvb.tinytalk.spike.SileroVad
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * The spoken conversation loop: mic -> Silero VAD -> SpeechDetector -> UtteranceAssembler
- * -> DemoSession, and DemoSession's replies -> SentenceTts, with barge-in.
+ * The spoken conversation loop: mic -> VAD -> SpeechDetector -> UtteranceAssembler ->
+ * [TurnSession], and the session's replies -> [Speaker], with barge-in.
  *
  * Threads:
- * - Capture thread (MicCapture's own): [onFrame] runs VAD, detector and assembler (all
- *   single-threaded, owned by that thread while running) and applies capture-side actions:
- *   `tts.stop()` on barge-in (cheap, Phase 0), `session.bargeIn` while thinking,
- *   `session.submitUtterance` for a finished utterance (both just launch/cancel coroutines).
- * - Dispatchers.Default: the [DemoSession.events] collector and the playback-finished poll.
- *   Never Unconfined/Main.immediate: DemoSession sends while holding its own lock, so an
- *   inline collector that called back into the session could deadlock.
- * - Caller thread: [start]/[stop].
+ * - Capture thread (the mic's own): [onFrame] runs VAD, detector and assembler (owned by that
+ *   thread while running) and applies capture-side actions: `tts.stop()` on barge-in (cheap:
+ *   SentenceTts does no binder/disk work on that path), `session.bargeIn` while thinking,
+ *   `session.submitUtterance` for a finished utterance (both only launch/cancel coroutines).
+ *   Nothing thrown in the frame path escapes: it halts the loop with one visible error.
+ * - Dispatchers.Default: the [TurnSession.events] collector, the playback-finished poll and
+ *   the halt after a mic loss / frame failure / revoked consent. Never Unconfined or
+ *   Main.immediate: DemoSession sends while holding its own lock, so an inline collector
+ *   calling back into the session could deadlock.
+ * - Caller thread: [start] / [stop].
  *
- * Locks: [lock] guards [machine] only. [onState] is invoked while holding it (so state
- * notifications can never arrive out of order); it must be cheap and must not call back into
- * this class. DemoSession and SentenceTts are always called outside [lock]. The one ordering
- * race this opens (the collector's `tts.speak` landing after the capture thread's barge-in
- * `tts.stop`) is closed by re-checking the machine after speaking and stopping again if the
- * turn is no longer the one being spoken.
+ * Which thread each callback runs on (UI callers, Tasks 9/10, MUST post to the main thread):
+ * - [onState]: capture thread, a Default thread, or the caller of start/stop.
+ * - [onError]: the caller of [start] (consent / mic-start failure), otherwise a Default thread
+ *   (session errors, mic loss, frame failure, consent revoked).
+ * - [onKeyProblem], [onTranscript], [onReply], [onStoryFinished]: a Default thread (collector).
+ * - [onLog]: any of the above.
+ * None is called while holding the loop's state lock. [onState] calls are serialised by a
+ * separate notify lock and delivered in order; an older state that loses a race to a newer
+ * one is dropped, so the last delivered state is always the current one.
  *
- * Playback completion: SentenceTts has no completion callback, so a coroutine polls
- * `tts.isSpeaking` every [PLAYBACK_POLL_MS] after a speak. SentenceTts sets isSpeaking
- * synchronously inside speak(), so the poll cannot see a stale "not speaking" before the
- * audio starts, and a TTS that is unavailable/ignores the text reads as finished at once, so
- * the loop never sticks in SPEAKING.
+ * Locks: [lock] guards [machine] and [pollJob] only; the session and speaker are always
+ * called outside it. The one ordering race this opens (the collector's `tts.speak` landing
+ * after the capture thread's barge-in `tts.stop`) is closed by re-checking the machine after
+ * speaking and stopping again if the turn is no longer the one being spoken; [shutdown] moves
+ * the machine to IDLE before stopping the speaker for the same reason.
  *
- * Ownership: [vad], [tts] and [session] are owned by the caller (one long-lived warm
+ * Playback completion: [Speaker] has no completion callback, so a coroutine polls
+ * `isSpeaking` every [PLAYBACK_POLL_MS] after a speak (SentenceTts sets it synchronously in
+ * speak(); an unavailable TTS reads as finished at once, so SPEAKING never sticks).
+ *
+ * Ownership: [vad], [tts] and [session] belong to the caller (one long-lived warm
  * SentenceTts for the app's lifetime, Phase 0); this class never closes them. The mic is
- * built once from [micFactory] with this loop's frame callback.
+ * built once from [micFactory] with this loop's frame and loss callbacks.
  */
 class VoiceLoop(
-    micFactory: (onFrame: (ShortArray) -> Unit) -> MicCapture,
-    private val vad: SileroVad,
+    micFactory: (onFrame: (ShortArray) -> Unit, onStopped: (String) -> Unit) -> MicSource,
+    private val vad: SpeechProbability,
     private val detector: SpeechDetector,
-    private val session: DemoSession,
-    private val tts: SentenceTts,
+    private val session: TurnSession,
+    private val tts: Speaker,
     private val scope: CoroutineScope,
     private val consentGiven: () -> Boolean,
     private val onState: (LoopState) -> Unit,
@@ -67,20 +74,26 @@ class VoiceLoop(
     private val onLog: (String) -> Unit = {},
     private val assembler: UtteranceAssembler = UtteranceAssembler(),
 ) {
-    private val mic: MicCapture = micFactory(::onFrame)
+    private val mic: MicSource = micFactory(::onFrame, ::onMicStopped)
     private val lock = Any()
     private val machine = TurnStateMachine()
     private val startStopLock = Any()
+    private val notifyLock = Any()
 
     @Volatile private var running = false
+    /** Set once per run by the first mic loss / frame failure / consent revocation. */
+    private val halting = AtomicBoolean(false)
     private var collectorJob: Job? = null // guarded by startStopLock
     private var pollJob: Job? = null // guarded by lock
+    private var stateSeq = 0L // guarded by lock
+    private var deliveredSeq = 0L // guarded by notifyLock
 
     val state: LoopState get() = synchronized(lock) { machine.state }
 
     /**
      * Starts listening. Refuses (false: no mic, no network) until the parent has consented
      * (Review Focus 3), and reports a visible error if the mic cannot start (never silent).
+     * Works again after a [stop] or after the loop halted itself (mic loss etc.).
      */
     fun start(): Boolean = synchronized(startStopLock) {
         if (running) return true
@@ -89,6 +102,7 @@ class VoiceLoop(
             onError(NO_CONSENT_MESSAGE)
             return false
         }
+        halting.set(false)
         collectorJob = scope.launch(Dispatchers.Default) {
             session.events.collect { handle(it) }
         }
@@ -107,31 +121,61 @@ class VoiceLoop(
 
     /** Releases the mic, stops speech, cancels any in-flight turn, resets detection. Idempotent. */
     fun stop() {
-        synchronized(startStopLock) {
-            if (!running) return
-            running = false
-            // IDLE first, then tts.stop(): a collector racing in speakFor() either re-checks
-            // after this (sees IDLE, stops its own speech) or spoke before it (stopped below).
-            var turn = 0
-            transition { m -> m.onStop().also { turn = m.turnId } }
-            synchronized(lock) {
-                pollJob?.cancel()
-                pollJob = null
-            }
-            tts.stop()
-            mic.stop() // joins the capture thread: VAD/detector/assembler are now ours
-            collectorJob?.cancel()
-            collectorJob = null
-            session.bargeIn(turn) // drop the in-flight turn; nothing it sends will be spoken
-            detector.reset()
-            vad.reset()
-            assembler.reset()
+        shutdown(lost = false)
+    }
+
+    /** Returns false if the loop was not running (already stopped). */
+    private fun shutdown(lost: Boolean): Boolean = synchronized(startStopLock) {
+        if (!running) return false
+        running = false
+        // IDLE first, then tts.stop(): a collector racing in speakFor() either re-checks
+        // after this (sees IDLE, stops its own speech) or spoke before it (stopped below).
+        var turn = 0
+        transition { m -> (if (lost) m.onMicLost() else m.onStop()).also { turn = m.turnId } }
+        synchronized(lock) {
+            pollJob?.cancel()
+            pollJob = null
+        }
+        tts.stop()
+        mic.stop() // joins the capture thread: VAD/detector/assembler are now ours
+        collectorJob?.cancel()
+        collectorJob = null
+        session.bargeIn(turn) // drop the in-flight turn; nothing it sends will be spoken
+        detector.reset()
+        vad.reset()
+        assembler.reset()
+        true
+    }
+
+    /**
+     * Halts the loop on its own (mic died, frame processing threw, consent revoked) with one
+     * visible error. Runs the cleanup on Default, never on the capture thread: the cleanup
+     * joins that thread, and a concurrent [stop] holding startStopLock may be joining it too.
+     */
+    private fun halt(userMessage: String, why: String) {
+        if (!halting.compareAndSet(false, true)) return
+        onLog("voice loop halted: $why")
+        scope.launch(Dispatchers.Default) {
+            if (shutdown(lost = true)) onError(userMessage)
         }
     }
 
-    /** Capture thread. */
+    /** Capture thread, once, when the mic stopped by itself (read error etc.). */
+    private fun onMicStopped(reason: String) {
+        if (running) halt(MIC_UNAVAILABLE_MESSAGE, "mic stopped: $reason")
+    }
+
+    /** Capture thread. Never throws. */
     private fun onFrame(frame: ShortArray) {
-        if (!running) return
+        if (!running || halting.get()) return
+        try {
+            processFrame(frame)
+        } catch (t: Throwable) {
+            halt(LISTENING_FAILED_MESSAGE, "frame processing threw ${t.javaClass.name}")
+        }
+    }
+
+    private fun processFrame(frame: ShortArray) {
         val event = detector.onProbability(vad.probability(frame))
         val utterance = assembler.onFrame(frame, event)
         if (event == SpeechEvent.SpeechStart) {
@@ -141,6 +185,11 @@ class VoiceLoop(
             if (a.cancelInFlight) session.bargeIn(turn)
         }
         if (utterance != null) {
+            // Consent can be revoked while running: no audio leaves for transcription after that.
+            if (!consentGiven()) {
+                halt(NO_CONSENT_MESSAGE, "consent revoked while running")
+                return
+            }
             var turn = 0
             val a = transition { m -> m.onUtterance().also { turn = m.turnId } }
             if (a.submitUtterance) {
@@ -207,19 +256,36 @@ class VoiceLoop(
         }
     }
 
-    /** Applies [f] to the machine under [lock] and reports a state change, still under it. */
-    private inline fun transition(f: (TurnStateMachine) -> Action): Action =
-        synchronized(lock) {
+    /** Applies [f] to the machine under [lock]; reports a state change after releasing it. */
+    private inline fun transition(f: (TurnStateMachine) -> Action): Action {
+        var changed: LoopState? = null
+        var seq = 0L
+        val action = synchronized(lock) {
             val before = machine.state
-            val action = f(machine)
-            if (machine.state != before) onState(machine.state)
-            action
+            val a = f(machine)
+            if (machine.state != before) {
+                changed = machine.state
+                seq = ++stateSeq
+            }
+            a
         }
+        changed?.let { notifyState(it, seq) }
+        return action
+    }
+
+    private fun notifyState(s: LoopState, seq: Long) {
+        synchronized(notifyLock) {
+            if (seq <= deliveredSeq) return // a newer state was already delivered
+            deliveredSeq = seq
+            onState(s)
+        }
+    }
 
     companion object {
         const val SAMPLE_RATE = 16000
         const val PLAYBACK_POLL_MS = 100L
         const val MIC_UNAVAILABLE_MESSAGE = "Microphone unavailable. Check that the app may use the microphone and nothing else is using it."
         const val NO_CONSENT_MESSAGE = "A grown-up needs to agree to the privacy note before Elsie can listen."
+        const val LISTENING_FAILED_MESSAGE = "Listening stopped because something went wrong. Tap to start again."
     }
 }

@@ -8,15 +8,21 @@ import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
 import android.os.Build
 import com.jessvb.tinytalk.core.audio.FrameChunker
+import com.jessvb.tinytalk.voice.MicSource
 
 /**
  * 16 kHz mono 16-bit mic capture via VOICE_COMMUNICATION with AEC/NS attached when available.
  * Delivers exact 512-sample frames on a background thread. Caller must hold RECORD_AUDIO.
+ *
+ * [onStopped] fires once, on the capture thread as it exits, when capture ended for any reason
+ * other than [stop] (AudioRecord.read error such as ERROR_DEAD_OBJECT, or [onFrame] throwing).
+ * It must not block or join the capture thread; post the reaction elsewhere.
  */
 class MicCapture(
     private val onFrame: (ShortArray) -> Unit,
     private val onLog: (String) -> Unit,
-) {
+    private val onStopped: (reason: String) -> Unit = {},
+) : MicSource {
     var aecAvailable: Boolean = false
         private set
     var aecEnabled: Boolean = false
@@ -35,7 +41,7 @@ class MicCapture(
     /** Returns true only if capture is actually recording. */
     @SuppressLint("MissingPermission")
     @Synchronized
-    fun start(): Boolean {
+    override fun start(): Boolean {
         if (running) return true
         teardown() // release anything left by a previous read-error stop
         onLog("device: ${Build.MODEL}, SDK_INT=${Build.VERSION.SDK_INT}")
@@ -106,21 +112,31 @@ class MicCapture(
     private fun readLoop(rec: AudioRecord) {
         val chunker = FrameChunker(FRAME_SIZE)
         val buf = ShortArray(FRAME_SIZE)
-        while (running) {
-            val n = rec.read(buf, 0, buf.size)
-            if (n < 0) {
-                // ERROR_INVALID_OPERATION / ERROR_DEAD_OBJECT etc: never pass as a length.
-                onLog("AudioRecord.read error $n; stopping capture")
-                running = false
-                break
+        var lost: String? = null
+        try {
+            while (running) {
+                val n = rec.read(buf, 0, buf.size)
+                if (n < 0) {
+                    // ERROR_INVALID_OPERATION / ERROR_DEAD_OBJECT etc: never pass as a length.
+                    // After a deliberate stop() (running already false) an error is expected.
+                    if (running) lost = "AudioRecord.read error $n"
+                    break
+                }
+                if (n == 0) continue
+                for (frame in chunker.push(buf, n)) onFrame(frame)
             }
-            if (n == 0) continue
-            for (frame in chunker.push(buf, n)) onFrame(frame)
+        } catch (t: Throwable) {
+            if (running) lost = "capture thread failed: ${t.javaClass.name}"
+        }
+        if (lost != null) {
+            running = false
+            onLog("$lost; capture stopped")
+            onStopped(lost)
         }
     }
 
     @Synchronized
-    fun stop() {
+    override fun stop() {
         teardown()
         onLog("mic stopped")
     }

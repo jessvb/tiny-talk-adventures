@@ -41,11 +41,11 @@ class DemoSession(
     private val turnTimeoutMs: Long = 60_000,
     /** Test seam: how the per-story animal-fact state is cleared. */
     internal val resetFacts: suspend () -> Unit = { facts.reset() },
-) {
+) : TurnSession {
     private val channel = Channel<SessionEvent>(Channel.UNLIMITED)
 
     /** Single-collector, lossless even if collection starts late. */
-    val events: Flow<SessionEvent> = channel.receiveAsFlow()
+    override val events: Flow<SessionEvent> = channel.receiveAsFlow()
 
     private val lock = Any()
     private var generation = 0
@@ -55,7 +55,7 @@ class DemoSession(
     private var conversation = DemoConversation()
     private var arc = StoryArc(targetTurns)
 
-    fun submitUtterance(turnId: Int, pcm16: ShortArray, sampleRate: Int) {
+    override fun submitUtterance(turnId: Int, pcm16: ShortArray, sampleRate: Int) {
         val job = synchronized(lock) {
             if (closed) return
             cancelInFlightLocked()
@@ -90,7 +90,7 @@ class DemoSession(
     }
 
     /** Abandons whatever is in flight; the child is talking again. */
-    fun bargeIn(turnId: Int) {
+    override fun bargeIn(turnId: Int) {
         synchronized(lock) {
             if (closed) return
             cancelInFlightLocked()

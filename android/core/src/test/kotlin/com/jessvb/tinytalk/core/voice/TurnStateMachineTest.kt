@@ -23,13 +23,14 @@ class TurnStateMachineTest {
         return m
     }
 
-    private enum class Ev { START, STOP, SPEECH_START, UTTERANCE, RESPONSE, RESPONSE_STALE, ERROR, ERROR_STALE, TURN_END, TURN_END_STALE, PLAYBACK_DONE, PLAYBACK_DONE_STALE }
+    private enum class Ev { START, STOP, MIC_LOST, SPEECH_START, UTTERANCE, RESPONSE, RESPONSE_STALE, ERROR, ERROR_STALE, TURN_END, TURN_END_STALE, PLAYBACK_DONE, PLAYBACK_DONE_STALE }
 
     private fun TurnStateMachine.fire(ev: Ev): Action {
         val cur = turnId
         return when (ev) {
             Ev.START -> onStart()
             Ev.STOP -> onStop()
+            Ev.MIC_LOST -> onMicLost()
             Ev.SPEECH_START -> onSpeechStart()
             Ev.UTTERANCE -> onUtterance()
             Ev.RESPONSE -> onResponseText(cur)
@@ -54,6 +55,7 @@ class TurnStateMachineTest {
         // IDLE: only START does anything; nothing else may touch mic/TTS/network.
         Row(IDLE, Ev.START, LISTENING, none),
         Row(IDLE, Ev.STOP, IDLE, ign),
+        Row(IDLE, Ev.MIC_LOST, IDLE, ign),
         Row(IDLE, Ev.SPEECH_START, IDLE, ign),
         Row(IDLE, Ev.UTTERANCE, IDLE, ign),
         Row(IDLE, Ev.RESPONSE, IDLE, ign),
@@ -67,6 +69,7 @@ class TurnStateMachineTest {
         // LISTENING
         Row(LISTENING, Ev.START, LISTENING, ign),
         Row(LISTENING, Ev.STOP, IDLE, Action(stopTts = true, cancelInFlight = true)),
+        Row(LISTENING, Ev.MIC_LOST, IDLE, Action(stopTts = true, cancelInFlight = true)),
         Row(LISTENING, Ev.SPEECH_START, LISTENING, none),
         Row(LISTENING, Ev.UTTERANCE, THINKING, Action(submitUtterance = true), bump = true),
         Row(LISTENING, Ev.RESPONSE, LISTENING, ign), // e.g. a reply queued before a barge-in
@@ -80,6 +83,7 @@ class TurnStateMachineTest {
         // THINKING (turn 1 in flight)
         Row(THINKING, Ev.START, THINKING, ign),
         Row(THINKING, Ev.STOP, IDLE, Action(stopTts = true, cancelInFlight = true)),
+        Row(THINKING, Ev.MIC_LOST, IDLE, Action(stopTts = true, cancelInFlight = true)),
         Row(THINKING, Ev.SPEECH_START, LISTENING, Action(cancelInFlight = true)), // Review Focus 4
         Row(THINKING, Ev.UTTERANCE, THINKING, ign),
         Row(THINKING, Ev.RESPONSE, SPEAKING, speak),
@@ -93,6 +97,7 @@ class TurnStateMachineTest {
         // SPEAKING (turn 1's reply playing)
         Row(SPEAKING, Ev.START, SPEAKING, ign),
         Row(SPEAKING, Ev.STOP, IDLE, Action(stopTts = true, cancelInFlight = true)),
+        Row(SPEAKING, Ev.MIC_LOST, IDLE, Action(stopTts = true, cancelInFlight = true)),
         Row(SPEAKING, Ev.SPEECH_START, LISTENING, Action(stopTts = true)), // barge-in
         Row(SPEAKING, Ev.UTTERANCE, SPEAKING, ign),
         Row(SPEAKING, Ev.RESPONSE, SPEAKING, ign), // duplicate
@@ -169,6 +174,19 @@ class TurnStateMachineTest {
         val m = machineIn(THINKING)
         m.onStop()
         m.onStart()
+        m.onSpeechStart()
+        m.onUtterance()
+        assertEquals(2, m.turnId)
+        assertEquals(ign, m.onResponseText(1))
+    }
+
+    @Test
+    fun `start works again after a mic loss, and turnId stays monotonic`() {
+        val m = machineIn(SPEAKING)
+        assertEquals(Action(stopTts = true, cancelInFlight = true), m.onMicLost())
+        assertEquals(IDLE, m.state)
+        assertEquals(none, m.onStart())
+        assertEquals(LISTENING, m.state)
         m.onSpeechStart()
         m.onUtterance()
         assertEquals(2, m.turnId)

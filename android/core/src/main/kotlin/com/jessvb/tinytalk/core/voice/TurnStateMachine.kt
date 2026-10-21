@@ -51,6 +51,12 @@ class TurnStateMachine {
         return Action(stopTts = true, cancelInFlight = true)
     }
 
+    /**
+     * The mic died (read error, capture failure) or the loop had to halt on its own: same
+     * cleanup as a stop, so a later [onStart] begins cleanly. The caller reports it.
+     */
+    fun onMicLost(): Action = onStop()
+
     fun onSpeechStart(): Action = when (state) {
         LoopState.IDLE -> Action.IGNORE
         LoopState.LISTENING -> Action.NONE
