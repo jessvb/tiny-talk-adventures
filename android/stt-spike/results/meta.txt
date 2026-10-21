@@ -1,0 +1,14 @@
+device=Google Pixel 3
+sdk=31
+cores=8
+wav_count=144
+whisper-tiny.en-t2: threads=2 load_ms=1103 pss_before_mb=5.1 pss_after_load_mb=132.3
+whisper-tiny.en-t2: pss_after_run_mb=235.8
+whisper-tiny.en-t4: threads=4 load_ms=1004 pss_before_mb=35.5 pss_after_load_mb=133.7
+whisper-tiny.en-t4: pss_after_run_mb=237.3
+zipformer-20M-t2: threads=2 load_ms=1714 pss_before_mb=35.9 pss_after_load_mb=77.2
+zipformer-20M-t2: pss_after_run_mb=78.3
+zipformer-20M-t4: threads=4 load_ms=2002 pss_before_mb=36.5 pss_after_load_mb=77.0
+zipformer-20M-t4: pss_after_run_mb=79.3
+vosk-small-en-us-0.15: threads=1 load_ms=1925 pss_before_mb=37.4 pss_after_load_mb=144.4
+vosk-small-en-us-0.15: pss_after_run_mb=163.4
