@@ -125,13 +125,31 @@ class MicCapture(
         onLog("mic stopped")
     }
 
+    /**
+     * Stops the read loop and releases native resources. The capture thread must have
+     * exited before release(): releasing an AudioRecord while read() runs on it crashes in
+     * native code. stop() makes a blocked read() return promptly, so the join normally takes
+     * at most one frame (32 ms); the [JOIN_SAFETY_CAP_MS] cap only stops a wedged driver
+     * from hanging the caller forever, and in that case the AudioRecord is deliberately
+     * leaked rather than released under a live read.
+     */
     private fun teardown() {
         running = false
-        thread?.join(500)
+        val rec = record
+        if (rec != null) {
+            try { rec.stop() } catch (_: IllegalStateException) {}
+        }
+        val t = thread
         thread = null
-        record?.let {
-            try { it.stop() } catch (_: IllegalStateException) {}
-            it.release()
+        // From the capture thread itself (an onFrame callback calling stop()) there is no
+        // read in progress, and the loop exits as soon as the callback returns.
+        val exited = t == null || t === Thread.currentThread() || joinCapped(t)
+        if (rec != null) {
+            if (exited) {
+                rec.release()
+            } else {
+                onLog("mic thread did not exit within $JOIN_SAFETY_CAP_MS ms; NOT releasing AudioRecord (would crash under a live read)")
+            }
         }
         record = null
         aec?.release(); aec = null
@@ -139,8 +157,25 @@ class MicCapture(
         aecEnabled = false
     }
 
+    private fun joinCapped(t: Thread): Boolean {
+        val deadline = System.nanoTime() + JOIN_SAFETY_CAP_MS * 1_000_000
+        var interrupted = false
+        while (t.isAlive) {
+            val left = (deadline - System.nanoTime()) / 1_000_000
+            if (left <= 0) break
+            try {
+                t.join(left)
+            } catch (_: InterruptedException) {
+                interrupted = true // keep waiting: releasing early is the crash we are avoiding
+            }
+        }
+        if (interrupted) Thread.currentThread().interrupt()
+        return !t.isAlive
+    }
+
     companion object {
         const val SAMPLE_RATE = 16000
         const val FRAME_SIZE = 512
+        private const val JOIN_SAFETY_CAP_MS = 3_000L
     }
 }
