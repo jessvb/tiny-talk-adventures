@@ -39,6 +39,8 @@ class DemoSession(
     private val systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
     private val targetTurns: Int = 7,
     private val turnTimeoutMs: Long = 60_000,
+    /** Test seam: how the per-story animal-fact state is cleared. */
+    internal val resetFacts: suspend () -> Unit = { facts.reset() },
 ) {
     private val channel = Channel<SessionEvent>(Channel.UNLIMITED)
 
@@ -54,7 +56,7 @@ class DemoSession(
     private var arc = StoryArc(targetTurns)
 
     fun submitUtterance(turnId: Int, pcm16: ShortArray, sampleRate: Int) {
-        synchronized(lock) {
+        val job = synchronized(lock) {
             if (closed) return
             cancelInFlightLocked()
             val gen = ++generation
@@ -82,8 +84,9 @@ class DemoSession(
                 }
             }
             turnJob = job
-            job.start()
+            job
         }
+        job.start() // outside the lock; a job cancelled meanwhile simply never runs
     }
 
     /** Abandons whatever is in flight; the child is talking again. */
@@ -97,14 +100,15 @@ class DemoSession(
 
     /** Cancels in-flight work and starts a fresh story. */
     fun newStory() {
-        synchronized(lock) {
+        val reset = synchronized(lock) {
             if (closed) return
             cancelInFlightLocked()
             generation++
             conversation = DemoConversation()
             arc = StoryArc(targetTurns)
-            resetJob = scope.launch { facts.reset() }
+            newResetJobLocked()
         }
+        reset.start()
     }
 
     fun close() {
@@ -156,21 +160,41 @@ class DemoSession(
         val messages = conv.toMessages(systemPrompt + "\n\n" + guidance)
         val raw = chat.complete(messages).trim()
         val reply = Safety.filterReply(raw)
-        storyArc.recordReply(reply)
 
-        if (!emit(gen, SessionEvent.ResponseText(reply, turnId))) return
-        conv.addAgent(reply)
-        if (!emit(gen, SessionEvent.TurnEnd(turnId))) return
-
-        if (storyArc.isDone) {
-            facts.reset()
-            synchronized(lock) {
-                if (closed || gen != generation) return
+        // Everything that decides "the story finished" happens in ONE critical
+        // section with the generation re-check and no suspension: ResponseText,
+        // TurnEnd and (if the arc is done) the swap to a fresh story plus
+        // StoryFinished. Once TurnEnd of the final reply is out, StoryFinished
+        // follows even if a barge-in arrives a microsecond later (that barge-in
+        // belongs to the new story). The arc only learns of the reply after the
+        // gate, so a stale late reply cannot mark the shared arc done.
+        var resetToStart: Job? = null
+        synchronized(lock) {
+            if (closed || gen != generation) return
+            storyArc.recordReply(reply)
+            channel.trySend(SessionEvent.ResponseText(reply, turnId))
+            conv.addAgent(reply)
+            channel.trySend(SessionEvent.TurnEnd(turnId))
+            if (storyArc.isDone) {
                 if (conversation === conv) conversation = DemoConversation()
                 if (arc === storyArc) arc = StoryArc(targetTurns)
+                resetToStart = newResetJobLocked()
                 channel.trySend(SessionEvent.StoryFinished)
             }
         }
+        // Not cancelled by a barge-in: it is its own job, joined by later turns.
+        resetToStart?.start()
+    }
+
+    /** Lazy facts-reset job chained after any pending one; caller starts it outside the lock. */
+    private fun newResetJobLocked(): Job {
+        val previous = resetJob
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            previous?.join()
+            resetFacts()
+        }
+        resetJob = job
+        return job
     }
 
     companion object {

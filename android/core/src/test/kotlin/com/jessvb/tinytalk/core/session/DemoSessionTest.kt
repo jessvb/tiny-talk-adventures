@@ -12,6 +12,8 @@ import com.jessvb.tinytalk.core.stt.SpeechTranscribing
 import java.io.File
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
@@ -66,11 +68,16 @@ class DemoSessionTest {
         stt: FakeStt = FakeStt(),
         targetTurns: Int = 7,
         timeoutMs: Long = 60_000,
-    ) = DemoSession(
-        chat, stt,
-        AnimalFactTracker(FakeFetcher(), AnimalFactsCache(File(tmp.root, "c${System.nanoTime()}.json"))),
-        backgroundScope, prompt, targetTurns, timeoutMs,
-    )
+        resetGate: CompletableDeferred<Unit>? = null,
+    ): DemoSession {
+        val tracker = AnimalFactTracker(FakeFetcher(), AnimalFactsCache(File(tmp.root, "c${System.nanoTime()}.json")))
+        return DemoSession(
+            chat, stt, tracker, backgroundScope, prompt, targetTurns, timeoutMs,
+            resetFacts = { resetGate?.await(); resets++; tracker.reset() },
+        )
+    }
+
+    private var resets = 0
 
     private fun TestScope.collect(session: DemoSession): MutableList<SessionEvent> {
         val out = mutableListOf<SessionEvent>()
@@ -303,6 +310,95 @@ class DemoSessionTest {
         s.newStory()
         runCurrent()
     }
+
+    @Test fun bargeInAfterFinalTurnEndStillYieldsStoryFinishedOnceAndFreshStory() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        var calls = 0
+        val chat = FakeChat { if (calls++ == 0) "The end." else "A new tale begins." }
+        val s = make(chat, targetTurns = 4, resetGate = gate)
+        val ev = collect(s)
+        s.submitUtterance(1, pcm, 16000)
+        runCurrent()
+        // facts reset is still pending (gated); the child talks over "The end."
+        s.bargeIn(2)
+        runCurrent()
+        assertEquals(1, ev.count { it == SessionEvent.StoryFinished })
+        assertTrue(ev.indexOf(SessionEvent.TurnEnd(1)) < ev.indexOf(SessionEvent.StoryFinished))
+        s.submitUtterance(3, pcm, 16000)
+        runCurrent()
+        assertEquals(1, chat.requests.size) // waits for the pending reset
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(2, chat.requests.size)
+        assertEquals(
+            listOf(ChatMessage("system", "$prompt\n\n$introGuidance\n\n$nudge"), ChatMessage("user", "hello")),
+            chat.requests[1],
+        )
+        assertEquals(1, ev.count { it == SessionEvent.StoryFinished })
+    }
+
+    @Test fun newStoryDuringPendingFinishResetIsNotClobbered() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val chat = FakeChat { "The end." }
+        val s = make(chat, targetTurns = 4, resetGate = gate)
+        val ev = collect(s)
+        s.submitUtterance(1, pcm, 16000)
+        runCurrent()
+        s.newStory()
+        s.submitUtterance(2, pcm, 16000)
+        runCurrent()
+        assertEquals(1, chat.requests.size) // blocked behind both pending resets
+        assertEquals(0, resets)
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(3, resets) // finish-1, newStory, finish-2 (the latter after turn 2 ran)
+        assertEquals(listOf("system", "user"), chat.requests[1].map { it.role })
+        assertEquals(2, ev.count { it == SessionEvent.StoryFinished }) // turn 2 also says "The end."
+        assertEquals(SessionEvent.StoryFinished, ev.last())
+    }
+
+    @Test fun cancellationIgnoringChatReplyIsDroppedAndDoesNotAdvanceArc() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        var calls = 0
+        val chat = FakeChat {
+            if (calls++ == 0) {
+                withContext(NonCancellable) { gate.await() }
+                "The end."
+            } else {
+                "go on"
+            }
+        }
+        val s = make(chat)
+        val ev = collect(s)
+        s.submitUtterance(1, pcm, 16000)
+        runCurrent()
+        s.bargeIn(2)
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(listOf<SessionEvent>(SessionEvent.TranscriptFinal("hello", 1)), ev)
+        s.submitUtterance(3, pcm, 16000)
+        runCurrent()
+        assertTrue(ev.none { it == SessionEvent.StoryFinished })
+        assertTrue(chat.requests[1].none { it.content == "The end." })
+        assertEquals(SessionEvent.TurnEnd(3), ev.last())
+    }
+
+    private fun sttErrorCase(ex: Exception, expected: SessionEvent) = runTest {
+        var fail = true
+        val s = make(stt = FakeStt { if (fail) throw ex else "hi" })
+        val ev = collect(s)
+        s.submitUtterance(1, pcm, 16000)
+        runCurrent()
+        assertEquals(listOf(expected), ev)
+        fail = false
+        s.submitUtterance(2, pcm, 16000)
+        runCurrent()
+        assertEquals(SessionEvent.TurnEnd(2), ev.last())
+    }
+
+    @Test fun sttKeyMissing() = sttErrorCase(GroqException.KeyMissing(), SessionEvent.KeyProblem(KeyProblemKind.MISSING, 1))
+    @Test fun sttKeyRejected() = sttErrorCase(GroqException.KeyRejected(), SessionEvent.KeyProblem(KeyProblemKind.REJECTED, 1))
+    @Test fun sttRateLimited() = sttErrorCase(GroqException.RateLimited(null), SessionEvent.KeyProblem(KeyProblemKind.RATE_LIMITED, 1))
 
     @Test fun eventsDeliveredToLateCollector() = runTest {
         val s = make()
