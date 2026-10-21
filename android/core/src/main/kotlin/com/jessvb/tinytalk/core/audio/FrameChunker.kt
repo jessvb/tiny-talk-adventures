@@ -1,4 +1,4 @@
-package com.jessvb.tinytalk.spike
+package com.jessvb.tinytalk.core.audio
 
 /** Re-slices arbitrary-length PCM pushes into fixed-size frames, carrying leftovers. */
 class FrameChunker(private val frameSize: Int = 512) {

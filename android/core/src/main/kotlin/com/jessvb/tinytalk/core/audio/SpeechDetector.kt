@@ -1,4 +1,4 @@
-package com.jessvb.tinytalk.spike
+package com.jessvb.tinytalk.core.audio
 
 enum class SpeechEvent { None, SpeechStart, SpeechEnd }
 

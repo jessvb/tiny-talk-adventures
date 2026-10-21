@@ -1,4 +1,4 @@
-package com.jessvb.tinytalk.spike
+package com.jessvb.tinytalk.core.audio
 
 import org.junit.Assert.assertEquals
 import org.junit.Test

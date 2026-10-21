@@ -16,4 +16,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "TinyTalkAndroid"
 include(":app")
+include(":core")
 include(":stt-spike-app")

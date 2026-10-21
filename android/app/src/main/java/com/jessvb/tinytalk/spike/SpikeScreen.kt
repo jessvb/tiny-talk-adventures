@@ -33,6 +33,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.jessvb.tinytalk.core.audio.SpeechDetector
+import com.jessvb.tinytalk.core.audio.SpeechEvent
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.sqrt
 

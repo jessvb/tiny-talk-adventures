@@ -7,6 +7,7 @@ import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
 import android.os.Build
+import com.jessvb.tinytalk.core.audio.FrameChunker
 
 /**
  * 16 kHz mono 16-bit mic capture via VOICE_COMMUNICATION with AEC/NS attached when available.
