@@ -63,9 +63,11 @@ Inherited from CLAUDE.md, applied to this platform:
 - **Free/local-first.** Demo mode already uses Groq/Cloudflare free tiers;
   Android keeps to that. No new paid service.
 - **Privacy.** This is a real step beyond "data stays on household devices":
-  with the shared key, *other families' children's speech is sent to Groq
-  (Whisper) and story text to Groq/Cloudflare*, billed against the author's
-  key. This was accepted for the author's own household in demo mode; for
+  with the shared key, *story text from other families' children is sent to the
+  cloud chat model (Groq) and story prompts to Cloudflare*, billed against the
+  author's key; speech is recognised on the phone by default (see the
+  2026-10-21 decision below), unless a parent turns on the optional cloud
+  "better listening" switch. This was accepted for the author's own household in demo mode; for
   outside testers it must be **disclosed plainly** in Onboarding/Settings and
   in the tester instructions, and testers must be people who agreed to try
   it. No audio is stored by the app beyond what iOS demo mode stores.
@@ -105,6 +107,29 @@ Inherited from CLAUDE.md, applied to this platform:
   to Settings to enter their own key. No kill switch beyond revoking the key.
   Missing, invalid (401/403), and rate-limited (429) keys are all handled, not
   just missing.
+
+## Decision confirmed by the author 2026-10-21: speech recognition runs on the phone
+
+(Replaces the original plan to send audio to Groq Whisper.)
+
+- **The child's voice stays on the phone.** The default speech-to-text is an
+  on-device model bundled in the app (candidates compared in a Phase 0b spike
+  below). Only the resulting **text** is sent to the cloud chat model.
+- **Optional "better listening" switch** in Settings that sends audio to Groq
+  Whisper instead. Off by default, clearly labelled as sending the child's
+  voice to the cloud. It is the escape hatch if on-device accuracy on child
+  voices proves too poor.
+- The app never writes recordings to disk (audio is held in memory only).
+- **Consent wording** (approved draft, "the cloud" instead of vendor names):
+  the parent is told the child's voice is turned into text on the phone and not
+  saved, that only the text of the story conversation is sent to the cloud so
+  Elsie can reply, that finished stories stay on the phone, and that the
+  author's account pays for the cloud service until the parent enters their own
+  key. Any claim about the cloud provider's retention or training policy goes in
+  only once verified against the provider's current documentation, with a source.
+- **Phase 0b (silent STT spike) precedes Phase 1:** compare 2-3 on-device
+  candidates on the Pixel 3 for speed and accuracy using audio files with no
+  playback; real child-voice accuracy needs the author's later testing.
 
 ## Decisions made by Claude (the author may override)
 
