@@ -67,13 +67,22 @@ class SttSpikeTest {
         meta.append("cores=${Runtime.getRuntime().availableProcessors()}\nwav_count=${wavs.size}\n")
         val lastChunkMs = StringBuilder("candidate,id,voice,after_last_chunk_ms\n")
 
-        val candidates = listOf(
+        // Optional instrumentation args: only=<substring of candidate name>, leadMs=<zipformer
+        // leading silence>, out=<output file prefix>.
+        val args = InstrumentationRegistry.getArguments()
+        val filter = args.getString("only") ?: ""
+        val leadMs = args.getString("leadMs")?.toInt() ?: 0
+        val out = args.getString("out") ?: ""
+        val chunkMs = args.getString("chunkMs")?.toInt() ?: 100
+        val zs = (if (leadMs > 0) "-lead$leadMs" else "") + (if (chunkMs != 100) "-chunk$chunkMs" else "")
+        val all = listOf(
             Triple("whisper-tiny.en-t2", 2) { whisper(File(models, "whisper-tiny.en"), 2) },
             Triple("whisper-tiny.en-t4", 4) { whisper(File(models, "whisper-tiny.en"), 4) },
-            Triple("zipformer-20M-t2", 2) { zipformer(File(models, "zipformer-en-20M"), 2, lastChunkMs, "zipformer-20M-t2") },
-            Triple("zipformer-20M-t4", 4) { zipformer(File(models, "zipformer-en-20M"), 4, lastChunkMs, "zipformer-20M-t4") },
+            Triple("zipformer-20M-t2$zs", 2) { zipformer(File(models, "zipformer-en-20M"), 2, lastChunkMs, "zipformer-20M-t2$zs", leadMs, chunkMs) },
+            Triple("zipformer-20M-t4$zs", 4) { zipformer(File(models, "zipformer-en-20M"), 4, lastChunkMs, "zipformer-20M-t4$zs", leadMs, chunkMs) },
             Triple("vosk-small-en-us-0.15", 1) { vosk(File(models, "vosk-model-small-en-us-0.15")) },
         )
+        val candidates = all.filter { it.first.contains(filter) }
 
         for ((name, threads, make) in candidates) {
             System.gc()
@@ -101,9 +110,9 @@ class SttSpikeTest {
             meta.append("$name: pss_after_run_mb=%.1f\n".format(pssMb()))
             eng.release()
         }
-        File(dir, "results.csv").writeText(csv.toString())
-        File(dir, "zipformer_last_chunk.csv").writeText(lastChunkMs.toString())
-        File(dir, "meta.txt").writeText(meta.toString())
+        File(dir, "${out}results.csv").writeText(csv.toString())
+        File(dir, "${out}zipformer_last_chunk.csv").writeText(lastChunkMs.toString())
+        File(dir, "${out}meta.txt").writeText(meta.toString())
     }
 
     private fun row(sb: StringBuilder, w: Wav, cand: String, ms: Double, cold: Int, hyp: String) {
@@ -138,7 +147,7 @@ class SttSpikeTest {
         }
     }
 
-    private fun zipformer(d: File, threads: Int, lastChunk: StringBuilder, cand: String): Engine {
+    private fun zipformer(d: File, threads: Int, lastChunk: StringBuilder, cand: String, leadMs: Int, chunkMs: Int): Engine {
         val cfg = OnlineRecognizerConfig(
             modelConfig = OnlineModelConfig(
                 transducer = OnlineTransducerModelConfig(
@@ -155,19 +164,22 @@ class SttSpikeTest {
         return object : Engine {
             override fun transcribe(w: Wav): String {
                 val s = rec.createStream("")
-                val chunk = 1600 // 100 ms
-                val total = w.floats.size
+                // Optional leading silence (a live mic has some before the child speaks).
+                val x = FloatArray(leadMs * 16) + w.floats
+                // 100 ms chunks by default; chunkMs=0 feeds the whole utterance in one call.
+                val chunk = if (chunkMs > 0) chunkMs * 16 else x.size
+                val total = x.size
                 val lastStart = ((total - 1) / chunk) * chunk
                 var i = 0
                 // Feed all but the final chunk (decoding as it goes, like live streaming), then
                 // time from the last chunk + 0.5 s trailing silence until the final text is ready.
                 while (i < lastStart) {
-                    s.acceptWaveform(w.floats.copyOfRange(i, i + chunk), 16000)
+                    s.acceptWaveform(x.copyOfRange(i, i + chunk), 16000)
                     while (rec.isReady(s)) rec.decode(s)
                     i += chunk
                 }
                 val t0 = System.nanoTime()
-                s.acceptWaveform(w.floats.copyOfRange(lastStart, total), 16000)
+                s.acceptWaveform(x.copyOfRange(lastStart, total), 16000)
                 s.acceptWaveform(FloatArray(8000), 16000)
                 s.inputFinished()
                 while (rec.isReady(s)) rec.decode(s)
