@@ -12,11 +12,15 @@ import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import com.jessvb.tinytalk.voice.Speaker
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 
 /**
@@ -29,25 +33,50 @@ import java.util.concurrent.TimeUnit
  * reference. Pass false (or flip [DEFAULT_COMMUNICATION_MODE]) to A/B against plain media output.
  * [audioSessionIdProvider]: read each time the AudioTrack is created (so a mic session id that only exists
  * after start() can be passed lazily); 0 = let the system allocate a new session (the default; no sharing).
+ *
+ * Threads and the cheap stop (barge-in from the mic's capture thread):
+ * - [lock] guards only in-memory state and is never held across a binder, audio-mode or disk
+ *   call. [stop] under the lock: bumps the generation, clears pending text/queue/tracker, detaches
+ *   the AudioTrack and mutes it with setVolume(0) (client-side shared-memory gain, no binder), and
+ *   posts the expensive cleanup. It returns in microseconds and nothing of the stopped generation
+ *   is audible afterwards: the playback thread re-checks the generation under the lock before
+ *   every write, and the detached track is muted.
+ * - [audioExec] (one thread, FIFO) runs everything slow, in the order it was posted under the
+ *   lock (= generation order): stop cleanup (TextToSpeech.stop, track pause/flush/release, audio
+ *   mode restore, stale temp-file deletion), audio routing, and the synthesizeToFile calls of a
+ *   run. So a stop's late TextToSpeech.stop or audio-mode restore always runs BEFORE the next
+ *   run's routing and synthesis and can never cancel or un-route it. A speak() skips the restore
+ *   in its own cleanup (it is about to route again), so stop-then-speak costs no extra mode flip.
+ *   Routing state lives in [route] ([AudioRouteState]), confined to that thread.
+ * - Playback thread: decodes and writes PCM; it creates and starts a track outside the lock and
+ *   installs it under the lock only if its generation is still current.
  */
 class SentenceTts(
     context: Context,
     private val onLog: (String) -> Unit,
     private val communicationMode: Boolean = DEFAULT_COMMUNICATION_MODE,
     private val audioSessionIdProvider: () -> Int = { 0 },
-) {
+) : Speaker {
     private class Item(val gen: Int, val idx: Int, val file: File?)
 
     private val appContext = context.applicationContext
     private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-    private val lock = Object()
+    private val lock = Any()
     private val queue = LinkedBlockingQueue<Item>()
     private val tracker = RunTracker(SYNTH_TIMEOUT_MS)
     private val main = Handler(Looper.getMainLooper())
+    private val audioExec: ExecutorService = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "SentenceTts-audio").apply { isDaemon = true }
+    }
+
+    // audioExec-confined.
+    private val route = AudioRouteState()
+    private var savedMode = AudioManager.MODE_NORMAL
+    private var savedSpeakerphone = false
 
     // All guarded by lock unless @Volatile.
     private var generation = 0
-    private var tts: TextToSpeech? = null
+    @Volatile private var tts: TextToSpeech? = null
     private var ready = false
     private var unavailable = false
     private var pendingText: String? = null
@@ -56,9 +85,6 @@ class SentenceTts(
     private var framesInTrack = 0L
     private var speakStartNs = 0L
     private var firstAudioLogged = false
-    private var savedMode = AudioManager.MODE_NORMAL
-    private var savedSpeakerphone = false
-    private var audioRouted = false
     @Volatile private var closed = false
     @Volatile private var speaking = false
 
@@ -72,7 +98,7 @@ class SentenceTts(
     @Volatile var lastFirstAudioLatencyMs: Long = -1
         private set
 
-    val isSpeaking: Boolean get() = speaking
+    override val isSpeaking: Boolean get() = speaking
 
     private val playbackThread = Thread({ playbackLoop() }, "SentenceTts-playback").also {
         it.isDaemon = true
@@ -86,6 +112,15 @@ class SentenceTts(
             val shouldFail = synchronized(lock) { !ready && !unavailable }
             if (shouldFail) markUnavailable("init timed out after ${INIT_TIMEOUT_MS} ms")
         }, INIT_TIMEOUT_MS)
+    }
+
+    /** Posts [task] to [audioExec]; call under [lock] so posting order = generation order. */
+    private fun postLocked(task: () -> Unit) {
+        try {
+            audioExec.execute(task)
+        } catch (_: RejectedExecutionException) {
+            // closed: nothing more to do
+        }
     }
 
     private fun onInit(status: Int) {
@@ -111,12 +146,14 @@ class SentenceTts(
         })
         engineInfo = "engine=${engine.defaultEngine}, voice=${engine.voice?.name}, locale=${engine.voice?.locale}"
         onLog("TTS ready: $engineInfo")
-        val toSpeak = synchronized(lock) {
+        synchronized(lock) {
             if (closed) return
             ready = true
-            pendingText.also { pendingText = null }
+            val text = pendingText ?: return
+            pendingText = null
+            val gen = generation
+            postLocked { startSynthesis(text, gen) }
         }
-        if (toSpeak != null) startSynthesis(toSpeak)
     }
 
     private fun markUnavailable(reason: String) {
@@ -128,42 +165,38 @@ class SentenceTts(
         onLog("TTS UNAVAILABLE: $reason")
     }
 
-    fun speak(text: String) {
-        val sentences = splitSentences(text)
-        if (sentences.isEmpty()) return
-        val unavailableNow: Boolean
+    override fun speak(text: String) {
+        if (splitSentences(text).isEmpty()) return
         synchronized(lock) {
             if (closed) return
-            unavailableNow = unavailable
-            if (!unavailableNow) {
-                cancelLocked()
+            if (!unavailable) {
+                cancelLocked(restoreRouting = false) // about to route again: skip the mode flip
                 speaking = true
                 speakStartNs = System.nanoTime()
                 firstAudioLogged = false
                 if (!ready) {
                     pendingText = text
-                    return
+                } else {
+                    val gen = generation
+                    postLocked { startSynthesis(text, gen) }
                 }
+                return
             }
         }
-        if (unavailableNow) {
-            onLog("TTS UNAVAILABLE: speak ignored")
-            return
-        }
-        startSynthesis(text)
+        onLog("TTS UNAVAILABLE: speak ignored")
     }
 
-    private fun startSynthesis(text: String) {
+    /** audioExec: routes audio (if needed) then hands the run's sentences to the engine. */
+    private fun startSynthesis(text: String, gen: Int) {
         val sentences = splitSentences(text)
-        val gen: Int
         synchronized(lock) {
-            if (closed || !speaking) return // stopped while waiting for init
-            gen = generation
+            if (closed || !speaking || gen != generation) return // stopped or superseded meanwhile
             tracker.begin(gen, sentences.size, nowMs())
-            routeAudioLocked()
         }
+        routeAudio()
         val engine = tts ?: return
         sentences.forEachIndexed { i, s ->
+            if (!isCurrent(gen)) return // a stop's cleanup is queued behind us; feed no more
             val file = File(appContext.cacheDir, "$FILE_PREFIX${gen}_$i.wav")
             val id = "$gen:$i:${sentences.size}"
             val rc = engine.synthesizeToFile(s, Bundle(), file, id)
@@ -246,36 +279,71 @@ class SentenceTts(
         var offset = 0
         val pcm = wav.pcm
         while (offset < pcm.size) {
-            val written: Int
+            var written = 0
+            var needTrack = false
             synchronized(lock) {
                 if (gen != generation || closed) return
-                val t = track ?: createTrackLocked(wav.sampleRate)
-                if (t == null) return
-                if (trackRate != wav.sampleRate) {
-                    onLog("sample rate changed ${trackRate} -> ${wav.sampleRate}; skipping sentence")
-                    return
-                }
-                if (t.playState != AudioTrack.PLAYSTATE_PLAYING) t.play()
-                written = t.write(pcm, offset, minOf(pcm.size - offset, CHUNK_SHORTS), AudioTrack.WRITE_NON_BLOCKING)
-                if (written < 0) {
-                    onLog("AudioTrack.write error $written")
-                    return
-                }
-                if (written > 0) {
-                    framesInTrack += written
-                    framesWritten += written
-                    if (!firstAudioLogged) {
-                        firstAudioLogged = true
-                        lastFirstAudioLatencyMs = (System.nanoTime() - speakStartNs) / 1_000_000
-                        onLog("first audio latency ms: $lastFirstAudioLatencyMs")
+                val t = track
+                if (t == null) {
+                    needTrack = true
+                } else {
+                    if (trackRate != wav.sampleRate) {
+                        onLog("sample rate changed $trackRate -> ${wav.sampleRate}; skipping sentence")
+                        return
+                    }
+                    // WRITE_NON_BLOCKING copies into the shared buffer: no binder under the lock.
+                    written = t.write(pcm, offset, minOf(pcm.size - offset, CHUNK_SHORTS), AudioTrack.WRITE_NON_BLOCKING)
+                    if (written < 0) {
+                        onLog("AudioTrack.write error $written")
+                        return
+                    }
+                    if (written > 0) {
+                        framesInTrack += written
+                        framesWritten += written
+                        if (!firstAudioLogged) {
+                            firstAudioLogged = true
+                            lastFirstAudioLatencyMs = (System.nanoTime() - speakStartNs) / 1_000_000
+                            onLog("first audio latency ms: $lastFirstAudioLatencyMs")
+                        }
                     }
                 }
+            }
+            if (needTrack) {
+                if (!installTrack(gen, wav.sampleRate)) return
+                continue
             }
             if (written == 0) Thread.sleep(5) else offset += written
         }
     }
 
-    private fun createTrackLocked(rate: Int): AudioTrack? {
+    /**
+     * Playback thread: builds and starts a track OUTSIDE the lock (binder calls), then installs it
+     * only if [gen] is still current. Returns false if the run was stopped meanwhile.
+     */
+    private fun installTrack(gen: Int, rate: Int): Boolean {
+        val t = createTrack(rate) ?: return false
+        try {
+            t.play() // an empty track just underruns until the first write
+        } catch (e: IllegalStateException) {
+            onLog("AudioTrack.play failed: $e")
+            t.release()
+            return false
+        }
+        val installed = synchronized(lock) {
+            if (gen != generation || closed || track != null) {
+                false
+            } else {
+                track = t
+                trackRate = rate
+                framesInTrack = 0
+                true
+            }
+        }
+        if (!installed) t.release()
+        return installed
+    }
+
+    private fun createTrack(rate: Int): AudioTrack? {
         val minBuf = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         if (minBuf <= 0) {
             onLog("AudioTrack.getMinBufferSize failed: $minBuf")
@@ -284,7 +352,7 @@ class SentenceTts(
         var audioSessionId = 0
         val usage = if (communicationMode) AudioAttributes.USAGE_VOICE_COMMUNICATION else AudioAttributes.USAGE_MEDIA
         val t = try {
-            audioSessionId = audioSessionIdProvider() // inside try: a throwing provider must not escape the lock
+            audioSessionId = audioSessionIdProvider()
             AudioTrack(
                 AudioAttributes.Builder()
                     .setUsage(usage)
@@ -308,9 +376,6 @@ class SentenceTts(
             t.release()
             return null
         }
-        track = t
-        trackRate = rate
-        framesInTrack = 0
         onLog("AudioTrack created: rate=$rate usage=$usage sessionId=${t.audioSessionId} (requested $audioSessionId)")
         return t
     }
@@ -335,48 +400,68 @@ class SentenceTts(
         onLog("drain timed out")
     }
 
+    /** Natural end of run [gen]: release the track and restore audio on audioExec, unless superseded. */
     private fun finishRun(gen: Int) {
         synchronized(lock) {
             if (gen != generation) return
             speaking = false
-            releaseTrackLocked()
-            restoreAudioLocked()
+            val t = detachTrackLocked()
+            postLocked {
+                releaseTrack(t)
+                val (cur, spk) = synchronized(lock) { generation to speaking }
+                if (route.shouldRestoreAfterRun(gen, cur, spk)) restoreAudio()
+            }
         }
     }
 
-    /** Stops speech immediately and drops everything queued. Safe when idle and when repeated. */
-    fun stop() {
-        synchronized(lock) { cancelLocked() }
+    /**
+     * Stops speech immediately and drops everything queued. Safe when idle and when repeated.
+     * O(microseconds): no binder, audio-mode or disk work on the caller's thread (see class doc).
+     */
+    override fun stop() {
+        synchronized(lock) { cancelLocked(restoreRouting = true) }
     }
 
-    private fun cancelLocked() {
+    private fun cancelLocked(restoreRouting: Boolean) {
         generation++
+        val newGen = generation
         pendingText = null
         speaking = false
-        try { tts?.stop() } catch (e: Exception) { onLog("tts.stop failed: $e") }
         queue.clear()
         tracker.cancel()
-        releaseTrackLocked()
-        restoreAudioLocked()
-        deleteTempFiles()
+        val t = detachTrackLocked()
+        try {
+            t?.setVolume(0f) // client-side gain: silent at once, no binder
+        } catch (_: IllegalStateException) {}
+        postLocked { cleanup(t, newGen, restoreRouting) }
     }
 
-    private fun releaseTrackLocked() {
-        track?.let {
-            try { it.pause(); it.flush() } catch (_: IllegalStateException) {}
-            it.release()
-        }
+    private fun detachTrackLocked(): AudioTrack? {
+        val t = track
         track = null
         trackRate = 0
         framesInTrack = 0
+        return t
     }
 
-    private fun deleteTempFiles() {
-        appContext.cacheDir.listFiles { f -> f.name.startsWith(FILE_PREFIX) }?.forEach { it.delete() }
+    /** audioExec: the slow half of a stop, ordered before any later run's routing/synthesis. */
+    private fun cleanup(t: AudioTrack?, newGen: Int, restoreRouting: Boolean) {
+        try { tts?.stop() } catch (e: Exception) { onLog("tts.stop failed: $e") }
+        releaseTrack(t)
+        if (restoreRouting && route.shouldRestoreAfterStop()) restoreAudio()
+        appContext.cacheDir.listFiles { f -> AudioRouteState.isStaleTempFile(f.name, FILE_PREFIX, newGen) }
+            ?.forEach { it.delete() }
     }
 
-    private fun routeAudioLocked() {
-        if (!communicationMode || audioRouted) return
+    private fun releaseTrack(t: AudioTrack?) {
+        t ?: return
+        try { t.pause(); t.flush() } catch (_: IllegalStateException) {}
+        t.release()
+    }
+
+    /** audioExec only. */
+    private fun routeAudio() {
+        if (!communicationMode || !route.shouldRoute()) return
         savedMode = audioManager.mode
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -396,12 +481,10 @@ class SentenceTts(
         val effective = audioManager.mode
         onLog("audio mode requested=${AudioManager.MODE_IN_COMMUNICATION}, effective=$effective" +
             if (effective != AudioManager.MODE_IN_COMMUNICATION) " -- NOT APPLIED (permission/denied?)" else "")
-        audioRouted = true
     }
 
-    private fun restoreAudioLocked() {
-        if (!audioRouted) return
-        audioRouted = false
+    /** audioExec only; the caller has checked [route]. */
+    private fun restoreAudio() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             audioManager.clearCommunicationDevice()
         } else {
@@ -414,13 +497,16 @@ class SentenceTts(
     fun close() {
         synchronized(lock) {
             if (closed) return
-            cancelLocked()
+            cancelLocked(restoreRouting = true)
             closed = true
+            postLocked {
+                tts?.shutdown()
+                tts = null
+            }
         }
+        audioExec.shutdown() // runs the queued cleanup and shutdown, then the thread exits
         main.removeCallbacksAndMessages(null)
         playbackThread.interrupt()
-        tts?.shutdown()
-        tts = null
     }
 
     class Wav(val sampleRate: Int, val pcm: ShortArray)
