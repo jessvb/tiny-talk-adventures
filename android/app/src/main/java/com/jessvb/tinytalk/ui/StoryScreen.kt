@@ -74,7 +74,7 @@ fun StoryScreen(vm: TinyTalkViewModel, onBack: () -> Unit, onSettings: () -> Uni
         askedOnce = true
         vm.onPermissionResult(granted)
     }
-    val label = if (paused && !state.micPermissionMissing && state.micUnavailable == null && !state.listeningNotInstalled) "Listening is paused"
+    val label = if (paused && !state.micPermissionMissing && state.micUnavailable == null && state.listeningNotice == null) "Listening is paused"
         else StoryReducer.stateLabel(state)
 
     BoxWithConstraints(Modifier.fillMaxSize().background(TTA.Palette.OuterPaper)) {
@@ -85,9 +85,7 @@ fun StoryScreen(vm: TinyTalkViewModel, onBack: () -> Unit, onSettings: () -> Uni
             Header(label, onBack, onSettings)
             Column(Modifier.heightIn(max = noticeMax).verticalScroll(rememberScrollState())) {
                 state.banner?.let { BannerView(it, onSettings) }
-                if (state.listeningNotInstalled) {
-                    InfoNotice(StoryReducer.LISTENING_NOT_INSTALLED_MESSAGE, onSettings)
-                }
+                state.listeningNotice?.let { InfoNotice(StoryReducer.listeningMessage(it), onSettings) }
                 when {
                     state.micPermissionMissing -> MicNotice(
                         title = "Allow microphone",
@@ -288,7 +286,7 @@ private fun BottomBar(
     onNewStory: () -> Unit,
     onTogglePause: () -> Unit,
 ) {
-    val micOff = paused || state.micPermissionMissing || state.micUnavailable != null || state.listeningNotInstalled
+    val micOff = paused || state.micPermissionMissing || state.micUnavailable != null || state.listeningNotice != null
     val mood = when (state.loopState) {
         LoopState.IDLE -> ElsieMood.IDLE
         LoopState.LISTENING -> ElsieMood.LISTENING
@@ -319,7 +317,7 @@ private fun BottomBar(
             )
         }
         Box(Modifier.weight(1f)) {
-            val canToggle = !state.micPermissionMissing && state.micUnavailable == null && !state.listeningNotInstalled
+            val canToggle = !state.micPermissionMissing && state.micUnavailable == null && state.listeningNotice == null
             ChunkyButton(
                 if (paused) "Listen" else "Pause",
                 onTogglePause,

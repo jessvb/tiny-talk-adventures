@@ -4,6 +4,7 @@ import com.jessvb.tinytalk.core.settings.SttMode
 import com.jessvb.tinytalk.core.settings.SttModeStore
 import com.jessvb.tinytalk.core.voice.LoopState
 import com.jessvb.tinytalk.ui.LineSpeaker
+import com.jessvb.tinytalk.ui.ListeningNotice
 import com.jessvb.tinytalk.ui.Screen
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -51,7 +52,7 @@ class LoopCoordinatorTest {
     private val modes = Modes()
     private var permission = true
     private var consent = true
-    private var available = true
+    private var available = ListeningAvailability.READY
 
     /**
      * Worker and "main" share the test scheduler (so advanceUntilIdle drives them) but are not
@@ -74,7 +75,7 @@ class LoopCoordinatorTest {
         loopProvider = provider ?: { loop },
         session = { log += "newStory" },
         modeStore = modes,
-        listeningAvailable = { available },
+        listeningAvailability = { available },
         micPermission = { permission },
         consent = { consent },
     )
@@ -302,20 +303,66 @@ class LoopCoordinatorTest {
         assertFalse(log.contains("start"))
     }
 
-    @Test fun listeningNotInstalledKeepsTheLoopOffUntilAModeThatWorks() = runTest {
+    @Test fun listeningUnavailableKeepsTheLoopOffUntilAModeThatWorks() = runTest {
         modes.mode = SttMode.ON_DEVICE
-        available = false
+        available = ListeningAvailability.FAILED
         val c = coordinator()
         enterStory(c)
-        assertTrue(c.story.value.listeningNotInstalled)
+        assertEquals(ListeningNotice.FAILED, c.story.value.listeningNotice)
         assertFalse(log.contains("start"))
 
-        available = true
+        available = ListeningAvailability.READY
         c.setSttMode(SttMode.CLOUD)
         advanceUntilIdle()
-        assertFalse(c.story.value.listeningNotInstalled)
+        assertNull(c.story.value.listeningNotice)
         assertTrue(loop.running)
         assertEquals(SttMode.CLOUD, modes.mode)
+    }
+
+    @Test fun listeningStartsByItselfWhenTheModelFinishesLoadingOnTheStoryScreen() = runTest {
+        modes.mode = SttMode.ON_DEVICE
+        available = ListeningAvailability.LOADING
+        val c = coordinator()
+        enterStory(c)
+        assertEquals(ListeningNotice.LOADING, c.story.value.listeningNotice)
+        assertFalse(log.contains("start"))
+
+        available = ListeningAvailability.READY
+        c.onListeningAvailabilityChanged()
+        advanceUntilIdle()
+        assertNull(c.story.value.listeningNotice)
+        assertTrue(loop.running)
+        assertEquals("start", log.last())
+    }
+
+    @Test fun aFailedLoadOnTheStoryScreenStaysOffWithAVisibleNotice() = runTest {
+        modes.mode = SttMode.ON_DEVICE
+        available = ListeningAvailability.LOADING
+        val c = coordinator()
+        enterStory(c)
+
+        available = ListeningAvailability.FAILED
+        c.onListeningAvailabilityChanged()
+        advanceUntilIdle()
+        assertEquals(ListeningNotice.FAILED, c.story.value.listeningNotice)
+        assertFalse(log.contains("start"))
+        assertFalse(loop.running)
+    }
+
+    @Test fun aLoadFinishingOffTheStoryScreenIsPickedUpOnEntry() = runTest {
+        modes.mode = SttMode.ON_DEVICE
+        available = ListeningAvailability.LOADING
+        val c = coordinator()
+        c.setForeground(true)
+        c.onNav(Screen.LANDING)
+        available = ListeningAvailability.READY
+        c.onListeningAvailabilityChanged() // not on Story: nothing starts
+        advanceUntilIdle()
+        assertFalse(log.contains("start"))
+        c.onNav(Screen.STORY)
+        advanceUntilIdle()
+        assertNull(c.story.value.listeningNotice)
+        assertTrue(loop.running)
     }
 
     @Test fun chatKeyAvailabilityDrivesTheUpFrontBanner() = runTest {

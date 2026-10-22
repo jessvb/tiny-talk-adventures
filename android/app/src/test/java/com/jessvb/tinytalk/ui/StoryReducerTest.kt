@@ -123,20 +123,28 @@ class StoryReducerTest {
         assertFalse(StoryReducer.reduce(s1, StoryInput.PermissionGranted).micPermissionMissing)
     }
 
-    @Test fun listeningNotInstalledIsItsOwnStateAndClearsWhenReady() {
-        val s1 = run(StoryInput.ListeningNotInstalled)
-        assertTrue(s1.listeningNotInstalled)
+    @Test fun listeningUnavailableIsItsOwnStateAndClearsWhenReady() {
+        val s1 = run(StoryInput.ListeningUnavailable(ListeningNotice.LOADING))
+        assertEquals(ListeningNotice.LOADING, s1.listeningNotice)
         assertNull(s1.banner) // a separate notice, so it never hides a key banner
-        assertEquals("Elsie can't listen yet", StoryReducer.stateLabel(s1))
-        assertFalse(StoryReducer.reduce(s1, StoryInput.ListeningReady).listeningNotInstalled)
+        assertEquals("Elsie is getting ready", StoryReducer.stateLabel(s1))
+        assertNull(StoryReducer.reduce(s1, StoryInput.ListeningReady).listeningNotice)
         // ListeningReady leaves banners alone.
         val k = run(StoryInput.KeyProblem(KeyProblemKind.MISSING), StoryInput.ListeningReady)
         assertEquals(BannerKind.KEY_MISSING, k.banner!!.kind)
     }
 
-    @Test fun listeningNotInstalledAndKeyMissingShowTogether() {
-        val s = run(StoryInput.ListeningNotInstalled, StoryInput.ChatKeyMissing)
-        assertTrue(s.listeningNotInstalled)
+    @Test fun listeningLoadFailureHasAVisibleParentMessage() {
+        val s = run(StoryInput.ListeningUnavailable(ListeningNotice.LOADING), StoryInput.ListeningUnavailable(ListeningNotice.FAILED))
+        assertEquals(ListeningNotice.FAILED, s.listeningNotice)
+        assertEquals("Elsie can't listen", StoryReducer.stateLabel(s))
+        assertTrue(StoryReducer.listeningMessage(ListeningNotice.FAILED).contains("Close the app"))
+        assertTrue(StoryReducer.listeningMessage(ListeningNotice.LOADING).contains("getting her ears ready"))
+    }
+
+    @Test fun listeningUnavailableAndKeyMissingShowTogether() {
+        val s = run(StoryInput.ListeningUnavailable(ListeningNotice.FAILED), StoryInput.ChatKeyMissing)
+        assertEquals(ListeningNotice.FAILED, s.listeningNotice)
         assertEquals(BannerKind.KEY_MISSING, s.banner!!.kind)
     }
 

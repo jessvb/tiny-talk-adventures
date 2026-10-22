@@ -24,6 +24,7 @@ import com.jessvb.tinytalk.keys.SettingsStores
 import com.jessvb.tinytalk.spike.MicCapture
 import com.jessvb.tinytalk.spike.SentenceTts
 import com.jessvb.tinytalk.spike.SileroVad
+import com.jessvb.tinytalk.stt.OnDeviceTranscriber
 import com.jessvb.tinytalk.ui.Navigator
 import com.jessvb.tinytalk.ui.Screen
 import com.jessvb.tinytalk.ui.SharedPrefsConsentStore
@@ -86,8 +87,12 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
     private val workScope = CoroutineScope(SupervisorJob(viewModelScope.coroutineContext.job) + Dispatchers.Default)
     private val mainScope = CoroutineScope(SupervisorJob(viewModelScope.coroutineContext.job) + Dispatchers.Main)
 
-    // The transcriber seam (Task 4b-B plugs OnDeviceTranscriber into AppTranscriberFactory).
-    private val transcriberFactory: TranscriberFactory = AppTranscriberFactory(groqKey = { groq.current() })
+    /** The one warm on-phone recogniser; its model loads in the background at start (init). */
+    private val onDevice = OnDeviceTranscriber(app)
+
+    // The transcriber seam: ON_DEVICE -> [onDevice] (available once loaded), CLOUD -> Groq.
+    private val transcriberFactory: TranscriberFactory =
+        AppTranscriberFactory(groqKey = { groq.current() }, onDevice = onDevice)
 
     private class Audio(val tts: SentenceTts, val vad: SileroVad, val loop: VoiceLoop) {
         fun release() {
@@ -110,7 +115,7 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
         loopProvider = { audioOrNull()?.loop?.let(::LoopAdapter) },
         session = { session.newStory() },
         modeStore = prefs,
-        listeningAvailable = transcriberFactory::isAvailable,
+        listeningAvailability = transcriberFactory::availability,
         micPermission = {
             app.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         },
@@ -143,6 +148,20 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Throwable) {
                 audio.completeExceptionally(e)
             }
+        }
+        // Loaded warm at start, NOT on the first utterance (that would add ~1 s to the first
+        // reply). In parallel with the audio build, so neither delays or breaks the other.
+        workScope.launch(Dispatchers.IO) {
+            try {
+                onDevice.load()
+            } catch (e: Exception) {
+                // The Story screen shows a parent-facing notice (availability FAILED).
+                log("on-device listening unavailable: ${e.javaClass.simpleName}")
+            }
+        }
+        // A load finishing while the Story screen is already shown starts listening by itself.
+        viewModelScope.launch {
+            onDevice.availability.collect { coordinator.onListeningAvailabilityChanged() }
         }
         viewModelScope.launch {
             navigator.state.collect { nav ->
@@ -298,6 +317,7 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
         }
         parts?.release() // a build still running releases its own parts when it finishes
         transcriber.close()
+        onDevice.close() // idempotent; releases the recognizer after any decode in progress
         workScope.coroutineContext.job.cancel()
         mainScope.coroutineContext.job.cancel()
     }

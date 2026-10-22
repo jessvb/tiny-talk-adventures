@@ -4,6 +4,7 @@ import com.jessvb.tinytalk.core.session.KeyProblemKind
 import com.jessvb.tinytalk.core.settings.SttMode
 import com.jessvb.tinytalk.core.settings.SttModeStore
 import com.jessvb.tinytalk.core.voice.LoopState
+import com.jessvb.tinytalk.ui.ListeningNotice
 import com.jessvb.tinytalk.ui.Screen
 import com.jessvb.tinytalk.ui.StoryInput
 import com.jessvb.tinytalk.ui.StoryReducer
@@ -54,7 +55,7 @@ class LoopCoordinator(
     private val loopProvider: suspend () -> LoopControl?,
     private val session: StoryResetter,
     private val modeStore: SttModeStore,
-    private val listeningAvailable: (SttMode) -> Boolean,
+    private val listeningAvailability: (SttMode) -> ListeningAvailability,
     private val micPermission: () -> Boolean,
     private val consent: () -> Boolean,
 ) {
@@ -206,6 +207,17 @@ class LoopCoordinator(
         setSttMode(SttMode.ON_DEVICE)
     }
 
+    /**
+     * The on-phone recogniser finished loading (or failed) after start-up. The Story screen may
+     * already be showing "getting ready": re-check so listening starts by itself (or the
+     * failure notice appears) without leaving and re-entering the screen.
+     */
+    fun onListeningAvailabilityChanged() {
+        if (!conditions.onStoryScreen) return // re-checked on the next Story entry
+        refreshListeningAvailability()
+        reconcile()
+    }
+
     /** Whether a Groq key (own or built-in) exists; shown up front, before the child speaks. */
     fun setChatKeyAvailable(available: Boolean) {
         dispatch(if (available) StoryInput.ChatKeyPresent else StoryInput.ChatKeyMissing)
@@ -275,9 +287,16 @@ class LoopCoordinator(
     }
 
     private fun refreshListeningAvailability() {
-        val ok = listeningAvailable(sttMode)
+        val availability = listeningAvailability(sttMode)
+        val ok = availability == ListeningAvailability.READY
         conditions = conditions.copy(listeningAvailable = ok)
-        dispatch(if (ok) StoryInput.ListeningReady else StoryInput.ListeningNotInstalled)
+        dispatch(
+            when (availability) {
+                ListeningAvailability.READY -> StoryInput.ListeningReady
+                ListeningAvailability.LOADING -> StoryInput.ListeningUnavailable(ListeningNotice.LOADING)
+                ListeningAvailability.FAILED -> StoryInput.ListeningUnavailable(ListeningNotice.FAILED)
+            },
+        )
     }
 
     private fun reconcile() {

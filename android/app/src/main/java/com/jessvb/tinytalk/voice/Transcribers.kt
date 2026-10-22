@@ -3,39 +3,49 @@ package com.jessvb.tinytalk.voice
 import com.jessvb.tinytalk.core.settings.SttMode
 import com.jessvb.tinytalk.core.stt.GroqWhisperClient
 import com.jessvb.tinytalk.core.stt.SpeechTranscribing
+import kotlinx.coroutines.flow.StateFlow
 
-/**
- * The transcriber seam: the ONE place that maps an [SttMode] to a [SpeechTranscribing].
- * Task 4b-B swaps the on-device branch of [AppTranscriberFactory] for `OnDeviceTranscriber`.
- */
+/** Whether a listening mode can be used right now. */
+enum class ListeningAvailability {
+    READY,
+    /** On-phone listening: the model is still loading (a few seconds after app start). */
+    LOADING,
+    /** On-phone listening: the model could not load (until the app is restarted). */
+    FAILED,
+}
+
+/** A transcriber that must warm up before it can be used (the on-phone recogniser). */
+interface WarmTranscriber : SpeechTranscribing {
+    val availability: StateFlow<ListeningAvailability>
+}
+
+/** The transcriber seam: the ONE place that maps an [SttMode] to a [SpeechTranscribing]. */
 interface TranscriberFactory {
     fun create(mode: SttMode): SpeechTranscribing
 
-    /** False when [create] for this mode can only fail (nothing to listen with). */
-    fun isAvailable(mode: SttMode): Boolean
-}
+    fun availability(mode: SttMode): ListeningAvailability
 
-/** Placeholder for the on-device recogniser until Task 4b-B installs it. Never sends anything. */
-class NotReadyTranscriber : SpeechTranscribing {
-    override suspend fun transcribe(pcm16: ShortArray, sampleRate: Int): String =
-        throw IllegalStateException("on-device speech recognition is not installed yet")
+    /** False when [create] for this mode can only fail (nothing to listen with yet). */
+    fun isAvailable(mode: SttMode): Boolean = availability(mode) == ListeningAvailability.READY
 }
 
 /**
  * CLOUD -> Groq Whisper (only after the parent confirmed "better listening");
- * ON_DEVICE -> not installed yet.
+ * ON_DEVICE -> the one warm on-phone recogniser ([onDevice], owned and loaded by the app
+ * container), available only once its model has actually loaded.
  */
-class AppTranscriberFactory(private val groqKey: () -> String?) : TranscriberFactory {
+class AppTranscriberFactory(
+    private val groqKey: () -> String?,
+    private val onDevice: WarmTranscriber,
+) : TranscriberFactory {
     override fun create(mode: SttMode): SpeechTranscribing = when (mode) {
         SttMode.CLOUD -> GroqWhisperClient(apiKey = groqKey)
-        // TODO(Task 4b-B): return OnDeviceTranscriber(context) here (load it warm at app start)
-        //  and make isAvailable(ON_DEVICE) true.
-        SttMode.ON_DEVICE -> NotReadyTranscriber()
+        SttMode.ON_DEVICE -> onDevice
     }
 
-    override fun isAvailable(mode: SttMode): Boolean = when (mode) {
-        SttMode.CLOUD -> true
-        SttMode.ON_DEVICE -> false // TODO(Task 4b-B): true once OnDeviceTranscriber is wired in.
+    override fun availability(mode: SttMode): ListeningAvailability = when (mode) {
+        SttMode.CLOUD -> ListeningAvailability.READY
+        SttMode.ON_DEVICE -> onDevice.availability.value
     }
 }
 

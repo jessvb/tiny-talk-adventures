@@ -2,11 +2,13 @@ package com.jessvb.tinytalk.voice
 
 import com.jessvb.tinytalk.core.settings.SttMode
 import com.jessvb.tinytalk.core.stt.SpeechTranscribing
+import com.jessvb.tinytalk.core.stt.GroqWhisperClient
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
+import org.junit.Assert.assertSame
 import org.junit.Test
 
 class TranscribersTest {
@@ -20,7 +22,7 @@ class TranscribersTest {
     private class CountingFactory : TranscriberFactory {
         val made = mutableListOf<Fake>()
         override fun create(mode: SttMode): SpeechTranscribing = Fake(mode.name).also { made += it }
-        override fun isAvailable(mode: SttMode) = true
+        override fun availability(mode: SttMode) = ListeningAvailability.READY
     }
 
     @Test fun usesTheModeReadAtEachCall() = runBlocking {
@@ -52,20 +54,36 @@ class TranscribersTest {
         assertTrue(f.made.single().closed)
     }
 
-    @Test fun notReadyTranscriberFailsClearly() = runBlocking {
-        try {
-            NotReadyTranscriber().transcribe(ShortArray(1), 16000)
-            fail("expected IllegalStateException")
-        } catch (e: IllegalStateException) {
-            assertEquals("on-device speech recognition is not installed yet", e.message)
-        }
+    private class FakeWarm : WarmTranscriber {
+        override val availability = MutableStateFlow(ListeningAvailability.LOADING)
+        override suspend fun transcribe(pcm16: ShortArray, sampleRate: Int) = "on-device"
     }
 
-    @Test fun appFactoryCloudIsAvailableOnDeviceNotYet() {
-        val f = AppTranscriberFactory(groqKey = { "fake-key" })
-        assertTrue(f.isAvailable(SttMode.CLOUD))
-        assertFalse(f.isAvailable(SttMode.ON_DEVICE)) // flips to true in Task 4b-B
-        assertTrue(f.create(SttMode.ON_DEVICE) is NotReadyTranscriber)
-        assertFalse(f.create(SttMode.CLOUD) is NotReadyTranscriber)
+    @Test fun onDeviceIsAvailableOnlyOnceItsModelHasLoaded() {
+        val warm = FakeWarm()
+        val f = AppTranscriberFactory(groqKey = { "fake-key" }, onDevice = warm)
+        assertEquals(ListeningAvailability.LOADING, f.availability(SttMode.ON_DEVICE))
+        assertFalse(f.isAvailable(SttMode.ON_DEVICE))
+
+        warm.availability.value = ListeningAvailability.READY
+        assertEquals(ListeningAvailability.READY, f.availability(SttMode.ON_DEVICE))
+        assertTrue(f.isAvailable(SttMode.ON_DEVICE))
+
+        warm.availability.value = ListeningAvailability.FAILED
+        assertEquals(ListeningAvailability.FAILED, f.availability(SttMode.ON_DEVICE))
+        assertFalse(f.isAvailable(SttMode.ON_DEVICE))
+    }
+
+    @Test fun onDeviceCreatesTheOneWarmInstanceAndCloudIsUnchanged() {
+        val warm = FakeWarm()
+        val f = AppTranscriberFactory(groqKey = { "fake-key" }, onDevice = warm)
+        assertSame(warm, f.create(SttMode.ON_DEVICE))
+        assertSame(warm, f.create(SttMode.ON_DEVICE))
+        assertTrue(f.create(SttMode.CLOUD) is GroqWhisperClient)
+        // Cloud availability never depends on the on-phone model.
+        for (state in ListeningAvailability.entries) {
+            warm.availability.value = state
+            assertTrue(f.isAvailable(SttMode.CLOUD))
+        }
     }
 }

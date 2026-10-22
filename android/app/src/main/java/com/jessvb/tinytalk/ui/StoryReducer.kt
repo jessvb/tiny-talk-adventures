@@ -9,6 +9,9 @@ data class TranscriptLine(val id: Long, val speaker: LineSpeaker, val text: Stri
 
 enum class BannerKind { KEY_MISSING, KEY_REJECTED, KEY_RATE_LIMITED, RETRY }
 
+/** Why the selected listening mode cannot be used yet (on-phone listening only). */
+enum class ListeningNotice { LOADING, FAILED }
+
 /** A parent-facing notice above the transcript. [showSettings] adds a Settings button. */
 data class Banner(val kind: BannerKind, val message: String, val showSettings: Boolean)
 
@@ -22,8 +25,8 @@ data class StoryUiState(
     val micUnavailable: String? = null,
     /** False when retrying cannot help (the audio parts never built): no "Try again" button. */
     val micUnavailableRetryable: Boolean = true,
-    /** The selected listening mode has nothing to listen with in this build (Task 4b-B pending). */
-    val listeningNotInstalled: Boolean = false,
+    /** The selected listening mode cannot listen yet (still loading, or failed to load); null = fine. */
+    val listeningNotice: ListeningNotice? = null,
     /** The arc finished: show "The end!" until the child starts talking again. */
     val storyFinished: Boolean = false,
     val nextLineId: Long = 0,
@@ -44,8 +47,8 @@ sealed interface StoryInput {
     data object PermissionMissing : StoryInput
     data object PermissionGranted : StoryInput
     data object StoryFinished : StoryInput
-    /** The selected speech recognition is not available in this build (Task 4b-B pending). */
-    data object ListeningNotInstalled : StoryInput
+    /** The selected speech recognition cannot be used yet (on-phone model loading or failed). */
+    data class ListeningUnavailable(val notice: ListeningNotice) : StoryInput
     data object ListeningReady : StoryInput
     /** Neither an own nor a built-in Groq key exists: Elsie cannot think at all. */
     data object ChatKeyMissing : StoryInput
@@ -62,8 +65,15 @@ object StoryReducer {
         "Elsie has done a lot of thinking and needs a rest. This may pass in a little while, or a grown-up can add a key in Settings."
     const val KEY_NEEDED_MESSAGE =
         "Elsie needs a key to think — a grown-up can add one in Settings."
-    const val LISTENING_NOT_INSTALLED_MESSAGE =
-        "Elsie can't listen yet: listening on this phone isn't installed in this version of the app. A grown-up can turn on \"Better listening\" in Settings (it sends your child's voice to the cloud)."
+    const val LISTENING_LOADING_MESSAGE =
+        "Elsie is getting her ears ready on this phone. This takes a few seconds after the app opens, then she starts listening by herself."
+    const val LISTENING_LOAD_FAILED_MESSAGE =
+        "Elsie can't listen: listening on this phone could not start. Close the app completely and open it again. A grown-up can also turn on \"Better listening\" in Settings (it sends your child's voice to the cloud)."
+
+    fun listeningMessage(notice: ListeningNotice): String = when (notice) {
+        ListeningNotice.LOADING -> LISTENING_LOADING_MESSAGE
+        ListeningNotice.FAILED -> LISTENING_LOAD_FAILED_MESSAGE
+    }
 
     fun reduce(state: StoryUiState, input: StoryInput): StoryUiState = when (input) {
         is StoryInput.LoopStateChanged -> state.copy(
@@ -89,8 +99,8 @@ object StoryReducer {
         StoryInput.PermissionGranted -> state.copy(micPermissionMissing = false)
         // A StoryFinished on an empty transcript belongs to a story that was already replaced.
         StoryInput.StoryFinished -> if (state.lines.isEmpty()) state else state.copy(storyFinished = true)
-        StoryInput.ListeningNotInstalled -> state.copy(listeningNotInstalled = true, loopState = LoopState.IDLE)
-        StoryInput.ListeningReady -> state.copy(listeningNotInstalled = false)
+        is StoryInput.ListeningUnavailable -> state.copy(listeningNotice = input.notice, loopState = LoopState.IDLE)
+        StoryInput.ListeningReady -> state.copy(listeningNotice = null)
         StoryInput.ChatKeyMissing -> state.copy(banner = Banner(BannerKind.KEY_MISSING, KEY_NEEDED_MESSAGE, showSettings = true))
         StoryInput.ChatKeyPresent ->
             if (state.banner?.kind == BannerKind.KEY_MISSING) state.copy(banner = null) else state
@@ -98,7 +108,8 @@ object StoryReducer {
 
     /** Header/avatar caption (iOS StoryView.stateLabel). */
     fun stateLabel(state: StoryUiState): String = when {
-        state.listeningNotInstalled -> "Elsie can't listen yet"
+        state.listeningNotice == ListeningNotice.LOADING -> "Elsie is getting ready"
+        state.listeningNotice == ListeningNotice.FAILED -> "Elsie can't listen"
         state.micPermissionMissing || state.micUnavailable != null -> "Mic is off"
         else -> when (state.loopState) {
             LoopState.IDLE -> "Ready when you are"
