@@ -87,6 +87,8 @@ class SentenceTts(
     private var firstAudioLogged = false
     @Volatile private var closed = false
     @Volatile private var speaking = false
+    /** Engine voice name chosen in Settings; null = the engine's default US English voice. */
+    @Volatile private var preferredVoice: String? = null
 
     /** Total frames ever written to any AudioTrack by this instance (for tests). */
     @Volatile var framesWritten = 0L
@@ -149,6 +151,9 @@ class SentenceTts(
         synchronized(lock) {
             if (closed) return
             ready = true
+            // Under the lock with ready: a setVoice racing init either saw !ready (applied
+            // here) or sees ready (posts its own). Posted before any pending synthesis.
+            if (preferredVoice != null) postLocked { applyVoice() }
             val text = pendingText ?: return
             pendingText = null
             val gen = generation
@@ -163,6 +168,59 @@ class SentenceTts(
             speaking = false
         }
         onLog("TTS UNAVAILABLE: $reason")
+    }
+
+    /**
+     * Chooses Elsie's voice by engine voice name (null = default US English). Takes effect
+     * from the next run. Cheap: the binder work runs on audioExec, ordered before any later
+     * run's synthesis; before the engine is ready, onInit applies it.
+     */
+    fun setVoice(name: String?) {
+        synchronized(lock) {
+            preferredVoice = name
+            if (closed || !ready) return
+            postLocked { applyVoice() }
+        }
+    }
+
+    /**
+     * Installed English voices that work offline (a network voice would send Elsie's text to
+     * the engine vendor). Binder calls: call off the main thread. Empty until the engine is ready.
+     */
+    fun englishVoices(): List<VoiceOption> {
+        val engine = synchronized(lock) { if (ready && !closed) tts else null } ?: return emptyList()
+        return try {
+            engine.voices.orEmpty()
+                .filter { v ->
+                    v.locale.language == "en" && !v.isNetworkConnectionRequired &&
+                        TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED !in v.features.orEmpty()
+                }
+                .map { VoiceOption(it.name, it.locale.displayName) }
+                .sortedWith(compareBy({ it.localeName }, { it.name }))
+        } catch (e: Exception) {
+            onLog("listing voices failed: ${e.javaClass.simpleName}")
+            emptyList()
+        }
+    }
+
+    /** audioExec, or onInit before the engine is marked ready. Never throws. */
+    private fun applyVoice() {
+        val engine = tts ?: return
+        val name = preferredVoice
+        try {
+            if (name == null) {
+                engine.setLanguage(Locale.US)
+                return
+            }
+            val v = engine.voices?.firstOrNull { it.name == name }
+            if (v == null) {
+                onLog("chosen voice is not installed; keeping the current one")
+                return
+            }
+            engine.voice = v
+        } catch (e: Exception) {
+            onLog("setVoice failed: ${e.javaClass.simpleName}")
+        }
     }
 
     override fun speak(text: String) {
@@ -510,6 +568,9 @@ class SentenceTts(
     }
 
     class Wav(val sampleRate: Int, val pcm: ShortArray)
+
+    /** One installed voice: the engine's [name] (persisted) and its language for display. */
+    data class VoiceOption(val name: String, val localeName: String)
 
     companion object {
         /** Flip to false to A/B plain media output against the voice-communication path. */
