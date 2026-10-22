@@ -34,7 +34,9 @@ Not built: storybook, Library, illustrations.
 - `:core` JVM tests: 147 run, 0 failures, 0 skipped.
 - App JVM unit tests: 95 run, 0 failures, 0 skipped.
 - Debug APK: 155,194,076 bytes (about 155 MB; multi-ABI native libraries).
-  Expected to grow about 130 MB when the on-device recognizer is added.
+  With the on-device recognizer and speech model included, the debug APK is
+  about 139 MB (down from 155 MB), because only the arm64 native libraries
+  (what the Pixel 3 uses) are bundled now.
 - APK installed with `adb install -r` on serial 8BDX18J4R (Success), not launched.
 - Secret hygiene: the only secret-named tracked file that is a config file is
   `android/local.secrets.properties.example`; `android/local.secrets.properties`
