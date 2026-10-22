@@ -51,19 +51,142 @@ refuses to start in on-device mode), storybook, Library, illustrations.
 - Layout at large font sizes and in dark mode on the device (the screen was off
   during earlier attempts).
 
-## Carry-over checklist for the audible run
+## Audible run: step-by-step script
 
-1. Mic loss, then Retry.
-2. Story -> Settings -> Story keeps the transcript; Landing -> Story clears it.
-3. New Story while Elsie is speaking.
-4. Elsie self-barge-in via echo (does her tail audio leak into the next utterance?).
-5. First-word clipping with a real child voice.
-6. SentenceTts is built on a background thread and ready before first use.
-7. Consent -> microphone permission flow (and denial).
-8. Key problem: banner pointing to Settings plus Elsie's spoken friendly line (try a deliberately wrong key).
-9. Better listening dialog (turning it on, off, and cancelling).
-10. Reset consent (returns to onboarding, Better listening is turned off).
-11. From the plan: 3-turn conversation, interrupt once, Wi-Fi off mid-turn (retry line, recovery), background and return.
+This is the hands-on test. Each scenario says what it checks in plain words,
+what to do, what you should see or hear, and what to note if it does not
+happen. Button names are as they appear in the app (they may differ by a word).
+Do the scenarios in order; later ones assume the earlier setup. Write down
+anything odd, with roughly what time it happened, so the phone's log can be
+read afterwards. The wording "pass" below means "this is what we hope to see".
+
+### A. Before you start
+
+1. **Give the app a key to think with.** Elsie's replies come from a cloud
+   chat model that needs a Groq key. There is no key in the app until you
+   supply one (the repo is public, so a key can never be committed). Two ways:
+   - **Quickest, no rebuild:** open the app, go to **Settings** (the gear), find
+     the **Groq key** field, paste your key, and save. The status line changes
+     from "no key" to "Using your key". This is stored encrypted on the phone.
+   - **Built into the app (what you asked for as the default):** on the Mac,
+     copy `android/local.secrets.properties.example` to
+     `android/local.secrets.properties` (same folder), put your key after
+     `GROQ_API_KEY=` and save. That file is ignored by git. Then rebuild and
+     reinstall the app (the key is baked in at build time, so changing the file
+     does nothing until you rebuild). Use a dedicated key with a usage limit
+     that you can revoke, because anything inside an APK can be pulled out.
+   Either way the message "Elsie needs a key to think" disappears once a key
+   exists. (Until you do one of these, that message is the app working as
+   designed.)
+2. **Make listening available.** In the default mode the app turns your child's
+   voice into words on the phone. That recognizer is installed by Task 4b-B.
+   If the Story screen says "Elsie can't listen yet", that step has not been
+   installed on this build; as a stand-in you can turn on **Settings > Better
+   listening** (this sends the voice to the cloud, so only do that for testing).
+3. **Prepare the phone and room.** Quiet room, phone flat on a table about
+   40 cm (a ruler length and a bit) from you, headphones unplugged, media
+   volume at about the middle. Close other apps that use the microphone.
+4. **Start from a clean slate** (optional but recommended): on the Mac run
+   `~/Library/Android/sdk/platform-tools/adb shell pm clear com.jessvb.tinytalk`
+   so the app behaves like a first launch (this also forgets any key you typed
+   into Settings, so do it BEFORE step 1).
+
+### B. First launch and permission
+
+5. **Consent screen.** Open the app. You should see a screen titled
+   "Before we start" with the paragraph about the voice being turned into words
+   on the phone. Check that it does not mention a company name, and that
+   "Not now" does nothing except show "Nothing is sent until you agree."
+   Pass: you cannot get past this screen without tapping **I agree**.
+6. **Microphone permission.** After **I agree**, Android asks to allow the
+   microphone. Tap **Allow** (the "only while using the app" choice is fine).
+   Pass: you land on the Landing screen and nothing is spoken yet.
+7. **Permission denied (optional second pass).** Do step 4 again, repeat, and
+   this time tap **Don't allow**. Pass: the app still opens; going to the Story
+   screen shows an "Allow microphone" (or "Microphone unavailable") message with
+   a button, instead of silence. Tapping the button asks again.
+
+### C. A normal conversation
+
+8. **Start a story.** Landing > **Create a Story**. Pass: the screen stays on,
+   Elsie's picture looks like she is listening, and the transcript is empty.
+9. **Three turns.** Say, clearly and not too fast, "Once upon a time there was
+   a little fox." Wait. Pass: your words appear in the transcript; Elsie's
+   picture shows she is thinking, then speaking; Elsie says one to three short
+   sentences and usually asks what should happen next; her words also appear in
+   the transcript. Answer twice more ("The fox found a red balloon", "It floated
+   away"). Pass: she keeps the story going and the replies are gentle.
+   - Note how long the wait is between you stopping and her starting.
+10. **A fact about an animal.** In one turn mention a real animal ("a
+    penguin"). Pass: within a turn or two Elsie may weave in a true fact about it
+    (needs no extra key, but a fact only appears if one can be fetched).
+
+### D. Interrupting and being heard
+
+11. **Interrupting Elsie.** While she is mid-sentence in a longer reply, say
+    "Stop! A dragon!" Pass: Elsie stops talking almost at once (about a second),
+    your words appear in the transcript, and she answers the dragon.
+    Note: if she keeps talking over you, or stops but your words are missing.
+12. **The first word is not clipped.** After Elsie finishes, start talking the
+    instant she stops. Say a sentence beginning with a clear first word, such as
+    "Purple dragons like cake." Pass: the transcript starts with "Purple"
+    (not "dragons like cake"). Try this five times; note how often the first
+    word goes missing. If you can, have a child try it too, because a child's
+    voice is the real test.
+13. **Elsie must not interrupt herself.** Ask for a long story part, then stay
+    completely silent and do not touch the phone while she speaks the whole reply.
+    Pass: she finishes without cutting herself off and without a stray extra line
+    appearing in the transcript. Repeat once with the volume turned all the way
+    up. Fail sign: she stops mid-sentence by herself, or your transcript shows
+    words you did not say (her own voice being heard).
+
+### E. When things go wrong (these should be visible, never silent)
+
+14. **A wrong key.** Settings > Groq key > type a junk word (for example
+    `wrong`) > save, then go back to the story and say something. Pass: Elsie
+    says "Hmm, I can't think right now. Could you ask a grown-up to help me?"
+    and a banner tells a grown-up to open Settings. Then Settings > **Use
+    built-in key** (or paste your real key) and speak again. Pass: the banner
+    clears after the next good reply.
+15. **No internet.** Mid-story, switch the phone to airplane mode, then speak.
+    Pass: after a short wait Elsie says "Oops, my thinking slipped. Let's try
+    that again in a moment!" and a retry banner shows. Turn airplane mode off and
+    speak again. Pass: it recovers and the banner clears after the next reply.
+16. **Microphone taken away, then "Try again".** (This is what "mic loss, then
+    Retry" meant.) It tests what happens if another app grabs the microphone in
+    the middle of a story, such as a phone call or a voice recorder. While in the
+    Story screen, start a recording in another app (or ask someone to call the
+    phone), then return to Tiny Talk. Pass: instead of sitting there silently,
+    the Story screen shows "Microphone unavailable" with a **Try again** button.
+    Close the other app, tap **Try again**, and speak. Pass: listening resumes.
+17. **Leaving and coming back.** Mid-story press the phone's Home button, wait
+    ten seconds, and reopen the app. Pass: it returns to the story and listening
+    resumes. Also leave the Story screen open and untouched for two full minutes.
+    Pass: the screen does not turn off by itself.
+
+### F. Moving around the app
+
+18. **Settings in the middle of a story.** In a story with a few lines in the
+    transcript, tap the gear (Settings), then Back. Pass: the same transcript is
+    still there. Then go Back to Landing and tap **Create a Story** again. Pass:
+    the transcript is empty (a new story).
+19. **New Story while Elsie is talking.** While she is mid-reply, tap **New
+    Story**. Pass: she stops, the transcript clears, and nothing from the old
+    story appears or is spoken afterwards.
+20. **Better listening.** Settings > turn on **Better listening**. Pass: a
+    message explains your child's voice would be sent to the cloud, with a way to
+    cancel. Tap cancel and check the switch is still off. Turn it on and confirm,
+    speak once, then turn it off again.
+21. **Reset consent.** Settings > **Reset consent**. Pass: you are back at the
+    "Before we start" screen, and when you look at Settings after agreeing again,
+    Better listening is off.
+
+### G. Things I will read from the phone's log afterwards
+
+Roughly when each odd thing happened (item 11-13 especially), the first reply
+delay after launch (the speech engine takes a few seconds the first time), and
+whether any "Microphone unavailable" or crash occurred. You do not need to read
+the log; just note the times.
 
 ## Results (author run)
 
