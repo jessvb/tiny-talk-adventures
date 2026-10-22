@@ -178,6 +178,15 @@ goes silent after a demo-mode session) got diagnostics only, no fix yet
 — root cause still unknown, needs a fresh on-device repro to read the
 new capture-state logging.
 
+**Android demo-mode client** (issue #88, draft PR #93, branch
+`worktree-android-demo-mode`) is in progress: spec approved, Phase 0 audio
+spike GO, on-device STT chosen as Whisper tiny.en, and the Phase 1 voice loop
+is built and reviewed except Task 4b-B (installing the on-device recognizer,
+waiting on a library download) and the audible acceptance run on the Pixel 3;
+see `docs/superpowers/specs/2026-10-19-android-demo-mode-client-design.md`,
+`docs/superpowers/plans/2026-10-21-android-phase1-voice-loop.md`, and
+`docs/superpowers/specs/2026-10-22-android-phase1-results.md`.
+
 For the current bug list (including #24/#25/#26/#32/#33/#36/#41/#49/#52
 — each needs its own read before assuming Phase 1/2 above already covers
 it), check `gh issue list` rather than this file — issue status changes
