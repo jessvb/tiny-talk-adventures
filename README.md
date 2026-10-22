@@ -106,8 +106,9 @@ confirmed on a real phone:
 - **Away-from-home demo mode**: hosted models behind one switch, with
   storybooks and illustrations synced back home
 
-Android (Pixel 3) is a secondary target that hasn't been started. For current
-bugs and follow-ups, see the
+Android (Pixel 3) is a secondary target: a demo-mode voice app is in progress
+on branch `worktree-android-demo-mode` (draft PR #93, see "Android" under
+Setup). For current bugs and follow-ups, see the
 [issue list](https://github.com/jessvb/tiny-talk-adventures/issues).
 
 **Known constraint:** running every model at once is tight on a 16 GB Mac.
@@ -219,8 +220,29 @@ passthrough.)
 ### Android (Pixel 3): secondary target
 
 Native Kotlin + Jetpack Compose app in `android/` (issue #88; design spec in
-`docs/superpowers/specs/2026-10-19-android-demo-mode-client-design.md`).
-Currently only a Phase 0 audio spike, no real client yet.
+`docs/superpowers/specs/2026-10-19-android-demo-mode-client-design.md`, plan in
+`docs/superpowers/plans/2026-10-21-android-phase1-voice-loop.md`). It is
+demo mode only: no home server, hosted models, like the iOS away-from-home
+mode. Phase 1 (branch `worktree-android-demo-mode`, draft PR #93) is a spoken
+conversation with Elsie: a consent screen, Landing/Story/Settings screens,
+Groq chat, Elsie's spoken replies, and interrupting her by talking over her.
+Listening is designed to run on the phone (Whisper tiny.en) with an optional
+cloud "Better listening" switch (Groq Whisper) in Settings, but the on-device
+recognizer is **not installed yet** (Task 4b-B), so for now only the cloud
+switch can hear the child. No storybook, Library, or illustrations yet.
+
+Keys: copy `android/local.secrets.properties.example` to the gitignored
+`android/local.secrets.properties` and fill in what you have (all optional;
+a missing key is asked for in Settings). Never commit it. Anything baked into
+an APK can be extracted, so use dedicated, revocable keys with usage limits.
+
+Speech model and library (~250 MB, you run this, it downloads from the
+network; `INCLUDE_OPTIONAL=1` also fetches the static-link library that
+Task 4b-B needs):
+
+```bash
+INCLUDE_OPTIONAL=1 ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/android-demo-mode/android/stt-spike/fetch-models.sh
+```
 
 Prerequisites: Android Studio (installs the SDK to `~/Library/Android/sdk`,
 needs platform 37), and USB debugging enabled on the Pixel 3. Check it's
@@ -239,16 +261,24 @@ create an untracked `android/local.properties` containing
 cd ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/<name>/android
 # (after merging to main: cd ~/Development/claude-tests/tiny-talk-adventures/android)
 export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
-./gradlew assembleDebug
+./gradlew test assembleDebug
 ~/Library/Android/sdk/platform-tools/adb install -r app/build/outputs/apk/debug/app-debug.apk
 ~/Library/Android/sdk/platform-tools/adb shell am start -n com.jessvb.tinytalk/.MainActivity
 ```
 
-`./gradlew test` runs the unit tests. The Gradle wrapper pins Gradle 9.8.2;
+`./gradlew test` runs the JVM unit tests (`:core:test` for the core module
+alone); they are silent. The Gradle wrapper pins Gradle 9.8.2;
 you don't need a system Gradle. The instrumented `SentenceTtsTest` plays real
 audio, so it is skipped unless run with
 `-Pandroid.testInstrumentationRunnerArguments.audible=true`; don't run it
-without the author's OK (see CLAUDE.md).
+without the author's OK (see CLAUDE.md). Never run `connectedDebugAndroidTest`
+or launch the app for a test without that OK: tests must make no real sound.
+
+Known limitations: default on-device listening is not installed yet (the APK
+should grow by about 130 MB when it is); the debug APK is about 155 MB
+because it carries native libraries for every ABI; the audible acceptance run
+on the Pixel 3 has not happened (see
+`docs/superpowers/specs/2026-10-22-android-phase1-results.md`).
 
 ### Running the server
 
