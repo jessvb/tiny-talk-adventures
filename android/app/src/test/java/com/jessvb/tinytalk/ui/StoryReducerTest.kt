@@ -123,19 +123,50 @@ class StoryReducerTest {
         assertFalse(StoryReducer.reduce(s1, StoryInput.PermissionGranted).micPermissionMissing)
     }
 
-    @Test fun listeningNotInstalledBannerPointsToSettingsAndClearsWhenReady() {
+    @Test fun listeningNotInstalledIsItsOwnStateAndClearsWhenReady() {
         val s1 = run(StoryInput.ListeningNotInstalled)
-        val b = assertBanner(s1, BannerKind.LISTENING_NOT_INSTALLED)
-        assertTrue(b.showSettings)
-        assertNull(StoryReducer.reduce(s1, StoryInput.ListeningReady).banner)
-        // ListeningReady leaves other banners alone.
+        assertTrue(s1.listeningNotInstalled)
+        assertNull(s1.banner) // a separate notice, so it never hides a key banner
+        assertEquals("Elsie can't listen yet", StoryReducer.stateLabel(s1))
+        assertFalse(StoryReducer.reduce(s1, StoryInput.ListeningReady).listeningNotInstalled)
+        // ListeningReady leaves banners alone.
         val k = run(StoryInput.KeyProblem(KeyProblemKind.MISSING), StoryInput.ListeningReady)
         assertEquals(BannerKind.KEY_MISSING, k.banner!!.kind)
     }
 
-    @Test fun turnSuccessDoesNotClearListeningNotInstalled() {
-        val s = run(StoryInput.ListeningNotInstalled, StoryInput.TurnEnd)
-        assertEquals(BannerKind.LISTENING_NOT_INSTALLED, s.banner!!.kind)
+    @Test fun listeningNotInstalledAndKeyMissingShowTogether() {
+        val s = run(StoryInput.ListeningNotInstalled, StoryInput.ChatKeyMissing)
+        assertTrue(s.listeningNotInstalled)
+        assertEquals(BannerKind.KEY_MISSING, s.banner!!.kind)
+    }
+
+    @Test fun missingChatKeyShowsASettingsBannerBeforeAnyoneSpeaks() {
+        val s = run(StoryInput.ChatKeyMissing)
+        val b = assertBanner(s, BannerKind.KEY_MISSING)
+        assertTrue(b.showSettings)
+        assertEquals(StoryReducer.KEY_NEEDED_MESSAGE, b.message)
+        assertTrue(b.message.contains("grown-up") && b.message.contains("Settings"))
+    }
+
+    @Test fun chatKeyPresentClearsOnlyAKeyMissingBanner() {
+        assertNull(run(StoryInput.ChatKeyMissing, StoryInput.ChatKeyPresent).banner)
+        assertNull(run(StoryInput.KeyProblem(KeyProblemKind.MISSING), StoryInput.ChatKeyPresent).banner)
+        val r = run(StoryInput.KeyProblem(KeyProblemKind.RATE_LIMITED), StoryInput.ChatKeyPresent)
+        assertEquals(BannerKind.KEY_RATE_LIMITED, r.banner!!.kind)
+        val e = run(StoryInput.Error("oops"), StoryInput.ChatKeyPresent)
+        assertEquals(BannerKind.RETRY, e.banner!!.kind)
+    }
+
+    @Test fun staleStoryFinishedOnAnEmptyTranscriptIsIgnored() {
+        val s = run(StoryInput.Reply("The end."), StoryInput.NewStory, StoryInput.StoryFinished)
+        assertFalse(s.storyFinished)
+    }
+
+    @Test fun micUnavailableCanBeNonRetryable() {
+        val s = run(StoryInput.MicUnavailable("Close the app.", canRetry = false))
+        assertEquals("Close the app.", s.micUnavailable)
+        assertFalse(s.micUnavailableRetryable)
+        assertTrue(run(StoryInput.MicUnavailable("x")).micUnavailableRetryable)
     }
 
     @Test fun stateLabelsMirrorIos() {

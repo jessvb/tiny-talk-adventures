@@ -24,26 +24,21 @@ import com.jessvb.tinytalk.keys.SettingsStores
 import com.jessvb.tinytalk.spike.MicCapture
 import com.jessvb.tinytalk.spike.SentenceTts
 import com.jessvb.tinytalk.spike.SileroVad
-import com.jessvb.tinytalk.ui.NavState
 import com.jessvb.tinytalk.ui.Navigator
 import com.jessvb.tinytalk.ui.Screen
 import com.jessvb.tinytalk.ui.SharedPrefsConsentStore
-import com.jessvb.tinytalk.ui.StoryInput
-import com.jessvb.tinytalk.ui.StoryReducer
 import com.jessvb.tinytalk.ui.StoryUiState
 import com.jessvb.tinytalk.voice.AppTranscriberFactory
-import com.jessvb.tinytalk.voice.LoopConditions
+import com.jessvb.tinytalk.voice.LoopControl
+import com.jessvb.tinytalk.voice.LoopCoordinator
 import com.jessvb.tinytalk.voice.ModeSwitchingTranscriber
 import com.jessvb.tinytalk.voice.TranscriberFactory
 import com.jessvb.tinytalk.voice.VoiceLoop
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -51,11 +46,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /** Everything the Settings screen shows. Key values are never exposed, only their status. */
 data class SettingsUiState(
     val keyStatus: Map<KeyName, KeyStatus> = emptyMap(),
+    /** Whether this build has a built-in value for each key (drives truthful wording). */
+    val bakedPresent: Map<KeyName, Boolean> = emptyMap(),
     val sttMode: SttMode = SttMode.ON_DEVICE,
     val voices: List<SentenceTts.VoiceOption> = emptyList(),
     val voicesLoading: Boolean = true,
@@ -67,18 +65,14 @@ data class SettingsUiState(
  * recreation), so the Navigator, DemoSession, the one warm SentenceTts, SileroVad and the
  * VoiceLoop are created once and never restarted by an activity recreation.
  *
- * Threads:
- * - Main: Navigator, [story]/[settings] state, [conditions]. Every VoiceLoop callback is
- *   re-posted to Main with a dispatching (never immediate) launch before it touches state.
+ * A thin wrapper: when the loop runs, and how its callbacks become Story state, lives in the
+ * pure, JVM-tested [LoopCoordinator]. Threads:
+ * - Main: Navigator, [LoopCoordinator] main methods, settings state.
  * - [workScope] (Dispatchers.Default, child of viewModelScope): DemoSession turns, the
- *   VoiceLoop's collector/poller, the audio warm-up, and the one [commands] consumer that
- *   calls VoiceLoop.start/stop sequentially off the main thread (start opens the mic; stop
- *   joins the capture thread).
+ *   VoiceLoop's collector/poller, the audio build, and the coordinator's command consumer
+ *   (start/stop off the main thread, in order).
+ * - [mainScope]: a DISPATCHING Main scope the coordinator posts loop callbacks to.
  * - Dispatchers.IO: key reads/writes (Keystore) and TTS voice listing (binder).
- *
- * Lifecycle rule: the loop runs exactly while [LoopConditions.shouldRun] holds: on STORY, app
- * in the foreground (MainActivity onStart/onStop, ignoring configuration changes), consent,
- * mic permission, a usable transcriber, not halted by a mic failure, not paused.
  */
 class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
     private val consentStore = SharedPrefsConsentStore(app)
@@ -89,16 +83,43 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
     private val groq = AppKeys.resolver(KeyName.GROQ, keys)
     private val apiNinjas = AppKeys.resolver(KeyName.API_NINJAS, keys)
 
+    private val workScope = CoroutineScope(SupervisorJob(viewModelScope.coroutineContext.job) + Dispatchers.Default)
+    private val mainScope = CoroutineScope(SupervisorJob(viewModelScope.coroutineContext.job) + Dispatchers.Main)
+
     // The transcriber seam (Task 4b-B plugs OnDeviceTranscriber into AppTranscriberFactory).
     private val transcriberFactory: TranscriberFactory = AppTranscriberFactory(groqKey = { groq.current() })
-    @Volatile private var sttMode: SttMode = prefs.mode
-    private val transcriber = ModeSwitchingTranscriber({ sttMode }, transcriberFactory)
 
-    private val workScope = CoroutineScope(
-        SupervisorJob(viewModelScope.coroutineContext.job) + Dispatchers.Default,
+    private class Audio(val tts: SentenceTts, val vad: SileroVad, val loop: VoiceLoop) {
+        fun release() {
+            loop.stop()
+            tts.close()
+            vad.close()
+        }
+    }
+
+    private val audioLock = Any()
+    private var builtAudio: Audio? = null // guarded by audioLock
+    private var cleared = false // guarded by audioLock
+
+    /** Completed by the background build in init; declared before the coordinator reads it. */
+    private val audio = CompletableDeferred<Audio?>()
+
+    val coordinator: LoopCoordinator = LoopCoordinator(
+        worker = workScope,
+        main = mainScope,
+        loopProvider = { audioOrNull()?.loop?.let(::LoopAdapter) },
+        session = { session.newStory() },
+        modeStore = prefs,
+        listeningAvailable = transcriberFactory::isAvailable,
+        micPermission = {
+            app.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        },
+        consent = { consentStore.accepted },
     )
 
-    private val session = DemoSession(
+    private val transcriber: ModeSwitchingTranscriber = ModeSwitchingTranscriber({ coordinator.sttMode }, transcriberFactory)
+
+    private val session: DemoSession = DemoSession(
         chat = GroqChatClient(apiKey = { groq.current() }),
         stt = transcriber,
         facts = AnimalFactTracker(
@@ -108,13 +129,38 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
         scope = workScope,
     )
 
-    private class Audio(val tts: SentenceTts, val vad: SileroVad, val loop: VoiceLoop)
+    val story: StateFlow<StoryUiState> get() = coordinator.story
+    val listeningPaused: StateFlow<Boolean> get() = coordinator.paused
 
-    /** Built once on a background thread at app start: TTS engine warm-up takes ~5 s. */
-    private val audio: Deferred<Audio> = workScope.async {
+    private val _settings = MutableStateFlow(SettingsUiState(sttMode = coordinator.sttMode, voiceName = prefs.voiceName))
+    val settings: StateFlow<SettingsUiState> = _settings.asStateFlow()
+
+    init {
+        // Built once on a background thread at app start: TTS engine warm-up takes ~5 s.
+        workScope.launch {
+            try {
+                audio.complete(buildAudio(app))
+            } catch (e: Throwable) {
+                audio.completeExceptionally(e)
+            }
+        }
+        viewModelScope.launch {
+            navigator.state.collect { nav ->
+                coordinator.onNav(nav.screen)
+                if (nav.screen == Screen.STORY) checkChatKey()
+            }
+        }
+    }
+
+    private fun buildAudio(app: Application): Audio? {
         val tts = SentenceTts(app, ::log)
+        val vad = try {
+            SileroVad(app)
+        } catch (e: Exception) {
+            tts.close() // do not leak the TTS engine binding
+            throw e
+        }
         prefs.voiceName?.let { tts.setVoice(it) }
-        val vad = SileroVad(app)
         val loop = VoiceLoop(
             micFactory = { onFrame, onStopped -> MicCapture(onFrame, ::log, onStopped) },
             vad = vad,
@@ -123,169 +169,46 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
             tts = tts,
             scope = workScope,
             consentGiven = { consentStore.accepted },
-            onState = { s -> onMain { dispatch(StoryInput.LoopStateChanged(s)) } },
-            onKeyProblem = { k -> onMain { dispatch(StoryInput.KeyProblem(k)) } },
-            onError = { m -> onMain { onLoopError(m) } },
-            onTranscript = { t -> onMain { dispatch(StoryInput.Transcript(t)) } },
-            onReply = { t -> onMain { dispatch(StoryInput.Reply(t)) } },
-            onStoryFinished = { onMain { dispatch(StoryInput.StoryFinished) } },
+            onState = coordinator::onLoopState,
+            onKeyProblem = coordinator::onKeyProblem,
+            onError = coordinator::onLoopError,
+            onTranscript = coordinator::onTranscript,
+            onReply = coordinator::onReply,
+            onStoryFinished = coordinator::onStoryFinished,
             onLog = ::log,
         )
-        Audio(tts, vad, loop)
-    }
-
-    private sealed interface Command {
-        data class Apply(val run: Boolean) : Command
-        data object NewStory : Command
-    }
-
-    /** Start/stop requests, applied in order by one consumer on [workScope]. */
-    private val commands = Channel<Command>(Channel.UNLIMITED)
-
-    private val _story = MutableStateFlow(StoryUiState())
-    val story: StateFlow<StoryUiState> = _story.asStateFlow()
-
-    private val _paused = MutableStateFlow(false)
-    val listeningPaused: StateFlow<Boolean> = _paused.asStateFlow()
-
-    private val _settings = MutableStateFlow(SettingsUiState(sttMode = sttMode, voiceName = prefs.voiceName))
-    val settings: StateFlow<SettingsUiState> = _settings.asStateFlow()
-
-    // Main thread only.
-    private var conditions = LoopConditions()
-    private var commanded = false
-    private var lastScreen: Screen? = null
-    private var audioBroken = false
-
-    init {
-        workScope.launch {
-            val loop = audioOrNull()?.loop ?: run {
-                onMain {
-                    audioBroken = true
-                    conditions = conditions.copy(halted = true)
-                    dispatch(StoryInput.MicUnavailable(AUDIO_SETUP_FAILED))
-                }
-                return@launch
+        val parts = Audio(tts, vad, loop)
+        synchronized(audioLock) {
+            if (cleared) { // the ViewModel went away while we were building
+                parts.release()
+                return null
             }
-            for (cmd in commands) {
-                when (cmd) {
-                    is Command.Apply -> if (cmd.run) loop.start() else loop.stop()
-                    Command.NewStory -> {
-                        // Stop first so nothing of the old story is still spoken or in flight.
-                        val wasRunning = loop.state != LoopState.IDLE
-                        loop.stop()
-                        session.newStory()
-                        if (wasRunning) loop.start()
-                    }
-                }
-            }
+            builtAudio = parts
         }
-        viewModelScope.launch { navigator.state.collect(::onNav) }
+        return parts
     }
 
-    // ---- Navigation and lifecycle (main thread) ----
-
-    private fun onNav(nav: NavState) {
-        val onStory = nav.screen == Screen.STORY
-        // Coming back from Settings resumes the story; "Create a Story" from Landing starts a
-        // new one (iOS #64: Home -> Create a Story must not resume the old session).
-        if (onStory && lastScreen == Screen.LANDING) newStory()
-        lastScreen = nav.screen
-        if (onStory && !conditions.onStoryScreen) {
-            // Entering the Story screen is a fresh attempt: clear a previous mic failure / pause.
-            conditions = conditions.copy(paused = false)
-            _paused.value = false
-            clearHalt()
-            refreshListeningAvailability()
-            refreshPermission()
-        }
-        conditions = conditions.copy(onStoryScreen = onStory, consent = consentStore.accepted)
-        reconcile()
+    private class LoopAdapter(private val loop: VoiceLoop) : LoopControl {
+        override fun start() = loop.start()
+        override fun stop() = loop.stop()
+        override val isActive: Boolean get() = loop.state != LoopState.IDLE
     }
+
+    // ---- lifecycle and Story actions (main thread) ----
 
     /** MainActivity.onStart / onStop (not called for configuration changes). */
-    fun setForeground(foreground: Boolean) {
-        if (foreground == conditions.foreground) return
-        if (foreground) {
-            clearHalt()
-            refreshPermission()
+    fun setForeground(foreground: Boolean) = coordinator.setForeground(foreground)
+    fun onPermissionResult(granted: Boolean) = coordinator.onPermissionResult(granted)
+    fun retryMic() = coordinator.retryMic()
+    fun setListeningPaused(paused: Boolean) = coordinator.setPaused(paused)
+    fun newStory() = coordinator.newStory()
+
+    /** Shows the parent banner up front when Elsie has no key to think with. */
+    private fun checkChatKey() {
+        viewModelScope.launch {
+            val has = withContext(Dispatchers.IO) { groq.current() != null }
+            coordinator.setChatKeyAvailable(has)
         }
-        conditions = conditions.copy(foreground = foreground)
-        reconcile()
-    }
-
-    fun onPermissionResult(granted: Boolean) {
-        setPermission(granted)
-        reconcile()
-    }
-
-    private fun refreshPermission() {
-        val granted = getApplication<Application>()
-            .checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        setPermission(granted)
-    }
-
-    private fun setPermission(granted: Boolean) {
-        conditions = conditions.copy(micPermission = granted)
-        dispatch(if (granted) StoryInput.PermissionGranted else StoryInput.PermissionMissing)
-    }
-
-    private fun refreshListeningAvailability() {
-        val ok = transcriberFactory.isAvailable(sttMode)
-        conditions = conditions.copy(listeningAvailable = ok)
-        dispatch(if (ok) StoryInput.ListeningReady else StoryInput.ListeningNotInstalled)
-    }
-
-    /** Allows another start after a mic failure, unless the audio parts never built. */
-    private fun clearHalt() {
-        if (audioBroken) {
-            dispatch(StoryInput.MicUnavailable(AUDIO_SETUP_FAILED))
-            return
-        }
-        conditions = conditions.copy(halted = false)
-        dispatch(StoryInput.MicRetry)
-    }
-
-    private fun reconcile() {
-        val want = conditions.shouldRun
-        if (want == commanded) return
-        commanded = want
-        commands.trySend(Command.Apply(want))
-    }
-
-    private fun onLoopError(message: String) {
-        when (message) {
-            VoiceLoop.MIC_UNAVAILABLE_MESSAGE, VoiceLoop.LISTENING_FAILED_MESSAGE -> {
-                // The loop already stopped itself; keep it stopped until Retry.
-                conditions = conditions.copy(halted = true)
-                dispatch(StoryInput.MicUnavailable(message))
-                reconcile()
-            }
-            VoiceLoop.NO_CONSENT_MESSAGE -> {
-                conditions = conditions.copy(consent = consentStore.accepted)
-                reconcile()
-            }
-            else -> dispatch(StoryInput.Error(message))
-        }
-    }
-
-    // ---- Story screen actions (main thread) ----
-
-    fun retryMic() {
-        clearHalt()
-        refreshPermission()
-        reconcile()
-    }
-
-    fun setListeningPaused(paused: Boolean) {
-        _paused.value = paused
-        conditions = conditions.copy(paused = paused)
-        reconcile()
-    }
-
-    fun newStory() {
-        dispatch(StoryInput.NewStory)
-        commands.trySend(Command.NewStory)
     }
 
     // ---- Settings actions ----
@@ -293,7 +216,10 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshSettings() {
         viewModelScope.launch(Dispatchers.IO) {
             val status = KeyName.entries.associateWith { KeyStatus.of(keys.get(it), Secrets.baked(it)) }
-            _settings.update { it.copy(keyStatus = status, sttMode = sttMode, voiceName = prefs.voiceName) }
+            val baked = KeyName.entries.associateWith { Secrets.baked(it).isNotBlank() }
+            _settings.update {
+                it.copy(keyStatus = status, bakedPresent = baked, sttMode = coordinator.sttMode, voiceName = prefs.voiceName)
+            }
             val tts = audioOrNull()?.tts ?: run {
                 _settings.update { it.copy(voicesLoading = false) }
                 return@launch
@@ -314,6 +240,10 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
             keys.set(name, value)
             val status = KeyStatus.of(keys.get(name), Secrets.baked(name))
             _settings.update { it.copy(keyStatus = it.keyStatus + (name to status)) }
+            if (name == KeyName.GROQ) {
+                val has = groq.current() != null
+                withContext(Dispatchers.Main) { coordinator.setChatKeyAvailable(has) }
+            }
         }
     }
 
@@ -326,13 +256,8 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
     fun useOnDeviceListening() = setSttMode(SttMode.ON_DEVICE)
 
     private fun setSttMode(mode: SttMode) {
-        prefs.mode = mode // committed before anything can use it
-        sttMode = mode
+        coordinator.setSttMode(mode)
         _settings.update { it.copy(sttMode = mode) }
-        if (conditions.onStoryScreen) {
-            refreshListeningAvailability()
-            reconcile()
-        }
     }
 
     fun setVoice(name: String?) {
@@ -341,11 +266,11 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
         workScope.launch { audioOrNull()?.tts?.setVoice(name) }
     }
 
-    /** Parent withdrew consent: stop listening, forget consent, back to Onboarding. */
+    /** Parent withdrew consent: stop listening, turn better listening off, back to Onboarding. */
     fun revokeConsent() {
-        conditions = conditions.copy(consent = false)
-        reconcile()
-        navigator.revokeConsent() // onNav re-reads consent (false) and keeps the loop stopped
+        coordinator.revokeConsent()
+        _settings.update { it.copy(sttMode = coordinator.sttMode) }
+        navigator.revokeConsent()
     }
 
     // ---- plumbing ----
@@ -360,36 +285,25 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
         null
     }
 
-    private fun dispatch(input: StoryInput) {
-        _story.update { StoryReducer.reduce(it, input) }
-    }
-
-    /** Always a real dispatch to Main (never inline on the calling VoiceLoop thread). */
-    private fun onMain(block: () -> Unit) {
-        viewModelScope.launch(Dispatchers.Main) { block() }
-    }
-
     private fun log(msg: String) {
         Log.i(TAG, msg)
     }
 
-    @OptIn(ExperimentalCoroutinesApi::class)
     override fun onCleared() {
-        commands.close()
+        coordinator.clear() // no queued command can start the mic after this; stops the loop
         session.close()
-        if (audio.isCompleted && !audio.isCancelled) {
-            val a = audio.getCompleted()
-            a.loop.stop()
-            a.tts.close()
-            a.vad.close()
+        val parts = synchronized(audioLock) {
+            cleared = true
+            builtAudio.also { builtAudio = null }
         }
+        parts?.release() // a build still running releases its own parts when it finishes
         transcriber.close()
         workScope.coroutineContext.job.cancel()
+        mainScope.coroutineContext.job.cancel()
     }
 
     private companion object {
         const val TAG = "TinyTalk"
-        const val AUDIO_SETUP_FAILED = "Elsie's ears and voice could not start on this phone. Close the app and open it again."
         const val VOICE_LIST_RETRIES = 16
     }
 }

@@ -9,6 +9,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -61,40 +65,51 @@ fun StoryScreen(vm: TinyTalkViewModel, onBack: () -> Unit, onSettings: () -> Uni
         askedOnce = true
         vm.onPermissionResult(granted)
     }
-    val label = if (paused && !state.micPermissionMissing && state.micUnavailable == null) "Listening is paused"
+    val label = if (paused && !state.micPermissionMissing && state.micUnavailable == null && !state.listeningNotInstalled) "Listening is paused"
         else StoryReducer.stateLabel(state)
 
-    Column(Modifier.fillMaxSize().background(TTA.Palette.OuterPaper)) {
-        Header(label, onBack, onSettings)
-        state.banner?.let { BannerView(it, onSettings) }
-        when {
-            state.micPermissionMissing -> MicNotice(
-                title = "Allow microphone",
-                message = "Elsie needs the microphone to hear your story. A grown-up can allow it.",
-                button = "Allow microphone",
-                onClick = { permission.launch(Manifest.permission.RECORD_AUDIO) },
-                secondary = if (askedOnce) "Open phone settings" to {
-                    context.startActivity(
-                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+    BoxWithConstraints(Modifier.fillMaxSize().background(TTA.Palette.OuterPaper)) {
+        // At large font scales the notices scroll inside at most ~40% of the screen, so the
+        // transcript keeps room and the bottom bar is never pushed off-screen.
+        val noticeMax = maxHeight * 0.4f
+        Column(Modifier.fillMaxSize()) {
+            Header(label, onBack, onSettings)
+            Column(Modifier.heightIn(max = noticeMax).verticalScroll(rememberScrollState())) {
+                state.banner?.let { BannerView(it, onSettings) }
+                if (state.listeningNotInstalled) {
+                    InfoNotice(StoryReducer.LISTENING_NOT_INSTALLED_MESSAGE, onSettings)
+                }
+                when {
+                    state.micPermissionMissing -> MicNotice(
+                        title = "Allow microphone",
+                        message = "Elsie needs the microphone to hear your story. A grown-up can allow it.",
+                        button = "Allow microphone",
+                        onClick = { permission.launch(Manifest.permission.RECORD_AUDIO) },
+                        secondary = if (askedOnce) "Open phone settings" to {
+                            context.startActivity(
+                                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        } else null,
                     )
-                } else null,
-            )
-            state.micUnavailable != null -> MicNotice(
-                title = "Microphone unavailable",
-                message = state.micUnavailable!!,
-                button = "Try again",
-                onClick = vm::retryMic,
+                    state.micUnavailable != null -> MicNotice(
+                        title = "Microphone unavailable",
+                        message = state.micUnavailable!!,
+                        // Retrying cannot fix audio parts that never built: no button then.
+                        button = if (state.micUnavailableRetryable) "Try again" else null,
+                        onClick = vm::retryMic,
+                    )
+                }
+            }
+            Transcript(state, Modifier.weight(1f).heightIn(min = 72.dp))
+            BottomBar(
+                state = state,
+                label = label,
+                paused = paused,
+                onNewStory = vm::newStory,
+                onTogglePause = { vm.setListeningPaused(!paused) },
             )
         }
-        Transcript(state, Modifier.weight(1f))
-        BottomBar(
-            state = state,
-            label = label,
-            paused = paused,
-            onNewStory = vm::newStory,
-            onTogglePause = { vm.setListeningPaused(!paused) },
-        )
     }
 }
 
@@ -105,7 +120,7 @@ private fun Header(label: String, onBack: () -> Unit, onSettings: () -> Unit) {
             .padding(horizontal = 18.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconTile(onBack, size = 44.dp) {
+        IconTile(onBack, size = 48.dp) {
             Text("‹", style = TTA.Typography.display(26f), color = TTA.Palette.Wood,
                 modifier = Modifier.semantics { contentDescription = "Back" })
         }
@@ -114,7 +129,7 @@ private fun Header(label: String, onBack: () -> Unit, onSettings: () -> Unit) {
             Text(label, style = TTA.Typography.body(11.5f, FontWeight.SemiBold), color = TTA.Palette.InkSoft,
                 modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
         }
-        IconTile(onSettings, size = 44.dp) {
+        IconTile(onSettings, size = 48.dp) {
             Text("⚙", style = TTA.Typography.body(22f), color = TTA.Palette.Wood,
                 modifier = Modifier.semantics { contentDescription = "Settings" })
         }
@@ -123,16 +138,13 @@ private fun Header(label: String, onBack: () -> Unit, onSettings: () -> Unit) {
 
 @Composable
 private fun BannerView(banner: Banner, onSettings: () -> Unit) {
-    val info = banner.kind == BannerKind.LISTENING_NOT_INSTALLED
-    val bg = if (info) TTA.Palette.TealSurface else TTA.Palette.Alert
-    val fg = if (info) TTA.Palette.Teal else TTA.Palette.Cream
     Column(
         Modifier.padding(horizontal = 16.dp).padding(top = 14.dp).fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp)).background(bg).padding(12.dp)
+            .clip(RoundedCornerShape(14.dp)).background(TTA.Palette.Alert).padding(12.dp)
             .semantics { liveRegion = LiveRegionMode.Polite },
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text(banner.message, style = TTA.Typography.body(13f, FontWeight.SemiBold), color = fg)
+        Text(banner.message, style = TTA.Typography.body(13f, FontWeight.SemiBold), color = TTA.Palette.Cream)
         if (banner.showSettings) {
             ChunkyButton(
                 "Open Settings", onSettings,
@@ -143,11 +155,29 @@ private fun BannerView(banner: Banner, onSettings: () -> Unit) {
     }
 }
 
+/** Friendly (teal) notice: Elsie can't listen in this build until a grown-up changes Settings. */
+@Composable
+private fun InfoNotice(message: String, onSettings: () -> Unit) {
+    Column(
+        Modifier.padding(horizontal = 16.dp).padding(top = 14.dp).fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp)).background(TTA.Palette.TealSurface).padding(12.dp)
+            .semantics { liveRegion = LiveRegionMode.Polite },
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(message, style = TTA.Typography.body(13f, FontWeight.SemiBold), color = TTA.Palette.Teal)
+        ChunkyButton(
+            "Open Settings", onSettings,
+            fill = TTA.Palette.Cream, edge = TTA.Palette.Wood.copy(alpha = 0.35f),
+            foreground = TTA.Palette.Ink, fontSize = 15f,
+        )
+    }
+}
+
 @Composable
 private fun MicNotice(
     title: String,
     message: String,
-    button: String,
+    button: String?,
     onClick: () -> Unit,
     secondary: Pair<String, () -> Unit>? = null,
 ) {
@@ -155,7 +185,7 @@ private fun MicNotice(
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(title, style = TTA.Typography.display(17f), color = TTA.Palette.Alert)
             Text(message, style = TTA.Typography.body(14f), color = TTA.Palette.Ink)
-            PrimaryButton(button, onClick)
+            button?.let { PrimaryButton(it, onClick) }
             secondary?.let { (text, action) -> SecondaryButton(text, action) }
         }
     }
@@ -249,7 +279,7 @@ private fun BottomBar(
     onNewStory: () -> Unit,
     onTogglePause: () -> Unit,
 ) {
-    val micOff = paused || state.micPermissionMissing || state.micUnavailable != null
+    val micOff = paused || state.micPermissionMissing || state.micUnavailable != null || state.listeningNotInstalled
     val mood = when (state.loopState) {
         LoopState.IDLE -> ElsieMood.IDLE
         LoopState.LISTENING -> ElsieMood.LISTENING
@@ -280,7 +310,7 @@ private fun BottomBar(
             )
         }
         Box(Modifier.weight(1f)) {
-            val canToggle = !state.micPermissionMissing && state.micUnavailable == null
+            val canToggle = !state.micPermissionMissing && state.micUnavailable == null && !state.listeningNotInstalled
             ChunkyButton(
                 if (paused) "Listen" else "Pause",
                 onTogglePause,

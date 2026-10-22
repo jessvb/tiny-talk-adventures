@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -15,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -48,6 +50,8 @@ import androidx.compose.ui.unit.sp
 import com.jessvb.tinytalk.TinyTalkViewModel
 import com.jessvb.tinytalk.core.keys.KeyName
 import com.jessvb.tinytalk.core.settings.SttMode
+import com.jessvb.tinytalk.SettingsUiState
+import com.jessvb.tinytalk.keys.KeyCopy
 import com.jessvb.tinytalk.keys.KeyStatus
 
 /** Exact helper text for the "better listening" switch (plan Task 10). */
@@ -78,35 +82,44 @@ fun SettingsScreen(vm: TinyTalkViewModel, onBack: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            IconTile(onBack, size = 44.dp) {
+            IconTile(onBack, size = 48.dp) {
                 Text("‹", style = TTA.Typography.display(26f), color = TTA.Palette.Wood,
                     modifier = Modifier.semantics { contentDescription = "Back" })
             }
             Text("Grown-up settings", style = TTA.Typography.display(22f), color = TTA.Palette.Ink)
         }
         Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(20.dp),
+            // imePadding: the keyboard never covers the lower key fields.
+            Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             Card("ELSIE'S THINKING") {
-                Help("Elsie thinks up the story in the cloud. The app comes with a built-in key; you can use your own instead.")
-                KeyField("GROQ API KEY", KeyName.GROQ, s.keyStatus[KeyName.GROQ], vm)
-                KeyField("API NINJAS KEY (ANIMAL FACTS)", KeyName.API_NINJAS, s.keyStatus[KeyName.API_NINJAS], vm)
+                Help(KeyCopy.groqIntro(s.bakedPresent[KeyName.GROQ] == true))
+                KeyField("GROQ API KEY", KeyName.GROQ, s, vm)
+                KeyField("API NINJAS KEY (ANIMAL FACTS)", KeyName.API_NINJAS, s, vm)
                 Help("Optional, for storybook pictures in a later version of the app (stored now, not used yet).")
-                KeyField("CLOUDFLARE ACCOUNT ID", KeyName.CLOUDFLARE_ACCOUNT_ID, s.keyStatus[KeyName.CLOUDFLARE_ACCOUNT_ID], vm)
-                KeyField("CLOUDFLARE API TOKEN", KeyName.CLOUDFLARE_TOKEN, s.keyStatus[KeyName.CLOUDFLARE_TOKEN], vm)
+                KeyField("CLOUDFLARE ACCOUNT ID", KeyName.CLOUDFLARE_ACCOUNT_ID, s, vm)
+                KeyField("CLOUDFLARE API TOKEN", KeyName.CLOUDFLARE_TOKEN, s, vm)
             }
 
             Card("LISTENING") {
                 val on = s.sttMode == SttMode.CLOUD
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                // The whole row toggles (one big target, labelled for TalkBack by its text).
+                Row(
+                    Modifier.fillMaxWidth().heightIn(min = 48.dp).toggleable(
+                        value = on,
+                        role = Role.Switch,
+                        onValueChange = { want -> if (want) confirmCloud = true else vm.useOnDeviceListening() },
+                    ),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Column(Modifier.weight(1f)) {
                         Text("Better listening", style = TTA.Typography.body(16f, FontWeight.SemiBold), color = TTA.Palette.Ink)
                         Help(BETTER_LISTENING_HELP)
                     }
                     Switch(
                         checked = on,
-                        onCheckedChange = { want -> if (want) confirmCloud = true else vm.useOnDeviceListening() },
+                        onCheckedChange = null,
                         colors = SwitchDefaults.colors(checkedTrackColor = TTA.Palette.Wood),
                     )
                 }
@@ -127,8 +140,8 @@ fun SettingsScreen(vm: TinyTalkViewModel, onBack: () -> Unit) {
                     else -> "Default voice (chosen voice not installed)"
                 }
                 Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(11.dp)).background(TTA.Palette.Paper)
-                        .clickable(role = Role.Button) { pickVoice = true }.padding(11.dp),
+                    Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(11.dp)).background(TTA.Palette.Paper)
+                        .clickable(role = Role.Button, onClickLabel = "Choose Elsie's voice") { pickVoice = true }.padding(11.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(label, style = TTA.Typography.body(15f), color = TTA.Palette.Ink, modifier = Modifier.weight(1f))
@@ -199,7 +212,8 @@ private fun voiceLabel(localeName: String, name: String) = "$localeName · $name
 @Composable
 private fun VoiceRow(label: String, selected: Boolean, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+        Modifier.fillMaxWidth().heightIn(min = 48.dp)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
             .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -229,12 +243,14 @@ private fun Help(text: String) {
  * stored or baked value is never shown), Save, and "Use built-in key" to clear the override.
  */
 @Composable
-private fun KeyField(label: String, name: KeyName, status: KeyStatus?, vm: TinyTalkViewModel) {
+private fun KeyField(label: String, name: KeyName, s: SettingsUiState, vm: TinyTalkViewModel) {
+    val status = s.keyStatus[name]
+    val bakedPresent = s.bakedPresent[name] == true
     var text by remember(name) { mutableStateOf("") }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(label, style = TTA.Typography.display(12f).copy(letterSpacing = 1.5.sp), color = TTA.Palette.InkSoft)
         Text(
-            status?.label ?: "Checking…",
+            status?.let(KeyCopy::status) ?: "Checking…",
             style = TTA.Typography.body(13f, FontWeight.SemiBold),
             color = if (status == KeyStatus.NONE) TTA.Palette.Alert else TTA.Palette.Teal,
             modifier = Modifier.semantics { stateDescription = status?.label ?: "" },
@@ -256,7 +272,7 @@ private fun KeyField(label: String, name: KeyName, status: KeyStatus?, vm: TinyT
             TextButton(
                 onClick = { vm.saveKey(name, null); text = "" },
                 enabled = status == KeyStatus.YOURS,
-            ) { Text("Use built-in key") }
+            ) { Text(KeyCopy.clearAction(bakedPresent)) }
         }
     }
 }
