@@ -18,7 +18,10 @@ package com.jessvb.tinytalk.core.stt
  */
 object TranscriptCleaner {
     private val annotation = Regex("""\[[^\]]*]|\([^)]*\)""")
-    private val whitespace = Regex("""\s+""")
+    // Not plain `\s`: OpenJDK's `\s` is ASCII-only, Android's (ICU) is all Unicode White_Space,
+    // so a no-break space would collapse on the phone but not in JVM tests (#88). This class is
+    // exactly Unicode White_Space on both runtimes.
+    private val whitespace = Regex("""[\s\p{Z}\u0085]+""")
 
     fun clean(raw: String): String {
         val text = raw.replace(annotation, " ").replace(whitespace, " ").trim()

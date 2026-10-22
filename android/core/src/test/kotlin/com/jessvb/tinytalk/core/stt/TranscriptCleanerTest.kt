@@ -15,6 +15,9 @@ class TranscriptCleanerTest {
         "Wow! wow!" to "Wow!",
         "Café café" to "Café",
         "  Yes,   YES  " to "Yes",
+        // Unicode spaces (no-break, thin, ideographic) are whitespace on JVM and Android alike
+        "Yes, yes" to "Yes",
+        "hello there　friend" to "hello there friend",
         // not collapsed
         "I said yes, yes, I did" to "I said yes, yes, I did",
         "No no no, stop" to "No no no, stop",
