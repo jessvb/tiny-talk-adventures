@@ -261,13 +261,16 @@ create an untracked `android/local.properties` containing
 cd ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/<name>/android
 # (after merging to main: cd ~/Development/claude-tests/tiny-talk-adventures/android)
 export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
-./gradlew test assembleDebug
+./gradlew :core:test :app:testDebugUnitTest :app:assembleDebug
 ~/Library/Android/sdk/platform-tools/adb install -r app/build/outputs/apk/debug/app-debug.apk
 ~/Library/Android/sdk/platform-tools/adb shell am start -n com.jessvb.tinytalk/.MainActivity
 ```
 
-`./gradlew test` runs the JVM unit tests (`:core:test` for the core module
-alone); they are silent. The Gradle wrapper pins Gradle 9.8.2;
+`:core:test` and `:app:testDebugUnitTest` run the JVM unit tests; they are
+silent. The tasks are named per module on purpose: a bare `./gradlew test
+assembleDebug` also builds the throwaway `:stt-spike-app` module, which needs
+an AAR downloaded by `android/stt-spike/fetch-models.sh`, so it fails on a fresh
+clone. The Gradle wrapper pins Gradle 9.8.2;
 you don't need a system Gradle. The instrumented `SentenceTtsTest` plays real
 audio, so it is skipped unless run with
 `-Pandroid.testInstrumentationRunnerArguments.audible=true`; don't run it
