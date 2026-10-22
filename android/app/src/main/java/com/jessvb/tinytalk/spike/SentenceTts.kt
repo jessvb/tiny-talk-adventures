@@ -119,9 +119,26 @@ class SentenceTts(
     /** Posts [task] to [audioExec]; call under [lock] so posting order = generation order. */
     private fun postLocked(task: () -> Unit) {
         try {
-            audioExec.execute(task)
+            audioExec.execute { runGuarded(task) }
         } catch (_: RejectedExecutionException) {
             // closed: nothing more to do
+        }
+    }
+
+    /**
+     * audioExec: an exception escaping a task would kill the process (Android's default handler),
+     * e.g. setCommunicationDevice throwing when the device list changes. Log the class only
+     * (never message/values). An interrupt (executor shutting down) keeps its flag.
+     * The wrapper only runs inside the already-posted task, so posting order, the generation
+     * checks and the cheap stop path are unchanged.
+     */
+    private fun runGuarded(task: () -> Unit) {
+        try {
+            task()
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } catch (t: Throwable) {
+            onLog("audio task failed: ${t.javaClass.name}")
         }
     }
 
@@ -504,7 +521,7 @@ class SentenceTts(
 
     /** audioExec: the slow half of a stop, ordered before any later run's routing/synthesis. */
     private fun cleanup(t: AudioTrack?, newGen: Int, restoreRouting: Boolean) {
-        try { tts?.stop() } catch (e: Exception) { onLog("tts.stop failed: $e") }
+        try { tts?.stop() } catch (e: Exception) { onLog("tts.stop failed: ${e.javaClass.name}") }
         releaseTrack(t)
         if (restoreRouting && route.shouldRestoreAfterStop()) restoreAudio()
         appContext.cacheDir.listFiles { f -> AudioRouteState.isStaleTempFile(f.name, FILE_PREFIX, newGen) }
