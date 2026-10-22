@@ -46,6 +46,9 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui")
+    // App container (TinyTalkViewModel): latest stable lifecycle, verified 2026-10-22.
+    implementation("androidx.lifecycle:lifecycle-viewmodel:2.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.0")
 

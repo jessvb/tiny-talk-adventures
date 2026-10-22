@@ -4,16 +4,26 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import com.jessvb.tinytalk.ui.Navigator
-import com.jessvb.tinytalk.ui.SharedPrefsConsentStore
+import androidx.activity.viewModels
 
 class MainActivity : ComponentActivity() {
-    private lateinit var navigator: Navigator
+    /** Owns everything long-lived; survives configuration-change recreation of this activity. */
+    private val vm: TinyTalkViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        navigator = Navigator(SharedPrefsConsentStore(this))
-        setContent { TinyTalkApp(navigator) }
+        setContent { TinyTalkApp(vm) }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        vm.setForeground(true)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // A configuration change is not "going to the background": keep the story running.
+        if (!isChangingConfigurations) vm.setForeground(false)
     }
 }
