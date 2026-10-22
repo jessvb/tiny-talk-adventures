@@ -1,6 +1,7 @@
 package com.jessvb.tinytalk.core.facts
 
 import com.jessvb.tinytalk.core.Safety
+import com.jessvb.tinytalk.core.text.wordPattern
 import java.util.regex.Pattern
 
 /** Characteristics block of an API Ninjas animal record (mirrors AnimalRecordCharacteristics). */
@@ -255,12 +256,8 @@ object AnimalFacts {
         "zebra" to listOf("zebra", "zebras"),
     )
 
-    private val patterns: Map<String, Pattern> = knownAnimals.mapValues { (_, aliases) ->
-        Pattern.compile(
-            "\\b(?:${aliases.joinToString("|") { Pattern.quote(it) }})\\b",
-            Pattern.CASE_INSENSITIVE or Pattern.UNICODE_CASE or Pattern.UNICODE_CHARACTER_CLASS,
-        )
-    }
+    // Whole-word, case-insensitive; see wordPattern for why not `\b` (#88).
+    private val patterns: Map<String, Pattern> = knownAnimals.mapValues { (_, aliases) -> wordPattern(aliases) }
 
     /** Multi-word aliases first ("sea turtle" must not resolve to "turtle"); ties alphabetical. */
     private val detectionOrder: List<String> = knownAnimals.keys.sortedWith(

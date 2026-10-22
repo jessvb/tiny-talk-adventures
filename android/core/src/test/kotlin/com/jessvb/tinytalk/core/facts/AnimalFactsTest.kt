@@ -30,6 +30,13 @@ class AnimalFactsTest {
 
     @Test fun wholeWordOnly() = assertNull(AnimalFacts.findNewAnimal("the foxglove bloomed", emptyList()))
 
+    @Test fun accentedNeighbourIsPartOfTheWord() = assertNull(AnimalFacts.findNewAnimal("éfox", emptyList()))
+
+    @Test fun hyphenatedAliasAndHyphenBoundary() {
+        assertEquals("x-ray tetra", AnimalFacts.findNewAnimal("an X-ray tetra swam", emptyList()))
+        assertEquals("fox", AnimalFacts.findNewAnimal("a fox-like grin", emptyList()))
+    }
+
     @Test fun extractFactsTemplatesAndTrimming() {
         val facts = AnimalFacts.extractFacts(
             AnimalCharacteristics(

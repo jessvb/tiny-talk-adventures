@@ -1,6 +1,6 @@
 package com.jessvb.tinytalk.core
 
-import java.util.regex.Pattern
+import com.jessvb.tinytalk.core.text.wordPattern
 
 /**
  * Kotlin port of ios/TinyTalkCore/.../Safety.swift (itself a port of
@@ -49,15 +49,10 @@ object Safety {
     // Deliberately does NOT include "kiss" -- see safety.py's own comment.
     private val safePhrases = listOf("shooting star", "shooting stars")
 
-    // UNICODE_CHARACTER_CLASS makes \b Unicode-aware, matching ICU (NSRegularExpression).
-    private const val FLAGS =
-        Pattern.CASE_INSENSITIVE or Pattern.UNICODE_CASE or Pattern.UNICODE_CHARACTER_CLASS
-
-    private fun wholeWord(terms: List<String>): Pattern =
-        Pattern.compile("\\b(?:${terms.joinToString("|") { Pattern.quote(it) }})\\b", FLAGS)
-
-    private val blockedPattern = wholeWord(allBlocked)
-    private val safePattern = wholeWord(safePhrases)
+    // Whole-word, case-insensitive, Unicode-aware; see wordPattern for why not `\b` (#88).
+    // Alternation order is the list order: it decides which term findBlocked reports.
+    private val blockedPattern = wordPattern(allBlocked)
+    private val safePattern = wordPattern(safePhrases)
 
     /**
      * Every distinct blocked word/phrase matched in [text], lowercased, in the

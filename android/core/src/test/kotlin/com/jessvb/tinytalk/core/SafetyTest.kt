@@ -27,6 +27,21 @@ class SafetyTest {
     }
 
     @Test
+    fun accentedLettersAreWordCharacters() {
+        // Same as NSRegularExpression: an adjacent letter, accented or not, prevents a match.
+        for (safe in listOf("éhell", "hellé", "Hellö", "hell\u0301")) {
+            assertTrue("'$safe' should be safe", Safety.isSafe(safe))
+        }
+        assertEquals(listOf("hell"), Safety.findBlocked("é hell"))
+    }
+
+    @Test
+    fun longerTermReportedWhenShorterFailsBoundary() {
+        assertEquals(listOf("asshole"), Safety.findBlocked("what an asshole"))
+        assertEquals(listOf("killing"), Safety.findBlocked("killing"))
+    }
+
+    @Test
     fun multipleHitsLowercasedDistinctInOrder() {
         assertEquals(
             listOf("gun", "knife", "kill"),

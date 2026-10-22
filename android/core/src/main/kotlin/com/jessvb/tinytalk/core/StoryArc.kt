@@ -1,5 +1,7 @@
 package com.jessvb.tinytalk.core
 
+import com.jessvb.tinytalk.core.text.wordPattern
+import java.util.regex.Pattern
 import kotlin.math.roundToInt
 
 enum class StoryStage { INTRO, SETUP, RISING_ACTION, CLIMAX, RESOLUTION, DONE }
@@ -38,14 +40,14 @@ class StoryArc(private val targetTurns: Int = 7) {
     fun recordTurn(childText: String): String = synchronized(lock) {
         turnCount += 1
         if (turnCount > graceCeiling) return FORCED_GUIDANCE
-        if (matches(childText, CHILD_STOP_PHRASES)) return GUIDANCE.getValue(StoryStage.RESOLUTION)
+        if (matches(childText, CHILD_STOP_PATTERN)) return GUIDANCE.getValue(StoryStage.RESOLUTION)
         GUIDANCE.getValue(stageForTurn(turnCount))
     }
 
     fun recordReply(replyText: String) = synchronized(lock) {
         if (turnCount > graceCeiling) {
             done = true
-        } else if (matches(replyText, CONCLUSION_PHRASES)) {
+        } else if (matches(replyText, CONCLUSION_PATTERN)) {
             done = true
         }
     }
@@ -94,9 +96,11 @@ class StoryArc(private val targetTurns: Int = 7) {
             "the end", "happily ever after", "lived happily", "the story is over",
         )
 
-        fun matches(text: String, phrases: List<String>): Boolean {
-            val lower = text.lowercase()
-            return phrases.any { Regex("\\b" + Regex.escape(it) + "\\b").containsMatchIn(lower) }
-        }
+        // Phrases are lowercase and matched against lowercased text (case-sensitively, as
+        // before); whole-word via wordPattern, not `\b` (#88).
+        val CHILD_STOP_PATTERN = wordPattern(CHILD_STOP_PHRASES, ignoreCase = false)
+        val CONCLUSION_PATTERN = wordPattern(CONCLUSION_PHRASES, ignoreCase = false)
+
+        fun matches(text: String, phrases: Pattern): Boolean = phrases.matcher(text.lowercase()).find()
     }
 }
