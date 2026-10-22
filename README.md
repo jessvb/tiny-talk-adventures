@@ -268,6 +268,10 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 ~/Library/Android/sdk/platform-tools/adb shell am start -n com.jessvb.tinytalk/.MainActivity
 ```
 
+Shortcut: `bash ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/<name>/android/rebuild-and-install.sh`
+checks the phone, downloads and key, then builds and installs (add `--launch`
+to open the app, `--fresh` to wipe its data first).
+
 `:core:test` and `:app:testDebugUnitTest` run the JVM unit tests; they are
 silent. The tasks are named per module on purpose: a bare `./gradlew test
 assembleDebug` also builds the throwaway `:stt-spike-app` module, which needs
