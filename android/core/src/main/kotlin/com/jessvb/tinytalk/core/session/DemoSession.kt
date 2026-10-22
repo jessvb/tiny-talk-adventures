@@ -6,6 +6,7 @@ import com.jessvb.tinytalk.core.StoryArc
 import com.jessvb.tinytalk.core.chat.ChatCompleting
 import com.jessvb.tinytalk.core.chat.GroqException
 import com.jessvb.tinytalk.core.facts.AnimalFactTracker
+import com.jessvb.tinytalk.core.stt.OnDeviceTranscriptionException
 import com.jessvb.tinytalk.core.stt.SpeechTranscribing
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -79,6 +80,8 @@ class DemoSession(
                     emit(gen, SessionEvent.KeyProblem(KeyProblemKind.REJECTED, turnId))
                 } catch (e: GroqException.RateLimited) {
                     emit(gen, SessionEvent.KeyProblem(KeyProblemKind.RATE_LIMITED, turnId))
+                } catch (e: OnDeviceTranscriptionException) {
+                    emit(gen, SessionEvent.Error(ON_DEVICE_LISTENING_ERROR, turnId))
                 } catch (e: Exception) {
                     emit(gen, SessionEvent.Error(GENERIC_ERROR, turnId))
                 }
@@ -200,6 +203,11 @@ class DemoSession(
     companion object {
         private const val GENERIC_ERROR =
             "Elsie's cloud brain is having trouble -- let's try again in a moment."
+
+        /** Shown (not spoken) when listening ON THIS PHONE failed; nothing went to the cloud. */
+        const val ON_DEVICE_LISTENING_ERROR =
+            "Elsie's ears on this phone had a hiccup -- let's try again in a moment. " +
+                "If it keeps happening, close the app completely and open it again."
 
         private const val STT_FAILURE_GUIDANCE =
             "You didn't hear anything new from the child just now -- it might " +

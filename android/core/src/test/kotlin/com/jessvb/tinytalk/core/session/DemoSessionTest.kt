@@ -8,6 +8,7 @@ import com.jessvb.tinytalk.core.chat.GroqException
 import com.jessvb.tinytalk.core.facts.AnimalFactFetching
 import com.jessvb.tinytalk.core.facts.AnimalFactTracker
 import com.jessvb.tinytalk.core.facts.AnimalFactsCache
+import com.jessvb.tinytalk.core.stt.OnDeviceTranscriptionException
 import com.jessvb.tinytalk.core.stt.SpeechTranscribing
 import java.io.File
 import kotlinx.coroutines.CompletableDeferred
@@ -399,6 +400,17 @@ class DemoSessionTest {
     @Test fun sttKeyMissing() = sttErrorCase(GroqException.KeyMissing(), SessionEvent.KeyProblem(KeyProblemKind.MISSING, 1))
     @Test fun sttKeyRejected() = sttErrorCase(GroqException.KeyRejected(), SessionEvent.KeyProblem(KeyProblemKind.REJECTED, 1))
     @Test fun sttRateLimited() = sttErrorCase(GroqException.RateLimited(null), SessionEvent.KeyProblem(KeyProblemKind.RATE_LIMITED, 1))
+
+    // On-phone listening failed: the parent must not be told the cloud failed.
+    @Test fun onDeviceSttFailureHasItsOwnMessage() = sttErrorCase(
+        OnDeviceTranscriptionException("model missing"),
+        SessionEvent.Error(DemoSession.ON_DEVICE_LISTENING_ERROR, 1),
+    )
+
+    @Test fun onDeviceListeningMessageDoesNotBlameTheCloud() {
+        assertTrue(DemoSession.ON_DEVICE_LISTENING_ERROR.contains("phone"))
+        assertTrue(!DemoSession.ON_DEVICE_LISTENING_ERROR.contains("cloud"))
+    }
 
     @Test fun eventsDeliveredToLateCollector() = runTest {
         val s = make()
