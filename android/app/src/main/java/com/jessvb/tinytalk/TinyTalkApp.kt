@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import com.jessvb.tinytalk.ui.LandingScreen
 import com.jessvb.tinytalk.ui.OnboardingScreen
 import com.jessvb.tinytalk.ui.Screen
+import com.jessvb.tinytalk.ui.SettingsScreen
 import com.jessvb.tinytalk.ui.StoryScreen
 import com.jessvb.tinytalk.ui.TTA
 
@@ -34,7 +35,7 @@ fun TinyTalkApp(vm: TinyTalkViewModel) {
                 onBack = { navigator.back() },
                 onSettings = { navigator.goTo(Screen.SETTINGS) },
             )
-            Screen.SETTINGS -> androidx.compose.material3.Text("Settings: next commit")
+            Screen.SETTINGS -> SettingsScreen(vm, onBack = { navigator.back() })
         }
     }
 }
