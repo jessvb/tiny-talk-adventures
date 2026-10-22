@@ -36,6 +36,7 @@ import com.jessvb.tinytalk.voice.LoopConditions
 import com.jessvb.tinytalk.voice.ModeSwitchingTranscriber
 import com.jessvb.tinytalk.voice.TranscriberFactory
 import com.jessvb.tinytalk.voice.VoiceLoop
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -153,10 +154,19 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
     // Main thread only.
     private var conditions = LoopConditions()
     private var commanded = false
+    private var lastScreen: Screen? = null
+    private var audioBroken = false
 
     init {
         workScope.launch {
-            val loop = audio.await().loop
+            val loop = audioOrNull()?.loop ?: run {
+                onMain {
+                    audioBroken = true
+                    conditions = conditions.copy(halted = true)
+                    dispatch(StoryInput.MicUnavailable(AUDIO_SETUP_FAILED))
+                }
+                return@launch
+            }
             for (cmd in commands) {
                 when (cmd) {
                     is Command.Apply -> if (cmd.run) loop.start() else loop.stop()
@@ -177,11 +187,15 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun onNav(nav: NavState) {
         val onStory = nav.screen == Screen.STORY
+        // Coming back from Settings resumes the story; "Create a Story" from Landing starts a
+        // new one (iOS #64: Home -> Create a Story must not resume the old session).
+        if (onStory && lastScreen == Screen.LANDING) newStory()
+        lastScreen = nav.screen
         if (onStory && !conditions.onStoryScreen) {
             // Entering the Story screen is a fresh attempt: clear a previous mic failure / pause.
-            conditions = conditions.copy(halted = false, paused = false)
+            conditions = conditions.copy(paused = false)
             _paused.value = false
-            dispatch(StoryInput.MicRetry)
+            clearHalt()
             refreshListeningAvailability()
             refreshPermission()
         }
@@ -193,7 +207,7 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
     fun setForeground(foreground: Boolean) {
         if (foreground == conditions.foreground) return
         if (foreground) {
-            conditions = conditions.copy(halted = false)
+            clearHalt()
             refreshPermission()
         }
         conditions = conditions.copy(foreground = foreground)
@@ -222,6 +236,16 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
         dispatch(if (ok) StoryInput.ListeningReady else StoryInput.ListeningNotInstalled)
     }
 
+    /** Allows another start after a mic failure, unless the audio parts never built. */
+    private fun clearHalt() {
+        if (audioBroken) {
+            dispatch(StoryInput.MicUnavailable(AUDIO_SETUP_FAILED))
+            return
+        }
+        conditions = conditions.copy(halted = false)
+        dispatch(StoryInput.MicRetry)
+    }
+
     private fun reconcile() {
         val want = conditions.shouldRun
         if (want == commanded) return
@@ -248,8 +272,7 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
     // ---- Story screen actions (main thread) ----
 
     fun retryMic() {
-        conditions = conditions.copy(halted = false)
-        dispatch(StoryInput.MicRetry)
+        clearHalt()
         refreshPermission()
         reconcile()
     }
@@ -271,7 +294,10 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             val status = KeyName.entries.associateWith { KeyStatus.of(keys.get(it), Secrets.baked(it)) }
             _settings.update { it.copy(keyStatus = status, sttMode = sttMode, voiceName = prefs.voiceName) }
-            val tts = audio.await().tts
+            val tts = audioOrNull()?.tts ?: run {
+                _settings.update { it.copy(voicesLoading = false) }
+                return@launch
+            }
             var voices = tts.englishVoices()
             var tries = 0
             while (voices.isEmpty() && tries++ < VOICE_LIST_RETRIES) { // engine may still be warming up
@@ -312,7 +338,7 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
     fun setVoice(name: String?) {
         prefs.voiceName = name
         _settings.update { it.copy(voiceName = name) }
-        workScope.launch { audio.await().tts.setVoice(name) }
+        workScope.launch { audioOrNull()?.tts?.setVoice(name) }
     }
 
     /** Parent withdrew consent: stop listening, forget consent, back to Onboarding. */
@@ -323,6 +349,16 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---- plumbing ----
+
+    /** The audio parts, or null if building them failed (logged; never crashes the app). */
+    private suspend fun audioOrNull(): Audio? = try {
+        audio.await()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        log("audio setup failed: ${e.javaClass.name}")
+        null
+    }
 
     private fun dispatch(input: StoryInput) {
         _story.update { StoryReducer.reduce(it, input) }
@@ -353,6 +389,7 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
 
     private companion object {
         const val TAG = "TinyTalk"
+        const val AUDIO_SETUP_FAILED = "Elsie's ears and voice could not start on this phone. Close the app and open it again."
         const val VOICE_LIST_RETRIES = 16
     }
 }
