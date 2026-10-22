@@ -5,7 +5,8 @@ Issue #88, draft PR #93, branch `worktree-android-demo-mode`. Plan:
 `docs/superpowers/specs/2026-10-19-android-demo-mode-client-design.md`.
 
 Status: built and reviewed silently. **Nothing audible has been run.** Task 4b-B
-(installing the on-device recognizer) is also still pending.
+(the on-device recognizer) is now installed and verified silently on the Pixel 3
+from WAV files; it has not yet heard a live voice.
 
 ## What was built (by task)
 
@@ -17,12 +18,15 @@ Status: built and reviewed silently. **Nothing audible has been run.** Task 4b-B
 6. `DemoSession`: per-turn orchestration, safety gate, key-problem mapping, turn timeout.
 7. Key handling: build-time keys, Keystore-encrypted overrides, key resolver, STT mode persistence.
 4b-A. `TranscriptCleaner` (collapses a child's repeated words).
+4b-B. `OnDeviceTranscriber`: Whisper tiny.en (int8) through sherpa-onnx, on the phone. The
+   model is packaged in the APK, loaded at app start in the background, and the Story
+   screen says "Elsie is getting her ears ready" until it is loaded (then listening starts
+   by itself) or a parent-facing notice if it fails to load.
 8. `VoiceLoop`: mic capture, voice detection with pre-roll, spoken replies, interruptions.
 9. Compose design system, Navigator, consent store, Onboarding and Landing screens.
 10. Story and Settings screens, ViewModel and `LoopCoordinator`, key banners, Better listening dialog, Reset consent.
 
-Not built: Task 4b-B (on-device Whisper tiny.en recognizer; until then the loop
-refuses to start in on-device mode), storybook, Library, illustrations.
+Not built: storybook, Library, illustrations.
 
 ## Silent verification (2026-10-22, Pixel 3 install only, app not launched)
 
@@ -37,6 +41,13 @@ refuses to start in on-device mode), storybook, Library, illustrations.
   is gitignored (`android/.gitignore:4`); no `gsk_` strings, no keystore or
   `.jks` files, no long token-like strings in tracked Android files; nothing
   large tracked under `android/stt-spike/downloads` or `testdata/wav`.
+- Task 4b-B (2026-10-22, silent, headless instrumented tests reading WAV files,
+  nothing recorded or played): debug APK now 139,322,136 bytes (arm64 only, model
+  included); exactly one `lib/arm64-v8a/libonnxruntime.so` in the APK. On the Pixel 3:
+  model load 1.18 s (1.86 s on the first launch after an install, which also unpacks
+  the model), warm decodes 0.64-0.87 s for 1.5-2.7 s of speech, 3/3 synthetic adult
+  WAVs transcribed word-for-word, a cancelled decode returns in 58 ms, and Whisper and
+  the SileroVad voice detector run side by side in one process (replay attack 64 ms).
 - Earlier silent checks from the task reviews: word lists match iOS, animal
   table matches iOS, consent wording verbatim, voice-loop replay test on the
   phone (silent, from a file): attack 64-96 ms, at least 504 ms of lead-in kept.
@@ -47,7 +58,9 @@ refuses to start in on-device mode), storybook, Library, illustrations.
 - Elsie's own sound being picked up and interrupting her (echo self-barge-in).
 - Spoken-reply timing when interrupting (SentenceTts).
 - A real end-to-end conversation.
-- The on-device recognizer (not installed).
+- The on-device recognizer with a live voice, especially a child's (only synthetic
+  adult voices from files have been tried), and how long the first reply takes after
+  opening the app.
 - Layout at large font sizes and in dark mode on the device (the screen was off
   during earlier attempts).
 
@@ -78,11 +91,15 @@ read afterwards. The wording "pass" below means "this is what we hope to see".
    Either way the message "Elsie needs a key to think" disappears once a key
    exists. (Until you do one of these, that message is the app working as
    designed.)
-2. **Make listening available.** In the default mode the app turns your child's
-   voice into words on the phone. That recognizer is installed by Task 4b-B.
-   If the Story screen says "Elsie can't listen yet", that step has not been
-   installed on this build; as a stand-in you can turn on **Settings > Better
-   listening** (this sends the voice to the cloud, so only do that for testing).
+2. **Listening on the phone.** In the default mode the app turns your child's
+   voice into words on the phone (Better listening off). Right after the app
+   opens this takes a few seconds to get ready: if you reach the Story screen
+   quickly it may say "Elsie is getting ready" with a note about getting her ears
+   ready. Pass: that note disappears by itself within a few seconds and she starts
+   listening, without leaving the screen. If instead it says "Elsie can't listen"
+   with a note to close and reopen the app, note it (on-phone listening failed to
+   load); as a stand-in you can turn on **Settings > Better listening** (this sends
+   the voice to the cloud, so only do that for testing).
 3. **Prepare the phone and room.** Quiet room, phone flat on a table about
    40 cm (a ruler length and a bit) from you, headphones unplugged, media
    volume at about the middle. Close other apps that use the microphone.
@@ -110,6 +127,8 @@ read afterwards. The wording "pass" below means "this is what we hope to see".
 
 8. **Start a story.** Landing > **Create a Story**. Pass: the screen stays on,
    Elsie's picture looks like she is listening, and the transcript is empty.
+   There is a **Pause** / **Listen** button at the bottom to stop and restart
+   listening.
 9. **Three turns.** Say, clearly and not too fast, "Once upon a time there was
    a little fox." Wait. Pass: your words appear in the transcript; Elsie's
    picture shows she is thinking, then speaking; Elsie says one to three short

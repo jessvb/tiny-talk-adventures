@@ -116,6 +116,8 @@ android/
 
 ### Task 4b: On-device transcriber and transcript cleaner
 
+> **Status (2026-10-22):** done. 4b-A (cleaner) earlier; 4b-B installed `OnDeviceTranscriber` with the static-link AAR (no duplicate `libonnxruntime.so`, no `pickFirsts`; non-arm64 ABIs excluded before the native merge). The model is copied into generated assets by the `sttModelAssets` Gradle task (no `android/.gitignore` change needed), unpacked to no-backup storage on first launch and loaded warm at app start. Verified silently on the Pixel 3 from WAV files only; see `docs/superpowers/specs/2026-10-22-android-phase1-results.md`.
+
 **Files:** Create `core/.../stt/TranscriptCleaner.kt` (+ `TranscriptCleanerTest.kt`), `core/.../settings/SttMode.kt`, `app/.../stt/OnDeviceTranscriber.kt`; Modify `app/build.gradle.kts` (add `files("../stt-spike/downloads/libs/<AAR>")`; keep or replace direct `onnxruntime-android` per the clash fix), `android/.gitignore` (model assets). Source of truth for how to call sherpa-onnx: `android/stt-spike-app/` (the throwaway harness that already runs on the Pixel 3) and `android/stt-spike/PHASE-B-REPORT.md`.
 
 **Interfaces:** Consumes `SpeechTranscribing` (Task 4). Produces
