@@ -1,6 +1,7 @@
 package com.jessvb.tinytalk.voice
 
 import com.jessvb.tinytalk.core.audio.SpeechDetector
+import com.jessvb.tinytalk.core.rethrowIfFatal
 import com.jessvb.tinytalk.core.audio.SpeechEvent
 import com.jessvb.tinytalk.core.session.KeyProblemKind
 import com.jessvb.tinytalk.core.session.SessionEvent
@@ -109,7 +110,16 @@ class VoiceLoop(
         }
         halting.set(false)
         collectorJob = scope.launch(Dispatchers.Default) {
-            session.events.collect { handle(it) }
+            session.events.collect { event ->
+                try {
+                    handle(event)
+                } catch (t: Throwable) {
+                    // A throw here would end the collector and, unhandled, kill the app (#88).
+                    // Halt with one visible, retryable error instead. Class name only.
+                    t.rethrowIfFatal()
+                    halt(LISTENING_FAILED_MESSAGE, "reply handling threw ${t.javaClass.name}")
+                }
+            }
         }
         transition { it.onStart() }
         running = true

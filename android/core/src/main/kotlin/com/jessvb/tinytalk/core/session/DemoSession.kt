@@ -3,6 +3,7 @@ package com.jessvb.tinytalk.core.session
 import com.jessvb.tinytalk.core.DemoConversation
 import com.jessvb.tinytalk.core.Safety
 import com.jessvb.tinytalk.core.StoryArc
+import com.jessvb.tinytalk.core.rethrowIfFatal
 import com.jessvb.tinytalk.core.chat.ChatCompleting
 import com.jessvb.tinytalk.core.chat.GroqException
 import com.jessvb.tinytalk.core.facts.AnimalFactTracker
@@ -40,6 +41,8 @@ class DemoSession(
     private val systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
     private val targetTurns: Int = 7,
     private val turnTimeoutMs: Long = 60_000,
+    /** Diagnostics only; never given transcripts, replies or exception messages. */
+    private val log: (String) -> Unit = {},
     /** Test seam: how the per-story animal-fact state is cleared. */
     internal val resetFacts: suspend () -> Unit = { facts.reset() },
 ) : TurnSession {
@@ -82,7 +85,12 @@ class DemoSession(
                     emit(gen, SessionEvent.KeyProblem(KeyProblemKind.RATE_LIMITED, turnId))
                 } catch (e: OnDeviceTranscriptionException) {
                     emit(gen, SessionEvent.Error(ON_DEVICE_LISTENING_ERROR, turnId))
-                } catch (e: Exception) {
+                } catch (t: Throwable) {
+                    // Throwable, not Exception: an Error such as ExceptionInInitializerError
+                    // (a class that fails to initialize on Android only, #88) must become the
+                    // friendly retry line, never escape and kill the app. Class name only.
+                    t.rethrowIfFatal()
+                    log("turn $turnId failed: ${t.javaClass.name}")
                     emit(gen, SessionEvent.Error(GENERIC_ERROR, turnId))
                 }
             }
@@ -194,7 +202,12 @@ class DemoSession(
         val previous = resetJob
         val job = scope.launch(start = CoroutineStart.LAZY) {
             previous?.join()
-            resetFacts()
+            try {
+                resetFacts()
+            } catch (t: Throwable) {
+                t.rethrowIfFatal()
+                log("facts reset failed: ${t.javaClass.name}")
+            }
         }
         resetJob = job
         return job

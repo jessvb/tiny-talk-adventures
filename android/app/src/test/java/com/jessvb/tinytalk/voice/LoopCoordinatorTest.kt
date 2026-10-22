@@ -303,6 +303,14 @@ class LoopCoordinatorTest {
         assertFalse(log.contains("start"))
     }
 
+    @Test fun audioBuildThrowingAnErrorIsTheSameVisibleStateNotACrash() = runTest {
+        // #88: an Error (not an Exception) from the audio build must not kill the consumer.
+        val c = coordinator(provider = { throw ExceptionInInitializerError(IllegalStateException("x")) })
+        enterStory(c)
+        assertNotNull(c.story.value.micUnavailable)
+        assertFalse(c.story.value.micUnavailableRetryable)
+    }
+
     @Test fun listeningUnavailableKeepsTheLoopOffUntilAModeThatWorks() = runTest {
         modes.mode = SttMode.ON_DEVICE
         available = ListeningAvailability.FAILED

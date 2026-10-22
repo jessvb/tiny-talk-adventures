@@ -51,7 +51,12 @@ class VoiceLoopTest {
         val spoken = CopyOnWriteArrayList<String>()
         @Volatile var stops = 0
         @Volatile override var isSpeaking = false
-        override fun speak(text: String) { spoken += text; isSpeaking = true }
+        @Volatile var throwOnSpeak: Throwable? = null
+        override fun speak(text: String) {
+            throwOnSpeak?.let { throw it }
+            spoken += text
+            isSpeaking = true
+        }
         override fun stop() { stops++; isSpeaking = false }
     }
 
@@ -109,6 +114,24 @@ class VoiceLoopTest {
     private fun utterance() {
         frames(0.9f, 10)
         frames(0.1f, 22)
+    }
+
+    @Test
+    fun `an Error while handling a reply halts with one visible error instead of crashing`() {
+        // #88: the collector must survive an Error (not just an Exception) from a callback.
+        assertTrue(loop.start())
+        utterance()
+        speaker.throwOnSpeak = ExceptionInInitializerError(IllegalStateException("x"))
+        session.channel.trySend(SessionEvent.ResponseText("Once upon a time.", 1))
+        eventually("visible halt") { errors.contains(VoiceLoop.LISTENING_FAILED_MESSAGE) }
+        eventually("loop idle") { loop.state == LoopState.IDLE }
+        assertEquals(1, mic.stops)
+        // Restartable: the next run works normally.
+        speaker.throwOnSpeak = null
+        assertTrue(loop.start())
+        utterance()
+        session.channel.trySend(SessionEvent.ResponseText("Again.", session.submits.last()))
+        eventually("reply spoken after restart") { speaker.spoken.contains("Again.") }
     }
 
     @Test

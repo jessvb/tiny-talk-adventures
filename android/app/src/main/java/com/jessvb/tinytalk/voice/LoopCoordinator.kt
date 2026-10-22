@@ -1,5 +1,6 @@
 package com.jessvb.tinytalk.voice
 
+import com.jessvb.tinytalk.core.rethrowIfFatal
 import com.jessvb.tinytalk.core.session.KeyProblemKind
 import com.jessvb.tinytalk.core.settings.SttMode
 import com.jessvb.tinytalk.core.settings.SttModeStore
@@ -88,7 +89,14 @@ class LoopCoordinator(
 
     init {
         worker.launch {
-            val loop = loopProvider()
+            // A throw (e.g. an Error from a failed audio build) is treated like "no loop": one
+            // visible error, never an escaped exception that kills the app (#88).
+            val loop = try {
+                loopProvider()
+            } catch (t: Throwable) {
+                t.rethrowIfFatal()
+                null
+            }
             if (loop == null) {
                 main.launch {
                     audioBroken = true

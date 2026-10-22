@@ -70,15 +70,19 @@ class DemoSessionTest {
         targetTurns: Int = 7,
         timeoutMs: Long = 60_000,
         resetGate: CompletableDeferred<Unit>? = null,
+        fetcher: AnimalFactFetching = FakeFetcher(),
+        onReset: () -> Unit = {},
     ): DemoSession {
-        val tracker = AnimalFactTracker(FakeFetcher(), AnimalFactsCache(File(tmp.root, "c${System.nanoTime()}.json")))
+        val tracker = AnimalFactTracker(fetcher, AnimalFactsCache(File(tmp.root, "c${System.nanoTime()}.json")))
         return DemoSession(
             chat, stt, tracker, backgroundScope, prompt, targetTurns, timeoutMs,
-            resetFacts = { resetGate?.await(); resets++; tracker.reset() },
+            log = { logs.add(it) },
+            resetFacts = { resetGate?.await(); onReset(); resets++; tracker.reset() },
         )
     }
 
     private var resets = 0
+    private val logs = mutableListOf<String>()
 
     private fun TestScope.collect(session: DemoSession): MutableList<SessionEvent> {
         val out = mutableListOf<SessionEvent>()
@@ -197,7 +201,7 @@ class DemoSessionTest {
         assertTrue(ev.contains(SessionEvent.TurnEnd(2)))
     }
 
-    private fun errorCase(ex: Exception, expected: (Int) -> SessionEvent) = runTest {
+    private fun errorCase(ex: Throwable, expected: (Int) -> SessionEvent) = runTest {
         var fail = true
         val chat = FakeChat { if (fail) throw ex else "ok" }
         val s = make(chat)
@@ -218,6 +222,68 @@ class DemoSessionTest {
     @Test fun networkError() = errorCase(GroqException.Network(RuntimeException("x"))) { SessionEvent.Error(GENERIC, it) }
     @Test fun failureError() = errorCase(GroqException.Failure("HTTP 500")) { SessionEvent.Error(GENERIC, it) }
     @Test fun genericException() = errorCase(IllegalStateException("boom")) { SessionEvent.Error(GENERIC, it) }
+
+    // #88: an Error that is not a VM failure (a class whose static init fails on Android only)
+    // must become the friendly retry line, not escape and kill the app.
+    @Test fun chatInitializerErrorIsGenericError() =
+        errorCase(ExceptionInInitializerError(IllegalArgumentException("secret detail"))) { SessionEvent.Error(GENERIC, it) }
+
+    @Test fun chatNoClassDefFoundIsGenericError() =
+        errorCase(NoClassDefFoundError("com.example.Broken")) { SessionEvent.Error(GENERIC, it) }
+
+    private class ThrowingFetcher(var error: Throwable?) : AnimalFactFetching {
+        override suspend fun fetchFacts(canonical: String): List<String>? {
+            error?.let { throw it }
+            return listOf("it lives in forests")
+        }
+    }
+
+    private fun factsErrorCase(error: Throwable) = runTest {
+        val fetcher = ThrowingFetcher(error)
+        val s = make(FakeChat(), FakeStt { "the fox ran" }, fetcher = fetcher)
+        val ev = collect(s)
+        s.submitUtterance(1, pcm, 16000)
+        runCurrent()
+        assertEquals(
+            listOf(SessionEvent.TranscriptFinal("the fox ran", 1), SessionEvent.Error(GENERIC, 1)),
+            ev,
+        )
+        assertEquals(listOf("turn 1 failed: ${error.javaClass.name}"), logs) // class name only
+        fetcher.error = null
+        ev.clear()
+        s.submitUtterance(2, pcm, 16000)
+        runCurrent()
+        assertEquals(
+            listOf(
+                SessionEvent.TranscriptFinal("the fox ran", 2),
+                SessionEvent.ResponseText("Once upon a time.", 2),
+                SessionEvent.TurnEnd(2),
+            ),
+            ev,
+        )
+    }
+
+    @Test fun factsInitializerErrorIsGenericErrorThenNextTurnWorks() =
+        factsErrorCase(ExceptionInInitializerError(IllegalArgumentException("secret detail")))
+
+    @Test fun factsNoClassDefFoundIsGenericErrorThenNextTurnWorks() =
+        factsErrorCase(NoClassDefFoundError("com.jessvb.tinytalk.core.facts.AnimalFacts"))
+
+    @Test fun failingFactsResetDoesNotBreakTheNextStory() = runTest {
+        val chat = FakeChat { "The end." }
+        var failReset = true
+        val s = make(chat, targetTurns = 4, onReset = { if (failReset) throw NoClassDefFoundError("x") })
+        val ev = collect(s)
+        s.submitUtterance(1, pcm, 16000)
+        runCurrent()
+        assertEquals(SessionEvent.StoryFinished, ev.last())
+        assertEquals(listOf("facts reset failed: java.lang.NoClassDefFoundError"), logs)
+        failReset = false
+        ev.clear()
+        s.submitUtterance(2, pcm, 16000)
+        runCurrent()
+        assertEquals(SessionEvent.TurnEnd(2), ev[2])
+    }
 
     @Test fun sttFailureIsGenericError() = runTest {
         val s = make(stt = FakeStt { throw IllegalStateException("on-device") })

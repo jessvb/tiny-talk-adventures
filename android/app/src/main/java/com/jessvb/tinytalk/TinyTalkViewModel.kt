@@ -13,6 +13,7 @@ import com.jessvb.tinytalk.core.facts.AnimalFactsApiClient
 import com.jessvb.tinytalk.core.facts.AnimalFactsCache
 import com.jessvb.tinytalk.core.keys.KeyName
 import com.jessvb.tinytalk.core.keys.KeyStore
+import com.jessvb.tinytalk.core.rethrowIfFatal
 import com.jessvb.tinytalk.core.session.DemoSession
 import com.jessvb.tinytalk.core.settings.SttMode
 import com.jessvb.tinytalk.core.voice.LoopState
@@ -35,7 +36,6 @@ import com.jessvb.tinytalk.voice.LoopCoordinator
 import com.jessvb.tinytalk.voice.ModeSwitchingTranscriber
 import com.jessvb.tinytalk.voice.TranscriberFactory
 import com.jessvb.tinytalk.voice.VoiceLoop
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -132,6 +132,7 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
             AnimalFactsCache(File(app.filesDir, "animal_facts.json")),
         ),
         scope = workScope,
+        log = ::log,
     )
 
     val story: StateFlow<StoryUiState> get() = coordinator.story
@@ -297,10 +298,11 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
     /** The audio parts, or null if building them failed (logged; never crashes the app). */
     private suspend fun audioOrNull(): Audio? = try {
         audio.await()
-    } catch (e: CancellationException) {
-        throw e
-    } catch (e: Exception) {
-        log("audio setup failed: ${e.javaClass.name}")
+    } catch (t: Throwable) {
+        // Throwable: buildAudio's failure is stored as-is, and an Error (e.g. a native-library
+        // or class-init failure) rethrown here must not escape and kill the app (#88).
+        t.rethrowIfFatal() // includes CancellationException
+        log("audio setup failed: ${t.javaClass.name}")
         null
     }
 
