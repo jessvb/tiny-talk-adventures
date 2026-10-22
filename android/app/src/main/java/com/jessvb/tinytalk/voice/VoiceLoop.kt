@@ -10,6 +10,7 @@ import com.jessvb.tinytalk.core.voice.LoopState
 import com.jessvb.tinytalk.core.voice.SpokenLines
 import com.jessvb.tinytalk.core.voice.TurnStateMachine
 import com.jessvb.tinytalk.core.voice.UtteranceAssembler
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -73,6 +74,8 @@ class VoiceLoop(
     private val onStoryFinished: () -> Unit = {},
     private val onLog: (String) -> Unit = {},
     private val assembler: UtteranceAssembler = UtteranceAssembler(),
+    /** Where a self-halt's cleanup runs (never the capture thread); a test dispatcher in tests. */
+    private val haltDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) {
     private val mic: MicSource = micFactory(::onFrame, ::onMicStopped)
     private val lock = Any()
@@ -81,6 +84,8 @@ class VoiceLoop(
     private val notifyLock = Any()
 
     @Volatile private var running = false
+    /** Bumped by every successful-or-attempted start (under startStopLock); tags halts. */
+    @Volatile private var runId = 0L
     /** Set once per run by the first mic loss / frame failure / consent revocation. */
     private val halting = AtomicBoolean(false)
     private var collectorJob: Job? = null // guarded by startStopLock
@@ -108,7 +113,16 @@ class VoiceLoop(
         }
         transition { it.onStart() }
         running = true
-        if (!mic.start()) {
+        runId++
+        val micOk = try {
+            mic.start()
+        } catch (t: Throwable) {
+            // Never leave running=true behind a throw: roll back and report once, like false.
+            onLog("mic start threw ${t.javaClass.name}")
+            try { mic.stop() } catch (_: Throwable) {}
+            false
+        }
+        if (!micOk) {
             running = false
             collectorJob?.cancel()
             collectorJob = null
@@ -124,9 +138,13 @@ class VoiceLoop(
         shutdown(lost = false)
     }
 
-    /** Returns false if the loop was not running (already stopped). */
-    private fun shutdown(lost: Boolean): Boolean = synchronized(startStopLock) {
+    /**
+     * Returns false if the loop was not running (already stopped), or if [onlyRun] is given and
+     * a newer run has started since (a stale halt must never stop a fresh run).
+     */
+    private fun shutdown(lost: Boolean, onlyRun: Long? = null): Boolean = synchronized(startStopLock) {
         if (!running) return false
+        if (onlyRun != null && onlyRun != runId) return false
         running = false
         // IDLE first, then tts.stop(): a collector racing in speakFor() either re-checks
         // after this (sees IDLE, stops its own speech) or spoke before it (stopped below).
@@ -155,8 +173,9 @@ class VoiceLoop(
     private fun halt(userMessage: String, why: String) {
         if (!halting.compareAndSet(false, true)) return
         onLog("voice loop halted: $why")
-        scope.launch(Dispatchers.Default) {
-            if (shutdown(lost = true)) onError(userMessage)
+        val run = runId // the run this failure belongs to
+        scope.launch(haltDispatcher) {
+            if (shutdown(lost = true, onlyRun = run)) onError(userMessage)
         }
     }
 

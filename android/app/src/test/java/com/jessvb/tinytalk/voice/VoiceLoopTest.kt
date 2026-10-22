@@ -12,6 +12,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestCoroutineScheduler
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -23,9 +25,14 @@ import java.util.concurrent.CopyOnWriteArrayList
 class VoiceLoopTest {
     private class FakeMic(val onFrame: (ShortArray) -> Unit, val onStopped: (String) -> Unit) : MicSource {
         var startResult = true
+        var throwOnStart = false
         var starts = 0
         var stops = 0
-        override fun start(): Boolean { starts++; return startResult }
+        override fun start(): Boolean {
+            starts++
+            if (throwOnStart) throw IllegalStateException("aec setEnabled failed")
+            return startResult
+        }
         override fun stop() { stops++ }
     }
 
@@ -205,5 +212,77 @@ class VoiceLoopTest {
         loop.stop()
         eventually("idle reported") { states.lastOrNull() == LoopState.IDLE }
         assertEquals(listOf(LoopState.LISTENING, LoopState.THINKING, LoopState.IDLE), states.toList())
+    }
+
+    @Test
+    fun `a mic start that throws leaves the loop stopped and reports once`() {
+        assertTrue(loop.start()) // builds the mic; then make the next start throw
+        loop.stop()
+        errors.clear()
+        mic.throwOnStart = true
+        assertFalse(loop.start())
+        assertEquals(LoopState.IDLE, loop.state)
+        assertEquals(listOf(VoiceLoop.MIC_UNAVAILABLE_MESSAGE), errors.toList())
+        mic.throwOnStart = false
+        assertTrue(loop.start()) // a later Retry works
+        assertEquals(LoopState.LISTENING, loop.state)
+    }
+
+    @Test
+    fun `a stale halt cannot stop a fresh run`() {
+        val scheduler = TestCoroutineScheduler()
+        lateinit var mic2: FakeMic
+        val errors2 = CopyOnWriteArrayList<String>()
+        val loop2 = VoiceLoop(
+            micFactory = { onFrame, onStopped -> FakeMic(onFrame, onStopped).also { mic2 = it } },
+            vad = FakeVad(),
+            detector = SpeechDetector(),
+            session = FakeSession(),
+            tts = FakeSpeaker(),
+            scope = scope,
+            consentGiven = { true },
+            onState = {},
+            onKeyProblem = {},
+            onError = { errors2 += it },
+            haltDispatcher = StandardTestDispatcher(scheduler),
+        )
+        try {
+            assertTrue(loop2.start())
+            mic2.onStopped("read error") // queues the halt; it has not run yet
+            loop2.stop() // the user leaves...
+            assertTrue(loop2.start()) // ...and comes straight back: a fresh run
+            val stopsBefore = mic2.stops
+            scheduler.advanceUntilIdle() // the stale halt finally runs
+            assertEquals(stopsBefore, mic2.stops)
+            assertEquals(LoopState.LISTENING, loop2.state)
+            assertTrue(errors2.isEmpty())
+        } finally {
+            loop2.stop()
+        }
+    }
+
+    @Test
+    fun `a halt for the current run still stops it`() {
+        val scheduler = TestCoroutineScheduler()
+        lateinit var mic2: FakeMic
+        val errors2 = CopyOnWriteArrayList<String>()
+        val loop2 = VoiceLoop(
+            micFactory = { onFrame, onStopped -> FakeMic(onFrame, onStopped).also { mic2 = it } },
+            vad = FakeVad(),
+            detector = SpeechDetector(),
+            session = FakeSession(),
+            tts = FakeSpeaker(),
+            scope = scope,
+            consentGiven = { true },
+            onState = {},
+            onKeyProblem = {},
+            onError = { errors2 += it },
+            haltDispatcher = StandardTestDispatcher(scheduler),
+        )
+        assertTrue(loop2.start())
+        mic2.onStopped("read error")
+        scheduler.advanceUntilIdle()
+        assertEquals(LoopState.IDLE, loop2.state)
+        assertEquals(listOf(VoiceLoop.MIC_UNAVAILABLE_MESSAGE), errors2.toList())
     }
 }

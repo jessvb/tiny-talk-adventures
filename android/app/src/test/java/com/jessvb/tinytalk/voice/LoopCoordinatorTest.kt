@@ -27,9 +27,14 @@ class LoopCoordinatorTest {
         var running = false
         var startOk = true
         var startWhileRunning = 0
+        var throwOnStart = false
         override fun start(): Boolean {
             if (running) startWhileRunning++
             log += "start"
+            if (throwOnStart) {
+                running = true // a half-started loop, as a throwing VoiceLoop.start once could
+                throw IllegalStateException("aec setEnabled failed")
+            }
             running = startOk
             return startOk
         }
@@ -320,6 +325,22 @@ class LoopCoordinatorTest {
         assertNotNull(c.story.value.banner)
         c.setChatKeyAvailable(true)
         assertNull(c.story.value.banner)
+    }
+
+    @Test fun aThrowingStartIsOneVisibleRetryableErrorAndTheConsumerSurvives() = runTest {
+        loop.throwOnStart = true
+        val c = coordinator()
+        enterStory(c)
+        assertEquals(VoiceLoop.MIC_UNAVAILABLE_MESSAGE, c.story.value.micUnavailable)
+        assertTrue(c.story.value.micUnavailableRetryable)
+        assertFalse(loop.running) // left stopped, not half-started
+        assertEquals(1, log.count { it == "start" })
+
+        loop.throwOnStart = false
+        c.retryMic()
+        advanceUntilIdle()
+        assertTrue(loop.running)
+        assertNull(c.story.value.micUnavailable)
     }
 
     @Test fun sessionErrorsBecomeARetryBannerAndKeepTheLoopRunning() = runTest {

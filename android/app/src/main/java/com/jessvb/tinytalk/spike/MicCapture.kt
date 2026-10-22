@@ -73,22 +73,29 @@ class MicCapture(
         record = rec
         audioSessionId = rec.audioSessionId
 
-        aecAvailable = AcousticEchoCanceler.isAvailable()
-        if (aecAvailable) {
-            aec = AcousticEchoCanceler.create(audioSessionId)
-            val rc = aec?.setEnabled(true)
-            aecEnabled = aec?.enabled == true
-            onLog("AEC available=true, setEnabled(true) rc=$rc, enabled=$aecEnabled")
-            if (aec == null || !aecEnabled) onLog("AEC UNAVAILABLE (create/enable failed)")
-        } else {
-            onLog("AEC UNAVAILABLE")
+        // Audio effects are best-effort: a throw here (setEnabled can throw IllegalStateException)
+        // must not abort capture or escape to the caller; teardown() releases whatever was made.
+        try {
+            aecAvailable = AcousticEchoCanceler.isAvailable()
+            if (aecAvailable) {
+                aec = AcousticEchoCanceler.create(audioSessionId)
+                val rc = aec?.setEnabled(true)
+                aecEnabled = aec?.enabled == true
+                onLog("AEC available=true, setEnabled(true) rc=$rc, enabled=$aecEnabled")
+                if (aec == null || !aecEnabled) onLog("AEC UNAVAILABLE (create/enable failed)")
+            } else {
+                onLog("AEC UNAVAILABLE")
+            }
+            val nsAvailable = NoiseSuppressor.isAvailable()
+            if (nsAvailable) {
+                ns = NoiseSuppressor.create(audioSessionId)
+                ns?.setEnabled(true)
+            }
+            onLog("NoiseSuppressor available=$nsAvailable, enabled=${ns?.enabled == true}")
+        } catch (e: RuntimeException) {
+            aecEnabled = false
+            onLog("audio effects failed: ${e.javaClass.name}; continuing without them")
         }
-        val nsAvailable = NoiseSuppressor.isAvailable()
-        if (nsAvailable) {
-            ns = NoiseSuppressor.create(audioSessionId)
-            ns?.setEnabled(true)
-        }
-        onLog("NoiseSuppressor available=$nsAvailable, enabled=${ns?.enabled == true}")
         onLog("audioSessionId=$audioSessionId")
 
         try {

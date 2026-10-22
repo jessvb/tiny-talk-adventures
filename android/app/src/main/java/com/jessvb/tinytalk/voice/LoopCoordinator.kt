@@ -104,7 +104,14 @@ class LoopCoordinator(
             for (cmd in commands) {
                 synchronized(controlLock) {
                     if (cleared) return@launch
-                    execute(loop, cmd)
+                    try {
+                        execute(loop, cmd)
+                    } catch (t: Throwable) {
+                        // A throw here would kill the consumer (and, unhandled, the app). Leave
+                        // the loop stopped and show one visible, retryable mic error instead.
+                        try { loop.stop() } catch (_: Throwable) {}
+                        onLoopError(VoiceLoop.MIC_UNAVAILABLE_MESSAGE)
+                    }
                 }
             }
         }
