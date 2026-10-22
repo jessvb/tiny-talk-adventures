@@ -153,7 +153,7 @@ fun SettingsScreen(vm: TinyTalkViewModel, onBack: () -> Unit) {
             Card("PRIVACY") {
                 Text(consentBody(), style = TTA.Typography.body(14f), color = TTA.Palette.Ink)
                 Help(
-                    if (s.sttMode == SttMode.CLOUD) "Better listening is on, so your child's voice is also sent to the cloud (see Listening above)."
+                    if (s.sttMode == SttMode.CLOUD) "Better listening is on: instead of being turned into words on this phone, your child's voice is sent to the cloud to be turned into words (see Listening above)."
                     else "Better listening is off.",
                 )
                 ChunkyButton(
