@@ -4,6 +4,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -43,8 +47,12 @@ fun LandingScreen(onCreateStory: () -> Unit, onSettings: () -> Unit) {
                 ),
             ),
         )
+        // Scrollable so large font scales never push the buttons off-screen; on a normal
+        // font scale the content fits and the weighted spacer keeps the buttons at the bottom.
+        BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+        val minHeight = maxHeight
         Column(
-            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).heightIn(min = minHeight),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 8.dp), horizontalArrangement = Arrangement.End) {
@@ -76,6 +84,7 @@ fun LandingScreen(onCreateStory: () -> Unit, onSettings: () -> Unit) {
                     )
                 }
             }
+        }
         }
     }
 }

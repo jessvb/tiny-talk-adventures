@@ -39,6 +39,7 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
@@ -135,7 +136,7 @@ fun ChunkyButton(
                 .heightIn(min = TTA.Spacing.MinTap)
                 .clip(shape)
                 .background(fill)
-                .clickable(interactionSource = source, indication = null, enabled = enabled, onClick = onClick)
+                .clickable(interactionSource = source, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
                 .padding(vertical = 16.dp, horizontal = 16.dp),
             contentAlignment = Alignment.Center,
         ) {
@@ -162,7 +163,7 @@ fun IconTile(onClick: () -> Unit, modifier: Modifier = Modifier, size: Dp = 48.d
             .clip(shape)
             .background(TTA.Palette.Cream)
             .border(BorderStroke(1.5.dp, TTA.Palette.Wood.copy(alpha = 0.32f)), shape)
-            .clickable(onClick = onClick),
+            .clickable(role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) { content() }
 }

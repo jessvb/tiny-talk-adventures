@@ -8,11 +8,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -24,19 +21,14 @@ import com.jessvb.tinytalk.ui.TTA
 
 @Composable
 fun TinyTalkApp(navigator: Navigator) {
-    var version by remember { mutableIntStateOf(0) }
-    DisposableEffect(navigator) {
-        navigator.onChange = { version++ }
-        onDispose { navigator.onChange = null }
-    }
-    @Suppress("UNUSED_EXPRESSION") version // re-read navigator state whenever it changes
+    val nav by navigator.state.collectAsState()
 
     // Consumed only when there is somewhere to go back to; otherwise the system leaves the app.
-    BackHandler(enabled = navigator.current == Screen.STORY || navigator.current == Screen.SETTINGS) { navigator.back() }
+    BackHandler(enabled = nav.screen == Screen.STORY || nav.screen == Screen.SETTINGS) { navigator.back() }
 
     Box(Modifier.fillMaxSize().background(TTA.Palette.OuterPaper)) {
-        when (navigator.current) {
-            Screen.ONBOARDING -> OnboardingScreen(navigator, navigator.declinedNotice)
+        when (nav.screen) {
+            Screen.ONBOARDING -> OnboardingScreen(navigator, nav.declinedNotice)
             Screen.LANDING -> LandingScreen(
                 onCreateStory = { navigator.goTo(Screen.STORY) },
                 onSettings = { navigator.goTo(Screen.SETTINGS) },

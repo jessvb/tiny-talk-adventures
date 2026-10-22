@@ -71,12 +71,119 @@ class NavigatorTest {
         assertEquals(Screen.LANDING, nav.current)
     }
 
-    @Test fun notifiesListenerOnChange() {
+    @Test fun stateFlowFollowsEveryChange() {
         val nav = Navigator(FakeConsentStore(true))
-        var n = 0
-        nav.onChange = { n++ }
         nav.goTo(Screen.STORY)
+        assertEquals(Screen.STORY, nav.state.value.screen)
         nav.back()
-        assertEquals(2, n)
+        assertEquals(Screen.LANDING, nav.state.value.screen)
+    }
+
+    // --- Task 10 carry-overs (e), (g) ---
+
+    @Test fun goToLandingFromStoryClearsTheStack() {
+        val nav = Navigator(FakeConsentStore(true))
+        nav.goTo(Screen.STORY)
+        nav.goTo(Screen.LANDING)
+        assertEquals(Screen.LANDING, nav.current)
+        assertFalse(nav.back())
+    }
+
+    @Test fun acceptConsentClearsDeclinedNotice() {
+        val nav = Navigator(FakeConsentStore())
+        nav.declineConsent()
+        assertTrue(nav.state.value.declinedNotice)
+        nav.acceptConsent()
+        assertFalse(nav.declinedNotice)
+        assertFalse(nav.state.value.declinedNotice)
+        assertEquals(Screen.LANDING, nav.state.value.screen)
+    }
+
+    @Test fun declineIsVisibleInState() {
+        val nav = Navigator(FakeConsentStore())
+        nav.declineConsent()
+        assertEquals(NavState(Screen.ONBOARDING, declinedNotice = true), nav.state.value)
+    }
+
+    @Test fun duplicateGoToIsANoOp() {
+        val nav = Navigator(FakeConsentStore(true))
+        nav.goTo(Screen.STORY)
+        nav.goTo(Screen.STORY)
+        assertTrue(nav.back())
+        assertEquals(Screen.LANDING, nav.current)
+        assertFalse(nav.back())
+    }
+
+    @Test fun backAfterDeclineIsNotConsumed() {
+        val nav = Navigator(FakeConsentStore())
+        nav.declineConsent()
+        assertFalse(nav.back())
+        assertEquals(Screen.ONBOARDING, nav.current)
+    }
+
+    @Test fun settingsFromStoryReturnsToStory() {
+        val nav = Navigator(FakeConsentStore(true))
+        nav.goTo(Screen.STORY)
+        nav.goTo(Screen.SETTINGS)
+        assertEquals(Screen.SETTINGS, nav.current)
+        assertTrue(nav.back())
+        assertEquals(Screen.STORY, nav.current)
+        assertTrue(nav.back())
+        assertEquals(Screen.LANDING, nav.current)
+    }
+
+    @Test fun screensNeverNest() {
+        val nav = Navigator(FakeConsentStore(true))
+        nav.goTo(Screen.STORY)
+        nav.goTo(Screen.SETTINGS)
+        nav.goTo(Screen.STORY) // already below: pop back to it, no second STORY
+        assertEquals(Screen.STORY, nav.current)
+        nav.goTo(Screen.SETTINGS)
+        nav.goTo(Screen.SETTINGS)
+        assertTrue(nav.back())
+        assertEquals(Screen.STORY, nav.current)
+        assertTrue(nav.back())
+        assertEquals(Screen.LANDING, nav.current)
+        assertFalse(nav.back())
+    }
+
+    // --- Task 10 carry-over (c) ---
+
+    @Test fun revokeConsentClearsItAndReturnsToOnboarding() {
+        val store = FakeConsentStore(true)
+        val nav = Navigator(store)
+        nav.goTo(Screen.STORY)
+        nav.goTo(Screen.SETTINGS)
+        nav.revokeConsent()
+        assertFalse(store.accepted)
+        assertEquals(Screen.ONBOARDING, nav.current)
+        assertFalse(nav.declinedNotice)
+        assertFalse(nav.back())
+    }
+
+    @Test fun afterRevokeNothingIsReachableUntilAcceptedAgain() {
+        val store = FakeConsentStore(true)
+        val nav = Navigator(store)
+        nav.revokeConsent()
+        nav.goTo(Screen.STORY)
+        assertEquals(Screen.ONBOARDING, nav.current)
+        assertEquals(Screen.ONBOARDING, Navigator(store).current)
+        nav.acceptConsent()
+        assertEquals(Screen.LANDING, nav.current)
+    }
+
+    @Test fun goToOnboardingStaysRefusedEvenFromSettings() {
+        val store = FakeConsentStore(true)
+        val nav = Navigator(store)
+        nav.goTo(Screen.SETTINGS)
+        nav.goTo(Screen.ONBOARDING)
+        assertEquals(Screen.SETTINGS, nav.current)
+        assertTrue(store.accepted)
+    }
+
+    @Test fun revokeWithoutConsentIsHarmless() {
+        val nav = Navigator(FakeConsentStore())
+        nav.revokeConsent()
+        assertEquals(Screen.ONBOARDING, nav.current)
     }
 }
