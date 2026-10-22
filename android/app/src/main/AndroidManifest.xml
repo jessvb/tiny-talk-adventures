@@ -13,6 +13,8 @@
 
     <application
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/full_backup_content"
         android:label="Tiny Talk"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
