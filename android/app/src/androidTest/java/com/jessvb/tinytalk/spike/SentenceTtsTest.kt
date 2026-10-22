@@ -91,3 +91,11 @@ class SentenceTtsTest {
         assertTrue(latencies.all { it > 0 })
     }
 }
+
+/** Moved here from the removed Phase 0 SpikeScreen (its only remaining user). */
+private const val TEST_PARAGRAPH =
+    "Once upon a time, a little fox found a shiny red key in the garden. " +
+        "She wondered what it could possibly open. " +
+        "Behind the old oak tree, she spotted a tiny wooden door! " +
+        "Did anyone know that doors could hide whole worlds? " +
+        "The fox smiled, turned the key, and stepped inside."
