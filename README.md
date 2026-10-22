@@ -280,8 +280,22 @@ clone. The Gradle wrapper pins Gradle 9.8.2;
 you don't need a system Gradle. The instrumented `SentenceTtsTest` plays real
 audio, so it is skipped unless run with
 `-Pandroid.testInstrumentationRunnerArguments.audible=true`; don't run it
-without the author's OK (see CLAUDE.md). Never run `connectedDebugAndroidTest`
-or launch the app for a test without that OK: tests must make no real sound.
+without the author's OK (see CLAUDE.md). Never launch the app for a test
+without that OK: tests must make no real sound.
+
+The one silent, always-safe on-phone check is `CoreOnDeviceSmokeTest`, which
+runs the shared `:core` logic on Android's own runtime (the JVM unit tests run on
+desktop Java and can miss Android differences). Run it only with the flag that
+keeps the app installed, otherwise Gradle uninstalls the app afterwards and wipes
+its saved consent, keys and settings:
+
+```bash
+./gradlew :app:connectedDebugAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=com.jessvb.tinytalk.core.CoreOnDeviceSmokeTest \
+  -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true
+```
+
+Any other instrumented class needs the author's OK first.
 
 Known limitations: the debug APK is about 139 MB (arm64 phones only; the
 speech model is most of it) and the model is unpacked once more to app storage

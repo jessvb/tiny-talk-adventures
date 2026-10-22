@@ -46,9 +46,12 @@ import org.junit.Test
  * No audio, no network, no keys: nothing here touches android.media, TextToSpeech or
  * AudioRecord; the chat, transcriber and fact fetcher are in-memory fakes.
  *
- * Run ONLY this class:
+ * Run ONLY this class, and ALWAYS with the leave-installed flag:
  *   ./gradlew :app:connectedDebugAndroidTest \
- *     -Pandroid.testInstrumentationRunnerArguments.class=com.jessvb.tinytalk.core.CoreOnDeviceSmokeTest
+ *     -Pandroid.testInstrumentationRunnerArguments.class=com.jessvb.tinytalk.core.CoreOnDeviceSmokeTest \
+ *     -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true
+ * Without that last flag, Gradle UNINSTALLS the app from the phone after the run, which
+ * wipes the saved consent, parent-entered keys, voice/listening settings and the facts cache.
  */
 class CoreOnDeviceSmokeTest {
     /** Records anything a session coroutine throws instead of letting it kill the test process. */
