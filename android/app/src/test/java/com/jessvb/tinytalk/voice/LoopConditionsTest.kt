@@ -18,7 +18,7 @@ class LoopConditionsTest {
         assertFalse(ok.copy(micPermission = false).shouldRun)
         assertFalse(ok.copy(listeningAvailable = false).shouldRun)
         assertFalse(ok.copy(halted = true).shouldRun)
-        assertFalse(ok.copy(paused = true).shouldRun)
+        assertTrue(ok.copy(paused = true).shouldRun) // muting closes the mic only
     }
 
     @Test fun defaultIsStopped() {

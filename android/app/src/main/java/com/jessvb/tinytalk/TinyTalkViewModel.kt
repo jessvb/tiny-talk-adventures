@@ -211,6 +211,7 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
     private class LoopAdapter(private val loop: VoiceLoop) : LoopControl {
         override fun start() = loop.start()
         override fun stop() = loop.stop()
+        override fun setMuted(muted: Boolean) = loop.setMuted(muted)
         override val isActive: Boolean get() = loop.state != LoopState.IDLE
     }
 

@@ -85,6 +85,8 @@ class VoiceLoop(
     private val notifyLock = Any()
 
     @Volatile private var running = false
+    /** The child muted the mic: capture is closed but the loop (collector, reply, speech) lives on. */
+    private var muted = false // guarded by startStopLock
     /** Bumped by every successful-or-attempted start (under startStopLock); tags halts. */
     @Volatile private var runId = 0L
     /** Set once per run by the first mic loss / frame failure / consent revocation. */
@@ -125,7 +127,7 @@ class VoiceLoop(
         running = true
         runId++
         val micOk = try {
-            mic.start()
+            muted || mic.start() // muted: stay quiet until setMuted(false) opens the mic
         } catch (t: Throwable) {
             // Never leave running=true behind a throw: roll back and report once, like false.
             onLog("mic start threw ${t.javaClass.name}")
@@ -141,6 +143,35 @@ class VoiceLoop(
             return false
         }
         true
+    }
+
+    /**
+     * Mutes or unmutes the microphone WITHOUT ending the turn in flight: capture closes and a
+     * half-heard utterance is dropped, but the collector stays up, so a turn already submitted
+     * still delivers its transcript and reply (and Elsie finishes what she is saying). Safe to
+     * call while stopped: the setting applies to the next [start].
+     */
+    fun setMuted(muted: Boolean) {
+        val failed = synchronized(startStopLock) {
+            if (this.muted == muted) return
+            this.muted = muted
+            if (!running) return
+            if (muted) {
+                mic.stop() // joins the capture thread: detector/assembler are now ours
+                detector.reset()
+                vad.reset()
+                assembler.reset()
+                false
+            } else {
+                val ok = try { mic.start() } catch (t: Throwable) {
+                    onLog("mic start threw ${t.javaClass.name}")
+                    try { mic.stop() } catch (_: Throwable) {}
+                    false
+                }
+                !ok
+            }
+        }
+        if (failed) halt(MIC_UNAVAILABLE_MESSAGE, "mic would not reopen after unmute")
     }
 
     /** Releases the mic, stops speech, cancels any in-flight turn, resets detection. Idempotent. */

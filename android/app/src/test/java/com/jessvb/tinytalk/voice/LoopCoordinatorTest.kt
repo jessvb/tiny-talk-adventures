@@ -29,6 +29,11 @@ class LoopCoordinatorTest {
         var startOk = true
         var startWhileRunning = 0
         var throwOnStart = false
+        var micMuted = false
+        override fun setMuted(muted: Boolean) {
+            log += "mute=$muted"
+            micMuted = muted
+        }
         override fun start(): Boolean {
             if (running) startWhileRunning++
             log += "start"
@@ -160,10 +165,34 @@ class LoopCoordinatorTest {
         assertEquals(listOf(LineSpeaker.CHILD to "a dog"), c.story.value.lines.map { it.speaker to it.text })
     }
 
-    @Test fun newStoryWhileStoppedResetsWithoutStarting() = runTest {
+    @Test fun mutingKeepsTheLoopRunningAndOnlyClosesTheMic() = runTest {
+        val c = coordinator()
+        enterStory(c)
+        log.clear()
+        c.setPaused(true)
+        advanceUntilIdle()
+        assertEquals(listOf("mute=true"), log) // no stop: the in-flight turn must finish
+        assertTrue(loop.running)
+        c.setPaused(false)
+        advanceUntilIdle()
+        assertEquals(listOf("mute=true", "mute=false"), log)
+    }
+
+    @Test fun reenteringTheStoryUnmutes() = runTest {
         val c = coordinator()
         enterStory(c)
         c.setPaused(true)
+        advanceUntilIdle()
+        c.onNav(Screen.SETTINGS)
+        c.onNav(Screen.STORY)
+        advanceUntilIdle()
+        assertFalse(loop.micMuted)
+    }
+
+    @Test fun newStoryWhileStoppedResetsWithoutStarting() = runTest {
+        val c = coordinator()
+        enterStory(c)
+        c.setForeground(false) // backgrounded: the loop is stopped
         advanceUntilIdle()
         log.clear()
         c.newStory()
@@ -237,9 +266,11 @@ class LoopCoordinatorTest {
         c.setForeground(true)
         advanceUntilIdle()
         assertEquals(0, loop.startWhileRunning)
-        assertFalse(loop.running) // last request: paused
+        assertTrue(loop.running) // muting never stops the loop; foreground toggles ended running
+        assertTrue(loop.micMuted) // last request: muted
         c.setPaused(false)
         advanceUntilIdle()
+        assertFalse(loop.micMuted)
         assertTrue(loop.running)
         assertEquals(0, loop.startWhileRunning)
     }

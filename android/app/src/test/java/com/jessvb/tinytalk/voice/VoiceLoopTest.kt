@@ -135,6 +135,55 @@ class VoiceLoopTest {
     }
 
     @Test
+    fun `muting while thinking keeps the in-flight turn and still speaks the reply`() {
+        // Author-reported: say "Hello", mute at once -> transcript and reply vanished.
+        val transcripts = CopyOnWriteArrayList<String>()
+        val replies = CopyOnWriteArrayList<String>()
+        val l = VoiceLoop(
+            micFactory = { onFrame, onStopped -> FakeMic(onFrame, onStopped).also { mic = it } },
+            vad = vad, detector = SpeechDetector(), session = session, tts = speaker, scope = scope,
+            consentGiven = { true }, onState = { states += it }, onKeyProblem = {},
+            onError = { errors += it },
+            onTranscript = { transcripts += it }, onReply = { replies += it },
+        )
+        assertTrue(l.start())
+        utterance()
+        assertEquals(LoopState.THINKING, l.state)
+        l.setMuted(true)
+        assertEquals(1, mic.stops) // the microphone is released
+        assertTrue(session.bargeIns.isEmpty()) // the submitted turn is NOT cancelled
+        session.channel.trySend(SessionEvent.TranscriptFinal("hello", 1))
+        session.channel.trySend(SessionEvent.ResponseText("Hi there!", 1))
+        eventually("transcript and reply arrive") { transcripts == listOf("hello") && replies == listOf("Hi there!") }
+        eventually("reply spoken") { speaker.spoken.contains("Hi there!") }
+        l.stop()
+    }
+
+    @Test
+    fun `unmuting restarts the mic and muting drops a half-heard utterance`() {
+        assertTrue(loop.start())
+        assertEquals(1, mic.starts)
+        frames(0.9f, 10) // mid-utterance
+        loop.setMuted(true)
+        assertEquals(1, mic.stops)
+        loop.setMuted(true) // idempotent
+        assertEquals(1, mic.stops)
+        loop.setMuted(false)
+        assertEquals(2, mic.starts)
+        frames(0.1f, 22) // the old half-utterance must not complete
+        assertTrue(session.submits.isEmpty())
+    }
+
+    @Test
+    fun `a loop started while muted keeps the mic closed until unmuted`() {
+        loop.setMuted(true)
+        assertTrue(loop.start())
+        assertEquals(0, mic.starts)
+        loop.setMuted(false)
+        assertEquals(1, mic.starts)
+    }
+
+    @Test
     fun `start without consent is refused with a visible message and no mic`() {
         consent = false
         assertFalse(loop.start())

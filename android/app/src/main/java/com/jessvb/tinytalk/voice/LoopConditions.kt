@@ -3,8 +3,8 @@ package com.jessvb.tinytalk.voice
 /**
  * When the voice loop may run: on the Story screen, app in the foreground, consent given,
  * RECORD_AUDIO granted, a usable transcriber for the current listening mode, not halted by a
- * mic failure (cleared by Retry or by re-entering the Story screen), and not paused by the
- * child/parent with the Story screen's listen button.
+ * mic failure (cleared by Retry or by re-entering the Story screen). [paused] (the mic button)
+ * does NOT stop the loop: it only closes the microphone, so a turn in flight finishes.
  */
 data class LoopConditions(
     val onStoryScreen: Boolean = false,
@@ -17,5 +17,5 @@ data class LoopConditions(
 ) {
     val shouldRun: Boolean
         get() = onStoryScreen && foreground && consent && micPermission && listeningAvailable &&
-            !halted && !paused
+            !halted
 }

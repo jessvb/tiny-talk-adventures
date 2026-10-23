@@ -22,6 +22,8 @@ import kotlinx.coroutines.launch
 interface LoopControl {
     fun start(): Boolean
     fun stop()
+    /** Closes/opens only the microphone; a turn already in flight carries on to its reply. */
+    fun setMuted(muted: Boolean)
     /** True while the loop is running (listening, thinking or speaking). */
     val isActive: Boolean
 }
@@ -62,6 +64,7 @@ class LoopCoordinator(
 ) {
     private sealed interface Command {
         data class Apply(val run: Boolean) : Command
+        data class Mute(val muted: Boolean) : Command
         data object NewStory : Command
     }
 
@@ -84,6 +87,7 @@ class LoopCoordinator(
     // Main thread only.
     private var conditions = LoopConditions()
     private var commanded = false
+    private var commandedMuted = false
     private var lastScreen: Screen? = null
     private var audioBroken = false
 
@@ -130,6 +134,7 @@ class LoopCoordinator(
     private fun execute(loop: LoopControl, cmd: Command) {
         when (cmd) {
             is Command.Apply -> if (cmd.run) loop.start() else loop.stop()
+            is Command.Mute -> loop.setMuted(cmd.muted)
             Command.NewStory -> {
                 // Stop first so nothing of the old story is still spoken or in flight, then
                 // start a new generation so late callbacks from the old story are dropped.
@@ -161,6 +166,7 @@ class LoopCoordinator(
         }
         conditions = conditions.copy(onStoryScreen = onStory, consent = consent())
         reconcile()
+        reconcileMute()
     }
 
     /** Activity onStart / onStop (not for configuration changes). */
@@ -188,7 +194,7 @@ class LoopCoordinator(
     fun setPaused(paused: Boolean) {
         _paused.value = paused
         conditions = conditions.copy(paused = paused)
-        reconcile()
+        reconcileMute()
     }
 
     /** The UI transcript clears only once the consumer has stopped the old story's loop. */
@@ -312,6 +318,13 @@ class LoopCoordinator(
         if (want == commanded) return
         commanded = want
         commands.trySend(Command.Apply(want))
+    }
+
+    /** Muting is separate from running: it must never cancel the turn in flight. */
+    private fun reconcileMute() {
+        if (conditions.paused == commandedMuted) return
+        commandedMuted = conditions.paused
+        commands.trySend(Command.Mute(commandedMuted))
     }
 
     private fun dispatch(input: StoryInput) {
