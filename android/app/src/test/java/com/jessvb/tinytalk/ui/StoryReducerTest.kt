@@ -177,6 +177,23 @@ class StoryReducerTest {
         assertTrue(run(StoryInput.MicUnavailable("x")).micUnavailableRetryable)
     }
 
+    @Test fun mutedMicLabelAndDescriptionsAreAccurateAndNeverSayPause() {
+        val idle = StoryUiState(loopState = LoopState.LISTENING)
+        assertEquals("Mic is off", StoryReducer.displayLabel(idle, muted = true))
+        assertEquals("Elsie is listening", StoryReducer.displayLabel(idle, muted = false))
+        // A real problem keeps its own, more useful label even while muted.
+        val failed = StoryUiState(listeningNotice = ListeningNotice.FAILED)
+        assertEquals("Elsie can't listen", StoryReducer.displayLabel(failed, muted = true))
+        assertEquals("Mute microphone", StoryReducer.micButtonDescription(muted = false))
+        assertEquals("Unmute microphone", StoryReducer.micButtonDescription(muted = true))
+        for (text in listOf(
+            StoryReducer.displayLabel(idle, true), StoryReducer.micButtonDescription(true),
+            StoryReducer.micButtonDescription(false),
+        )) {
+            assertFalse(text, text.contains("pause", ignoreCase = true))
+        }
+    }
+
     @Test fun stateLabelsMirrorIos() {
         assertEquals("Ready when you are", StoryReducer.stateLabel(StoryUiState()))
         assertEquals("Elsie is listening", StoryReducer.stateLabel(StoryUiState(loopState = LoopState.LISTENING)))

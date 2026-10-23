@@ -28,7 +28,17 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.offset
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.runtime.remember
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
+import com.jessvb.tinytalk.R
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -55,7 +65,7 @@ import com.jessvb.tinytalk.core.voice.LoopState
 /**
  * The live conversation screen, after iOS StoryView: header with the state label, a
  * parent-facing banner, the transcript (auto-scrolls to the newest line), and a bottom bar
- * with New Story, Elsie's avatar and a pause/listen button. Mic problems are shown, never silent.
+ * with New Story, Elsie's avatar and a mic / muted-mic button. Mic problems are shown, never silent.
  */
 @Composable
 fun StoryScreen(vm: TinyTalkViewModel, onBack: () -> Unit, onSettings: () -> Unit) {
@@ -74,8 +84,8 @@ fun StoryScreen(vm: TinyTalkViewModel, onBack: () -> Unit, onSettings: () -> Uni
         askedOnce = true
         vm.onPermissionResult(granted)
     }
-    val label = if (paused && !state.micPermissionMissing && state.micUnavailable == null && state.listeningNotice == null) "Listening is paused"
-        else StoryReducer.stateLabel(state)
+    // `paused` (listeningPaused) means "microphone muted" -- it does NOT pause the story.
+    val label = StoryReducer.displayLabel(state, muted = paused)
 
     BoxWithConstraints(Modifier.fillMaxSize().background(TTA.Palette.OuterPaper)) {
         // At large font scales the notices scroll inside at most ~40% of the screen, so the
@@ -316,16 +326,45 @@ private fun BottomBar(
                 textAlign = TextAlign.Center,
             )
         }
-        Box(Modifier.weight(1f)) {
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
             val canToggle = !state.micPermissionMissing && state.micUnavailable == null && state.listeningNotice == null
-            ChunkyButton(
-                if (paused) "Listen" else "Pause",
-                onTogglePause,
-                fill = if (paused) TTA.Palette.Scarf else TTA.Palette.Cream,
-                edge = if (paused) TTA.Palette.ScarfShadow else TTA.Palette.Wood.copy(alpha = 0.35f),
-                foreground = if (paused) TTA.Palette.Cream else TTA.Palette.Wood,
-                fontSize = 15f,
-                enabled = canToggle,
+            MicButton(muted = paused, onClick = onTogglePause, enabled = canToggle)
+        }
+    }
+}
+
+/**
+ * After iOS BottomIconButtonStyle: 56dp square chunky button, mic when listening, muted mic on
+ * the alert (red) fill when muted. Mutes the microphone only; the story is not paused.
+ */
+@Composable
+private fun MicButton(muted: Boolean, onClick: () -> Unit, enabled: Boolean) {
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    val shape = RoundedCornerShape(20.dp)
+    val edgeHeight = TTA.Spacing.ButtonEdge
+    Box(
+        Modifier
+            .padding(bottom = edgeHeight)
+            .size(56.dp)
+            .offset(y = if (pressed && enabled) edgeHeight else 0.dp)
+            .alpha(if (enabled) 1f else 0.5f),
+    ) {
+        Box(Modifier.matchParentSize().offset(y = edgeHeight).clip(shape).background(if (muted) TTA.Palette.AlertShadow else TTA.Palette.Wood.copy(alpha = 0.35f)))
+        Box(
+            Modifier
+                .matchParentSize()
+                .clip(shape)
+                .background(if (muted) TTA.Palette.Alert else TTA.Palette.Paper)
+                .clickable(interactionSource = source, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
+                .semantics { contentDescription = StoryReducer.micButtonDescription(muted) },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                painterResource(if (muted) R.drawable.ic_mic_off else R.drawable.ic_mic),
+                contentDescription = null,
+                tint = if (muted) TTA.Palette.Cream else TTA.Palette.Wood,
+                modifier = Modifier.size(28.dp),
             )
         }
     }

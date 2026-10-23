@@ -119,6 +119,17 @@ object StoryReducer {
         }
     }
 
+    /**
+     * [stateLabel], but "Mic is off" when the parent/child muted the microphone with the mic
+     * button ([muted]; the ViewModel calls this `listeningPaused`) and nothing worse is wrong.
+     */
+    fun displayLabel(state: StoryUiState, muted: Boolean): String =
+        if (muted && !state.micPermissionMissing && state.micUnavailable == null && state.listeningNotice == null) "Mic is off"
+        else stateLabel(state)
+
+    /** TalkBack text for the mic button: the action it will perform. */
+    fun micButtonDescription(muted: Boolean): String = if (muted) "Unmute microphone" else "Mute microphone"
+
     private fun keyBanner(kind: KeyProblemKind) = when (kind) {
         KeyProblemKind.MISSING -> Banner(BannerKind.KEY_MISSING, KEY_MISSING_MESSAGE, showSettings = true)
         KeyProblemKind.REJECTED -> Banner(BannerKind.KEY_REJECTED, KEY_REJECTED_MESSAGE, showSettings = true)
