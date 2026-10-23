@@ -40,6 +40,18 @@ class TranscriptCleanerTest {
         "[BLANK_AUDIO] yes" to "yes",
         "(music) hello" to "hello",
         "hello [BLANK_AUDIO] world" to "hello world",
+        // truncated / unterminated markers (seen on the Pixel 3: "[BLANK_AUD")
+        "[BLANK_AUD" to "",
+        "IO]" to "",
+        "hello [BLANK_AUD" to "hello",
+        "(silence" to "",
+        "[MUSIC] [BLANK_AUD" to "",
+        "BLANK_AUDIO" to "",
+        "MUSIC_PLAYING" to "",
+        "hello MUSIC_PLAYING there" to "hello there",
+        "OK" to "OK",
+        "NO" to "NO",
+        "I live in the USA" to "I live in the USA",
         "😀" to "",
         "7" to "7",
     )

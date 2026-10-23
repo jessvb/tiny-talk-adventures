@@ -155,6 +155,11 @@ class CoreOnDeviceSmokeTest {
         assertEquals("Yes", TranscriptCleaner.clean("Yes, yes"))
         assertEquals("Okay", TranscriptCleaner.clean("Okay. Okay."))
         assertEquals("", TranscriptCleaner.clean("[BLANK_AUDIO]"))
+        assertEquals("", TranscriptCleaner.clean("[BLANK_AUD"))
+        assertEquals("", TranscriptCleaner.clean("IO]"))
+        assertEquals("hello", TranscriptCleaner.clean("hello [BLANK_AUD"))
+        assertEquals("", TranscriptCleaner.clean("BLANK_AUDIO"))
+        assertEquals("OK", TranscriptCleaner.clean("OK"))
         assertEquals("Hello there", TranscriptCleaner.clean("  Hello (music)  there "))
         assertEquals("Are you sure?", TranscriptCleaner.clean("Are you sure? Are you sure?"))
         // Same Unicode-whitespace handling as on the JVM (ICU's `\s` differs from OpenJDK's).

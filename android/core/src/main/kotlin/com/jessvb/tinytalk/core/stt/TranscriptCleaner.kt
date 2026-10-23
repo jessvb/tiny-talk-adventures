@@ -7,6 +7,9 @@ package com.jessvb.tinytalk.core.stt
  * Rules:
  * 1. Bracketed/parenthesized groups ("[BLANK_AUDIO]", "(music)", "[Music]") are
  *    non-speech annotations and are dropped.
+ *    A truncated marker ("[BLANK_AUD", "IO]", "(silence") is not speech either: any
+ *    whitespace-delimited token still holding a bracket or parenthesis is dropped, as is a
+ *    bare marker like BLANK_AUDIO (capital words joined by underscores; "OK"/"USA" stay).
  * 2. Whitespace is trimmed and collapsed; text with no letter/digit becomes "".
  * 3. If the ENTIRE text is one word-group repeated back to back (>= 2 times,
  *    compared case-insensitively, ignoring punctuation), it collapses to one copy.
@@ -23,8 +26,16 @@ object TranscriptCleaner {
     // exactly Unicode White_Space on both runtimes.
     private val whitespace = Regex("""[\s\p{Z}\u0085]+""")
 
+    // Bare markers Whisper sometimes emits without brackets: BLANK_AUDIO, MUSIC_PLAYING.
+    // Needs an underscore, so ordinary shouted words (NO, OK, USA) are kept.
+    private val bareMarker = Regex("""[A-Z]+(_[A-Z]+)+""")
+
+    private fun isNonSpeechToken(t: String): Boolean =
+        t.any { it == '[' || it == ']' || it == '(' || it == ')' } || bareMarker.matches(t)
+
     fun clean(raw: String): String {
         val text = raw.replace(annotation, " ").replace(whitespace, " ").trim()
+            .split(' ').filterNot { isNonSpeechToken(it) }.joinToString(" ")
         if (!text.codePoints().anyMatch { Character.isLetterOrDigit(it) }) return ""
 
         val tokens = text.split(' ')

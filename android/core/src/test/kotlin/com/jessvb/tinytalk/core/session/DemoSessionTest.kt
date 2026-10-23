@@ -156,6 +156,24 @@ class DemoSessionTest {
         assertEquals(3, ev.size)
     }
 
+    /** What OnDeviceTranscriber does to Whisper's raw text before DemoSession sees it. */
+    private class CleaningStt(private val raw: String) : SpeechTranscribing {
+        override suspend fun transcribe(pcm16: ShortArray, sampleRate: Int) =
+            com.jessvb.tinytalk.core.stt.TranscriptCleaner.clean(raw)
+    }
+
+    @Test fun truncatedBlankMarkerTakesTheDidntHearPath() = runTest {
+        val chat = FakeChat()
+        val s = make(chat, FakeStt { CleaningStt("[BLANK_AUD").transcribe(pcm, 16000) })
+        val ev = collect(s)
+        s.submitUtterance(1, pcm, 16000)
+        runCurrent()
+        assertEquals(SessionEvent.TranscriptFinal("", 1), ev[0])
+        assertEquals(listOf("system"), chat.requests[0].map { it.role })
+        assertEquals("$prompt\n\n$introGuidance\n\n$nudge\n\n$sttFailure", chat.requests[0][0].content)
+        assertEquals(3, ev.size)
+    }
+
     @Test fun bargeInDuringTranscriptionDropsTurn() = runTest {
         val gate = CompletableDeferred<String>()
         val chat = FakeChat()
