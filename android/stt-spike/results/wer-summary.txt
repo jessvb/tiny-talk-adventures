@@ -1,0 +1,187 @@
+=== whisper-tiny.en-t2  (n=144 warm)
+cold first call: 849 ms (rtf 0.330)
+warm latency ms: median 702  p95 864  max 912
+warm RTF: median 0.363  p95 0.715
+WER overall: 14.6%  (135 errors / 924 ref words)
+  WER Daniel: 5.8%
+  WER Junior: 24.0%
+  WER Karen: 11.7%
+  WER Kathy: 29.9%
+  WER Samantha: 8.4%
+  WER Tessa: 7.8%
+8 worst utterances:
+  u18/Kathy errs=6 wer=100%
+    ref: The ducks said quack quack quack
+    hyp: of the dark sand black black black
+  u04/Junior errs=1 wer=100%
+    ref: Yes
+    hyp: 
+  u16/Karen errs=1 wer=100%
+    ref: Okay
+    hyp: Okay. Okay
+  u18/Junior errs=5 wer=83%
+    ref: The ducks said quack quack quack
+    hyp: the 'dox-set' whack whack
+  u18/Karen errs=5 wer=83%
+    ref: The ducks said quack quack quack
+    hyp: The Joxid Wack Wack Wack W
+  u11/Kathy errs=8 wer=80%
+    ref: They went up the hill and found seven shiny stones
+    hyp: the end of the hill in south and southern chinese stones
+  u09/Kathy errs=6 wer=75%
+    ref: Maybe the owl can fly to the moon
+    hyp: may the sea of light as a moon.
+  u02/Samantha errs=4 wer=67%
+    ref: Can the bunny build a boat
+    hyp: and the bunny buildable.
+
+=== whisper-tiny.en-t4  (n=144 warm)
+cold first call: 908 ms (rtf 0.353)
+warm latency ms: median 711  p95 906  max 1046
+warm RTF: median 0.386  p95 0.800
+WER overall: 14.5%  (134 errors / 924 ref words)
+  WER Daniel: 6.5%
+  WER Junior: 24.0%
+  WER Karen: 11.0%
+  WER Kathy: 29.9%
+  WER Samantha: 7.8%
+  WER Tessa: 7.8%
+8 worst utterances:
+  u04/Junior errs=1 wer=100%
+    ref: Yes
+    hyp: 
+  u04/Kathy errs=1 wer=100%
+    ref: Yes
+    hyp: Yes, yes
+  u18/Junior errs=5 wer=83%
+    ref: The ducks said quack quack quack
+    hyp: the 'dox-set' whack whack
+  u18/Karen errs=5 wer=83%
+    ref: The ducks said quack quack quack
+    hyp: The Joxid Wack Wack Wack W
+  u18/Kathy errs=5 wer=83%
+    ref: The ducks said quack quack quack
+    hyp: the dark sand black black black
+  u11/Kathy errs=8 wer=80%
+    ref: They went up the hill and found seven shiny stones
+    hyp: the end of the hill in south and southern chinese stones
+  u09/Kathy errs=6 wer=75%
+    ref: Maybe the owl can fly to the moon
+    hyp: may the sea of light as a moon.
+  u02/Samantha errs=4 wer=67%
+    ref: Can the bunny build a boat
+    hyp: and the bunny buildable.
+
+=== zipformer-20M-t2  (n=144 warm)
+cold first call: 462 ms (rtf 0.180)
+warm latency ms: median 316  p95 510  max 570
+warm RTF: median 0.166  p95 0.254
+WER overall: 75.5%  (698 errors / 924 ref words)
+  WER Daniel: 74.0%
+  WER Junior: 87.0%
+  WER Karen: 65.6%
+  WER Kathy: 85.7%
+  WER Samantha: 73.4%
+  WER Tessa: 67.5%
+8 worst utterances:
+  u24/Junior errs=11 wer=100%
+    ref: The puppy and the kitten had a picnic by the lake
+    hyp: 
+  u24/Kathy errs=11 wer=100%
+    ref: The puppy and the kitten had a picnic by the lake
+    hyp: 
+  u09/Daniel errs=8 wer=100%
+    ref: Maybe the owl can fly to the moon
+    hyp: 
+  u09/Samantha errs=8 wer=100%
+    ref: Maybe the owl can fly to the moon
+    hyp: ON
+  u09/Tessa errs=8 wer=100%
+    ref: Maybe the owl can fly to the moon
+    hyp: ON
+  u12/Junior errs=8 wer=100%
+    ref: My name is Max and I am six
+    hyp: 
+  u14/Kathy errs=8 wer=100%
+    ref: The princess and the penguin are best friends
+    hyp: S
+  u15/Daniel errs=8 wer=100%
+    ref: What if the castle was made of cheese
+    hyp: 
+
+=== zipformer-20M-t4  (n=144 warm)
+cold first call: 797 ms (rtf 0.309)
+warm latency ms: median 548  p95 800  max 934
+warm RTF: median 0.285  p95 0.405
+WER overall: 75.9%  (701 errors / 924 ref words)
+  WER Daniel: 74.0%
+  WER Junior: 88.3%
+  WER Karen: 65.6%
+  WER Kathy: 87.0%
+  WER Samantha: 73.4%
+  WER Tessa: 66.9%
+8 worst utterances:
+  u24/Junior errs=11 wer=100%
+    ref: The puppy and the kitten had a picnic by the lake
+    hyp: 
+  u24/Kathy errs=11 wer=100%
+    ref: The puppy and the kitten had a picnic by the lake
+    hyp: 
+  u09/Daniel errs=8 wer=100%
+    ref: Maybe the owl can fly to the moon
+    hyp: 
+  u09/Samantha errs=8 wer=100%
+    ref: Maybe the owl can fly to the moon
+    hyp: ON
+  u09/Tessa errs=8 wer=100%
+    ref: Maybe the owl can fly to the moon
+    hyp: ON
+  u12/Junior errs=8 wer=100%
+    ref: My name is Max and I am six
+    hyp: 
+  u14/Kathy errs=8 wer=100%
+    ref: The princess and the penguin are best friends
+    hyp: S
+  u15/Daniel errs=8 wer=100%
+    ref: What if the castle was made of cheese
+    hyp: 
+
+=== vosk-small-en-us-0.15  (n=144 warm)
+cold first call: 1851 ms (rtf 0.719)
+warm latency ms: median 1399  p95 2310  max 2921
+warm RTF: median 0.780  p95 1.116
+WER overall: 24.7%  (228 errors / 924 ref words)
+  WER Daniel: 13.6%
+  WER Junior: 42.9%
+  WER Karen: 13.0%
+  WER Kathy: 56.5%
+  WER Samantha: 10.4%
+  WER Tessa: 11.7%
+8 worst utterances:
+  u02/Kathy errs=6 wer=100%
+    ref: Can the bunny build a boat
+    hyp: bernie to both
+  u08/Kathy errs=6 wer=100%
+    ref: The bear has three blue hats
+    hyp: there as read lou hat
+  u07/Kathy errs=5 wer=100%
+    ref: Let us name her Luna
+    hyp: that doesn't mean or lunar
+  u05/Junior errs=3 wer=100%
+    ref: A big cat
+    hyp: they tear
+  u05/Kathy errs=3 wer=100%
+    ref: A big cat
+    hyp: the chat
+  u13/Kathy errs=8 wer=89%
+    ref: Can we make the frog jump over the river
+    hyp: then we will rock john silvers or reserve
+  u21/Kathy errs=6 wer=86%
+    ref: Tell me more about the sleepy giraffe
+    hyp: we were about initially teacher rest
+  u02/Junior errs=5 wer=83%
+    ref: Can the bunny build a boat
+    hyp: hands up on you build a bomb
+
+=== zipformer-20M-t2 latency after last chunk (+0.5 s silence), n=144: median 74 ms  p95 138 ms  max 169 ms
+=== zipformer-20M-t4 latency after last chunk (+0.5 s silence), n=144: median 144 ms  p95 221 ms  max 268 ms
