@@ -30,7 +30,7 @@ import java.util.concurrent.TimeUnit
  *
  * [communicationMode]: while speaking, set AudioManager.MODE_IN_COMMUNICATION and force the
  * loudspeaker, with USAGE_VOICE_COMMUNICATION on the track, so the AEC on the mic has a render
- * reference. Pass false (or flip [DEFAULT_COMMUNICATION_MODE]) to A/B against plain media output.
+ * reference. Off by default ([DEFAULT_COMMUNICATION_MODE]): plain media output, which follows the media volume.
  * [audioSessionIdProvider]: read each time the AudioTrack is created (so a mic session id that only exists
  * after start() can be passed lazily); 0 = let the system allocate a new session (the default; no sharing).
  *
@@ -591,7 +591,12 @@ class SentenceTts(
 
     companion object {
         /** Flip to false to A/B plain media output against the voice-communication path. */
-        const val DEFAULT_COMMUNICATION_MODE = true
+        /**
+         * Off: Elsie plays on the media stream, so the phone's media volume and mute settings
+         * govern her (voice-call audio ignored them, and the mic opening mid-speech made her
+         * louder). The mic's AEC stays attached either way; Phase 0 saw no self-triggers with it off.
+         */
+        const val DEFAULT_COMMUNICATION_MODE = false
         private const val FILE_PREFIX = "sentence_tts_"
         private const val INIT_TIMEOUT_MS = 10_000L
         private const val SYNTH_TIMEOUT_MS = 20_000L // no synthesis progress for this long fails a sentence
