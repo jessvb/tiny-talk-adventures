@@ -87,6 +87,8 @@ class VoiceLoop(
     @Volatile private var running = false
     /** The child muted the mic: capture is closed but the loop (collector, reply, speech) lives on. */
     private var muted = false // guarded by startStopLock
+    /** Unmuted while Elsie was speaking: the mic opens when she finishes (guarded by startStopLock). */
+    private var reopenAfterSpeech = false
     /** Bumped by every successful-or-attempted start (under startStopLock); tags halts. */
     @Volatile private var runId = 0L
     /** Set once per run by the first mic loss / frame failure / consent revocation. */
@@ -155,6 +157,7 @@ class VoiceLoop(
         val failed = synchronized(startStopLock) {
             if (this.muted == muted) return
             this.muted = muted
+            reopenAfterSpeech = false
             if (!running) return
             if (muted) {
                 mic.stop() // joins the capture thread: detector/assembler are now ours
@@ -163,15 +166,34 @@ class VoiceLoop(
                 assembler.reset()
                 false
             } else {
-                val ok = try { mic.start() } catch (t: Throwable) {
-                    onLog("mic start threw ${t.javaClass.name}")
-                    try { mic.stop() } catch (_: Throwable) {}
-                    false
-                }
-                !ok
+                // Opening a voice-communication capture while Elsie is mid-speech made her louder
+                // on the Pixel 3, so wait for her to finish (she stays interruptible otherwise).
+                // Set the flag BEFORE reading the state: if playback ends in between, its
+                // [openMicAfterSpeech] (also under startStopLock) still sees the request.
+                reopenAfterSpeech = true
+                if (state == LoopState.SPEAKING) false else !openMicLocked()
             }
         }
         if (failed) halt(MIC_UNAVAILABLE_MESSAGE, "mic would not reopen after unmute")
+    }
+
+    /** startStopLock held. Opens the mic for a pending unmute; false if it would not start. */
+    private fun openMicLocked(): Boolean {
+        reopenAfterSpeech = false
+        return try { mic.start() } catch (t: Throwable) {
+            onLog("mic start threw ${t.javaClass.name}")
+            try { mic.stop() } catch (_: Throwable) {}
+            false
+        }
+    }
+
+    /** Dispatchers.Default, after playback ended: honours an unmute made during the speech. */
+    private fun openMicAfterSpeech() {
+        val failed = synchronized(startStopLock) {
+            if (!reopenAfterSpeech || !running || muted) return
+            !openMicLocked()
+        }
+        if (failed) halt(MIC_UNAVAILABLE_MESSAGE, "mic would not reopen after speech")
     }
 
     /** Releases the mic, stops speech, cancels any in-flight turn, resets detection. Idempotent. */
@@ -187,6 +209,7 @@ class VoiceLoop(
         if (!running) return false
         if (onlyRun != null && onlyRun != runId) return false
         running = false
+        reopenAfterSpeech = false
         // IDLE first, then tts.stop(): a collector racing in speakFor() either re-checks
         // after this (sees IDLE, stops its own speech) or spoke before it (stopped below).
         var turn = 0
@@ -311,6 +334,7 @@ class VoiceLoop(
             delay(PLAYBACK_POLL_MS) // cancellable: stop()/a newer reply cancels this job
             if (!tts.isSpeaking) {
                 transition { it.onPlaybackFinished(turn) }
+                openMicAfterSpeech()
                 return
             }
         }
