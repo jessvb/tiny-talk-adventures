@@ -66,6 +66,8 @@ class VoiceLoop(
     private val session: TurnSession,
     private val tts: Speaker,
     private val scope: CoroutineScope,
+    /** Plays while a reply is awaited; owned by the caller like [tts]. */
+    private val waiting: WaitingSound = NoWaitingSound,
     private val consentGiven: () -> Boolean,
     private val onState: (LoopState) -> Unit,
     private val onKeyProblem: (KeyProblemKind) -> Unit,
@@ -361,6 +363,15 @@ class VoiceLoop(
         synchronized(notifyLock) {
             if (seq <= deliveredSeq) return // a newer state was already delivered
             deliveredSeq = seq
+            // The chime follows THINKING exactly: it starts when the child's turn is submitted
+            // and is stopped by the very state change (SPEAKING / LISTENING / IDLE) that comes
+            // before a reply is spoken, so it can never play over Elsie.
+            try {
+                if (s == LoopState.THINKING) waiting.start() else waiting.stop()
+            } catch (t: Throwable) {
+                t.rethrowIfFatal()
+                onLog("waiting chime failed: ${t.javaClass.name}")
+            }
             onState(s)
         }
     }

@@ -21,3 +21,19 @@ interface Speaker {
     fun stop()
     val isSpeaking: Boolean
 }
+
+/**
+ * The quiet "still thinking" sound played while a reply is awaited ([DittyPlayer]).
+ * Both calls must be cheap from any thread (barge-in stops it from the mic's capture thread)
+ * and idempotent.
+ */
+interface WaitingSound {
+    fun start()
+    fun stop()
+}
+
+/** No chime (the default, and what tests that do not care use). */
+object NoWaitingSound : WaitingSound {
+    override fun start() {}
+    override fun stop() {}
+}

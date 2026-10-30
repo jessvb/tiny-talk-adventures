@@ -31,6 +31,7 @@ import com.jessvb.tinytalk.ui.Screen
 import com.jessvb.tinytalk.ui.SharedPrefsConsentStore
 import com.jessvb.tinytalk.ui.StoryUiState
 import com.jessvb.tinytalk.voice.AppTranscriberFactory
+import com.jessvb.tinytalk.voice.DittyPlayer
 import com.jessvb.tinytalk.voice.LoopControl
 import com.jessvb.tinytalk.voice.LoopCoordinator
 import com.jessvb.tinytalk.voice.ModeSwitchingTranscriber
@@ -94,9 +95,10 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
     private val transcriberFactory: TranscriberFactory =
         AppTranscriberFactory(groqKey = { groq.current() }, onDevice = onDevice)
 
-    private class Audio(val tts: SentenceTts, val vad: SileroVad, val loop: VoiceLoop) {
+    private class Audio(val tts: SentenceTts, val vad: SileroVad, val loop: VoiceLoop, val ditty: DittyPlayer) {
         fun release() {
             loop.stop()
+            ditty.close()
             tts.close()
             vad.close()
         }
@@ -181,6 +183,7 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
             throw e
         }
         prefs.voiceName?.let { tts.setVoice(it) }
+        val ditty = DittyPlayer(::log)
         val loop = VoiceLoop(
             micFactory = { onFrame, onStopped -> MicCapture(onFrame, ::log, onStopped) },
             vad = vad,
@@ -188,6 +191,7 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
             session = session,
             tts = tts,
             scope = workScope,
+            waiting = ditty,
             consentGiven = { consentStore.accepted },
             onState = coordinator::onLoopState,
             onKeyProblem = coordinator::onKeyProblem,
@@ -197,7 +201,7 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
             onStoryFinished = coordinator::onStoryFinished,
             onLog = ::log,
         )
-        val parts = Audio(tts, vad, loop)
+        val parts = Audio(tts, vad, loop, ditty)
         synchronized(audioLock) {
             if (cleared) { // the ViewModel went away while we were building
                 parts.release()

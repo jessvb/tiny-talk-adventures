@@ -60,6 +60,12 @@ class VoiceLoopTest {
         override fun stop() { stops++; isSpeaking = false }
     }
 
+    private class FakeWaiting : WaitingSound {
+        val calls = CopyOnWriteArrayList<String>()
+        override fun start() { calls += "start" }
+        override fun stop() { calls += "stop" }
+    }
+
     private class FakeSession : TurnSession {
         val channel = Channel<SessionEvent>(Channel.UNLIMITED)
         override val events: Flow<SessionEvent> = channel.receiveAsFlow()
@@ -72,6 +78,7 @@ class VoiceLoopTest {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val vad = FakeVad()
     private val speaker = FakeSpeaker()
+    private val waiting = FakeWaiting()
     private val session = FakeSession()
     private val states = CopyOnWriteArrayList<LoopState>()
     private val errors = CopyOnWriteArrayList<String>()
@@ -85,6 +92,7 @@ class VoiceLoopTest {
         session = session,
         tts = speaker,
         scope = scope,
+        waiting = waiting,
         consentGiven = { consent },
         onState = { states += it },
         onKeyProblem = {},
@@ -213,6 +221,37 @@ class VoiceLoopTest {
         assertEquals(0, mic.starts)
         loop.setMuted(false)
         assertEquals(1, mic.starts)
+    }
+
+    @Test
+    fun `the waiting chime plays while thinking and stops when Elsie replies`() {
+        assertTrue(loop.start())
+        assertTrue(waiting.calls.none { it == "start" }) // listening is silent
+        utterance()
+        eventually("chime starts") { waiting.calls.contains("start") }
+        session.channel.trySend(SessionEvent.ResponseText("Once upon a time.", 1))
+        eventually("chime stops before she speaks") { waiting.calls.lastOrNull() == "stop" }
+        val fromFirstStart = waiting.calls.dropWhile { it != "start" }
+        assertEquals("start", fromFirstStart.first())
+        assertEquals("stop", fromFirstStart[1])
+    }
+
+    @Test
+    fun `the waiting chime stops when the child talks over the wait`() {
+        assertTrue(loop.start())
+        utterance()
+        eventually("chime starts") { waiting.calls.contains("start") }
+        frames(0.9f, 10) // speech while thinking = barge-in
+        eventually("chime stops") { waiting.calls.lastOrNull() == "stop" }
+    }
+
+    @Test
+    fun `the waiting chime stops when the loop stops`() {
+        assertTrue(loop.start())
+        utterance()
+        eventually("chime starts") { waiting.calls.contains("start") }
+        loop.stop()
+        assertEquals("stop", waiting.calls.last())
     }
 
     @Test
