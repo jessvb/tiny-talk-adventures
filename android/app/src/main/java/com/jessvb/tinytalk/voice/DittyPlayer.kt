@@ -83,12 +83,19 @@ class DittyPlayer(private val onLog: (String) -> Unit) : WaitingSound {
             .setTransferMode(AudioTrack.MODE_STATIC)
             .setBufferSizeInBytes(bytes)
             .build()
-        if (t.state != AudioTrack.STATE_INITIALIZED) {
-            onLog("waiting chime track failed to initialize")
+        // A MODE_STATIC track reports STATE_NO_STATIC_DATA (not INITIALIZED) until it is filled,
+        // so only UNINITIALIZED is a failure here; the state is re-checked after the write.
+        if (t.state == AudioTrack.STATE_UNINITIALIZED) {
+            onLog("waiting chime track failed to build")
             t.release()
             return
         }
-        t.write(samples, 0, samples.size)
+        val written = t.write(samples, 0, samples.size)
+        if (written != samples.size || t.state != AudioTrack.STATE_INITIALIZED) {
+            onLog("waiting chime track did not accept its audio (wrote $written, state ${t.state})")
+            t.release()
+            return
+        }
         t.setLoopPoints(0, samples.size, -1) // forever; the silent tail paces it
         t.play()
         track = t
