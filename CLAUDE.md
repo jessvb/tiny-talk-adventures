@@ -37,6 +37,14 @@ changes.
   the sub-project's `.venv`, not to a pyenv shim or system path). Docker is
   not used here: Kyutai STT's MLX backend needs native Metal/Neural Engine
   access, which Docker Desktop on macOS can't provide.
+- **No real audio from tests or commands without asking.** Never run a
+  test, script, or app launch that plays sound (phone or Mac speakers —
+  TTS, `afplay`/`say`, instrumented tests that speak) without confirming
+  with the author first; the author is often in the room and a phone that
+  suddenly talks is startling. Prefer silent verification (JVM/unit tests,
+  logs, mocks, muted streams). When real audio is unavoidable (e.g. an
+  echo/barge-in measurement), say what will play, on which device and for
+  how long, and wait for a yes. Subagent prompts must repeat this rule.
 
 ## Working process
 
@@ -169,6 +177,15 @@ End failing to re-arm for a second story on the same session). #39 (mic
 goes silent after a demo-mode session) got diagnostics only, no fix yet
 — root cause still unknown, needs a fresh on-device repro to read the
 new capture-state logging.
+
+**Android demo-mode client** (issue #88, draft PR #93, branch
+`worktree-android-demo-mode`) is in progress: spec approved, Phase 0 audio
+spike GO, on-device STT chosen as Whisper tiny.en, and the Phase 1 voice loop
+is built and reviewed except Task 4b-B (installing the on-device recognizer,
+waiting on a library download) and the audible acceptance run on the Pixel 3;
+see `docs/superpowers/specs/2026-10-19-android-demo-mode-client-design.md`,
+`docs/superpowers/plans/2026-10-21-android-phase1-voice-loop.md`, and
+`docs/superpowers/specs/2026-10-22-android-phase1-results.md`.
 
 For the current bug list (including #24/#25/#26/#32/#33/#36/#41/#49/#52
 — each needs its own read before assuming Phase 1/2 above already covers
