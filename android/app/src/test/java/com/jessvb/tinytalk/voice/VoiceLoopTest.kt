@@ -183,8 +183,7 @@ class VoiceLoopTest {
     }
 
     @Test
-    fun `unmuting during Elsie's speech waits for her to finish before opening the mic`() {
-        // Opening a voice-communication capture mid-playback made her louder (author report).
+    fun `unmuting during Elsie's speech reopens the mic at once so she can be interrupted`() {
         assertTrue(loop.start())
         utterance()
         loop.setMuted(true)
@@ -193,25 +192,10 @@ class VoiceLoopTest {
         assertEquals(LoopState.SPEAKING, loop.state)
         val startsBefore = mic.starts
         loop.setMuted(false)
-        assertEquals(startsBefore, mic.starts) // not while she is speaking
-        speaker.isSpeaking = false
-        eventually("mic reopens after playback") { mic.starts == startsBefore + 1 }
-        eventually("listening again") { loop.state == LoopState.LISTENING }
-    }
-
-    @Test
-    fun `muting again before she finishes cancels the pending reopen`() {
-        assertTrue(loop.start())
-        utterance()
-        loop.setMuted(true)
-        session.channel.trySend(SessionEvent.ResponseText("Hi.", 1))
-        eventually("reply spoken") { speaker.spoken.contains("Hi.") }
-        val startsBefore = mic.starts
-        loop.setMuted(false)
-        loop.setMuted(true)
-        speaker.isSpeaking = false
-        eventually("playback done") { loop.state == LoopState.LISTENING }
-        assertEquals(startsBefore, mic.starts)
+        assertEquals(startsBefore + 1, mic.starts) // not deferred until she finishes
+        val stopsBefore = speaker.stops
+        frames(0.9f, 10) // the child talks over her
+        eventually("she stops") { speaker.stops > stopsBefore }
     }
 
     @Test
