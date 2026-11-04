@@ -178,12 +178,16 @@ goes silent after a demo-mode session) got diagnostics only, no fix yet
 — root cause still unknown, needs a fresh on-device repro to read the
 new capture-state logging.
 
-**Android demo-mode client** (issue #88, draft PR #93, branch
-`worktree-android-demo-mode`) is in progress: spec approved, Phase 0 audio
-spike GO, on-device STT chosen as Whisper tiny.en, and the Phase 1 voice loop
-is built and reviewed except Task 4b-B (installing the on-device recognizer,
-waiting on a library download) and the audible acceptance run on the Pixel 3;
-see `docs/superpowers/specs/2026-10-19-android-demo-mode-client-design.md`,
+**Android demo-mode client** (issue #88, `android/`, Kotlin/Compose) —
+**Phase 1 (voice loop) merged** (PR #93): the child talks to Elsie by voice,
+the voice is recognised ON THE PHONE (Whisper tiny.en via sherpa-onnx), only
+text goes to Groq; consent/Onboarding/Landing/Story/Settings screens, mic
+mute, the waiting chime, and Elsie playing on the media stream (so the phone's
+media volume governs her), all confirmed on the author's Pixel 3. **Still to
+build on Android:** the storybook (save/Library/Reading/The End) and
+page-art illustrations (Cloudflare), matching iOS demo mode; each goes through
+its own spec. Build/install: `android/rebuild-and-install.sh`. See
+`docs/superpowers/specs/2026-10-19-android-demo-mode-client-design.md`,
 `docs/superpowers/plans/2026-10-21-android-phase1-voice-loop.md`, and
 `docs/superpowers/specs/2026-10-22-android-phase1-results.md`.
 

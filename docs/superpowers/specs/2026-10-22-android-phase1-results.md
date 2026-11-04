@@ -211,21 +211,32 @@ the log; just note the times.
 
 ## Results (author run)
 
-TBD (author run). Nothing here is measured yet.
+Run on the author's Pixel 3 over several sessions (2026-10-23 to 2026-11-03), with fixes
+between runs. Not a scripted pass over all 21 steps; what was exercised and found:
 
-- What worked: TBD
-- What did not: TBD
-- Voice detection retuning needed for child voices: TBD
-- Speech stalls seen: TBD
+- What worked: the whole voice loop (speak, on-device transcription, Elsie's reply, interruption
+  by talking over her); mute / unmute; the "Elsie is thinking" waiting chime; Elsie following the
+  phone's media volume and mute settings.
+- What did not, and was fixed:
+  - Muting right after speaking dropped the turn in flight (transcript and reply vanished).
+    Mute now closes only the microphone.
+  - Unmuting during a reply made Elsie louder and left her playing with only alarms unmuted. She
+    was playing as call audio (voice-call stream); she now plays on the media stream
+    (`SentenceTts.DEFAULT_COMMUNICATION_MODE = false`). Interruption was re-checked: it works,
+    though a quiet interrupter is detected less reliably while she plays.
+  - The chime never started at first (a static AudioTrack's state was mis-checked); fixed.
+- A very slight tone/volume change when first muting/unmuting remains; the author accepts it.
+- Voice detection retuning needed for child voices: NOT tested (adult voices and a computer voice
+  only). Still open.
+- Speech stalls seen: none reported.
+- Not run: the offline-recovery, mic-loss + "Try again" and "Better listening" (cloud) steps.
 
-## FIX BEFORE MERGE (final review to triage)
+## Review items (resolved or parked)
 
-- Errors thrown inside the spoken-reply audio tasks are uncaught and would crash
-  the app; wrap them and log only the error class (also the stop-failure log
-  prints the message, not the class).
-- A wedged audio task leaves the app stuck on "speaking" with no error; add a
-  per-run deadline.
-- A stale "halt" coroutine can kill a fresh run; add a run counter.
+- Resolved: errors thrown inside spoken-reply tasks are caught (`rethrowIfFatal`, class name
+  only logged); a stale halt can no longer stop a fresh run (`runId` tag).
+- Parked: a per-run deadline for a wedged audio task (the app can sit on "speaking").
+
 
 ## Deferred minor items (plain language)
 
