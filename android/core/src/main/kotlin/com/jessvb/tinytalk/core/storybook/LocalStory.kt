@@ -29,4 +29,6 @@ data class LocalStory(
 data class FinishedStory(
     val turns: List<ConversationTurn>,
     val sharedFacts: List<Pair<String, String>>,
+    /** The storybook length chosen when THIS story began (a later setting change never applies to it). */
+    val pageCount: Int = StorySettings.DEFAULT_PAGES,
 )

@@ -136,7 +136,7 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
             app.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         },
         consent = { consentStore.accepted },
-        storyFinished = { story -> library.begin(story, prefs.pageCount) },
+        storyFinished = { story -> library.begin(story, story.pageCount) },
         showTheEnd = ::showTheEnd,
     )
 
@@ -152,6 +152,7 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
         scope = workScope,
         log = ::log,
         targetTurnsProvider = { prefs.turnCount },
+        pageCountProvider = { prefs.pageCount },
     )
 
     /** The phone's own library: finished stories are saved and rewritten into storybooks here. */

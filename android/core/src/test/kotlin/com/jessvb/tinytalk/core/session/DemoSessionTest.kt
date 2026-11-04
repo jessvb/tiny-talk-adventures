@@ -76,6 +76,7 @@ class DemoSessionTest {
         fetcher: AnimalFactFetching = FakeFetcher(),
         onReset: () -> Unit = {},
         turnsProvider: (() -> Int)? = null,
+        pagesProvider: (() -> Int)? = null,
     ): DemoSession {
         val tracker = AnimalFactTracker(fetcher, AnimalFactsCache(File(tmp.root, "c${System.nanoTime()}.json")))
         return DemoSession(
@@ -83,6 +84,7 @@ class DemoSessionTest {
             log = { logs.add(it) },
             resetFacts = { resetGate?.await(); onReset(); resets++; tracker.reset() },
             targetTurnsProvider = turnsProvider,
+            pageCountProvider = pagesProvider,
         )
     }
 
@@ -609,5 +611,23 @@ class DemoSessionTest {
         runCurrent()
         for (i in 9..16) say(i)
         assertEquals(1, ev.count { it is SessionEvent.StoryFinished }) // the new story used 4 turns
+    }
+
+    @Test fun finishedStoryCarriesThePageCountItStartedWith() = runTest {
+        var pages = 5
+        var n = 0
+        val chat = FakeChat { if (n++ == 0) "Once upon a time." else "The end." }
+        val s = make(chat, pagesProvider = { pages })
+        val ev = collect(s)
+        s.submitUtterance(1, pcm, 16000) // the story begins with 5 pages
+        runCurrent()
+        pages = 8
+        s.applySettings() // mid-story: must NOT change this story
+        s.submitUtterance(2, pcm, 16000)
+        runCurrent()
+        assertEquals(5, (ev.last() as SessionEvent.StoryFinished).story.pageCount)
+        s.submitUtterance(3, pcm, 16000) // the next story uses the new setting
+        runCurrent()
+        assertEquals(8, (ev.last() as SessionEvent.StoryFinished).story.pageCount)
     }
 }

@@ -10,6 +10,7 @@ import com.jessvb.tinytalk.core.facts.AnimalFactTracker
 import com.jessvb.tinytalk.core.stt.OnDeviceTranscriptionException
 import com.jessvb.tinytalk.core.stt.SpeechTranscribing
 import com.jessvb.tinytalk.core.storybook.FinishedStory
+import com.jessvb.tinytalk.core.storybook.StorySettings
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -48,6 +49,8 @@ class DemoSession(
     internal val resetFacts: suspend () -> Unit = { facts.reset() },
     /** Story length for each NEW story (parent setting); null = the fixed [targetTurns]. */
     private val targetTurnsProvider: (() -> Int)? = null,
+    /** Storybook pages for each NEW story (parent setting); null = the default. */
+    private val pageCountProvider: (() -> Int)? = null,
 ) : TurnSession {
     private val channel = Channel<SessionEvent>(Channel.UNLIMITED)
 
@@ -61,6 +64,7 @@ class DemoSession(
     private var resetJob: Job? = null
     private var conversation = DemoConversation()
     private var arc = StoryArc(turnsForNextStory())
+    private var storyPageCount = pagesForNextStory() // fixed for the story under way
 
     override fun submitUtterance(turnId: Int, pcm16: ShortArray, sampleRate: Int) {
         val job = synchronized(lock) {
@@ -90,11 +94,16 @@ class DemoSession(
     /** Applies the parent's story-length setting to a story that has not started; never retroactive. */
     fun applySettings() {
         synchronized(lock) {
-            if (!closed && !arc.hasStarted) arc = StoryArc(turnsForNextStory())
+            if (!closed && !arc.hasStarted) {
+                arc = StoryArc(turnsForNextStory())
+                storyPageCount = pagesForNextStory()
+            }
         }
     }
 
     private fun turnsForNextStory(): Int = targetTurnsProvider?.invoke() ?: targetTurns
+
+    private fun pagesForNextStory(): Int = pageCountProvider?.invoke() ?: StorySettings.DEFAULT_PAGES
 
     /**
      * Cancels the turn in flight, claims a new generation and captures this story's conversation and
@@ -157,6 +166,7 @@ class DemoSession(
             generation++
             conversation = DemoConversation()
             arc = StoryArc(turnsForNextStory())
+            storyPageCount = pagesForNextStory()
             newResetJobLocked()
         }
         reset.start()
@@ -247,9 +257,12 @@ class DemoSession(
             conv.addAgent(reply)
             channel.trySend(SessionEvent.TurnEnd(turnId))
             if (storyArc.isDone) {
-                val finished = FinishedStory(conv.fullHistory, sharedFacts)
+                val finished = FinishedStory(conv.fullHistory, sharedFacts, storyPageCount)
                 if (conversation === conv) conversation = DemoConversation()
-                if (arc === storyArc) arc = StoryArc(turnsForNextStory())
+                if (arc === storyArc) {
+                    arc = StoryArc(turnsForNextStory())
+                    storyPageCount = pagesForNextStory()
+                }
                 resetToStart = newResetJobLocked()
                 channel.trySend(SessionEvent.StoryFinished(finished))
             }
