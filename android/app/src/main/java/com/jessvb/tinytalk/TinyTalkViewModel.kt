@@ -294,6 +294,16 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
     /** The story's text for the Reading screen (disk read, off the main thread). */
     suspend fun loadStory(id: String): LocalStory? = withContext(Dispatchers.IO) { library.detail(id) }
 
+    /** 🔊 on the Reading screen: read this page with Elsie's voice. */
+    fun speakPage(text: String) {
+        workScope.launch { audioOrNull()?.tts?.speak(text) }
+    }
+
+    /** Leaving Reading (or turning a page) silences any page being read. */
+    fun stopSpeakingPage() {
+        workScope.launch { audioOrNull()?.tts?.stop() }
+    }
+
     /** Main thread, from the coordinator: show The End in place of the finished story. */
     private fun showTheEnd(id: String) {
         theEndStoryId.value = id

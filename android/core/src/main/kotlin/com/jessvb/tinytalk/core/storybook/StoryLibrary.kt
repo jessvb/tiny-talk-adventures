@@ -122,6 +122,7 @@ class StoryLibrary(
     }
 
     private fun readSummaries(): List<StorySummary> = store.list().map {
-        StorySummary(it.id, it.createdAtIso, it.title, it.pageCount, it.rewriteStatus)
+        // A written story reports the pages it really has; until then, the target.
+        StorySummary(it.id, it.createdAtIso, it.title, if (it.pages.isEmpty()) it.pageCount else it.pages.size, it.rewriteStatus)
     }
 }

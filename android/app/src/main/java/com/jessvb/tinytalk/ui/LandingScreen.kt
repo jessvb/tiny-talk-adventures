@@ -33,7 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
-fun LandingScreen(onCreateStory: () -> Unit, onSettings: () -> Unit) {
+fun LandingScreen(onCreateStory: () -> Unit, onReadStories: () -> Unit, onSettings: () -> Unit) {
     Box(Modifier.fillMaxSize()) {
         ElsieImage(zoom = 1.1f, anchorX = 0.46f, anchorY = 0.4f, modifier = Modifier.fillMaxSize())
         Box(
@@ -66,23 +66,7 @@ fun LandingScreen(onCreateStory: () -> Unit, onSettings: () -> Unit) {
             Spacer(Modifier.weight(1f))
             Column(Modifier.padding(horizontal = 26.dp).padding(bottom = 30.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 PrimaryButton("Create a Story", onCreateStory)
-                // Phase 2: shown but disabled, clearly labelled.
-                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                    Box(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(TTA.Radius.Wide))
-                            .background(TTA.Palette.Cream.copy(alpha = 0.14f)).padding(vertical = 18.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text("Read Stories", style = TTA.Typography.display(22f), color = TTA.Palette.Cream.copy(alpha = 0.55f))
-                    }
-                    Text(
-                        "Coming later — you'll be able to read your stories here!",
-                        style = TTA.Typography.story(13.5f, italic = true),
-                        color = TTA.Palette.Paper,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(top = 9.dp),
-                    )
-                }
+                SecondaryButton("Read Stories", onReadStories)
             }
         }
         }

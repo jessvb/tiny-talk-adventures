@@ -80,6 +80,16 @@ class StoryLibraryTest {
         assertEquals(2, s.pageCount)
     }
 
+    @Test fun `a done story's summary reports its actual page count`() = runTest {
+        // The writer returns 2 pages although 5 were asked for (iOS accepts that); the Library
+        // must say "2 pages", not the target.
+        val lib = library(FakeChat { _, _ -> reply("The Fox") }, libScope())
+        lib.begin(finished(), pageCount = 5)
+        assertEquals(5, lib.summaries.value.single().pageCount) // pending: the target
+        advanceUntilIdle()
+        assertEquals(2, lib.summaries.value.single().pageCount)
+    }
+
     @Test fun `summaries are newest first and update as builds finish`() = runTest {
         var n = 0
         val lib = library(FakeChat { _, _ -> reply("Story ${++n}") }, libScope())
