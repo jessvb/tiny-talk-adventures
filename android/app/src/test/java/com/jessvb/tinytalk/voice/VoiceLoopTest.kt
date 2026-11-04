@@ -71,6 +71,8 @@ class VoiceLoopTest {
         override val events: Flow<SessionEvent> = channel.receiveAsFlow()
         val submits = CopyOnWriteArrayList<Int>()
         val bargeIns = CopyOnWriteArrayList<Int>()
+        val concludes = CopyOnWriteArrayList<Int>()
+        override fun concludeStory(turnId: Int) { concludes += turnId }
         override fun submitUtterance(turnId: Int, pcm16: ShortArray, sampleRate: Int) { submits += turnId }
         override fun bargeIn(turnId: Int) { bargeIns += turnId }
     }
@@ -79,6 +81,7 @@ class VoiceLoopTest {
     private val vad = FakeVad()
     private val speaker = FakeSpeaker()
     private val waiting = FakeWaiting()
+    private val finishedStories = CopyOnWriteArrayList<com.jessvb.tinytalk.core.storybook.FinishedStory>()
     private val session = FakeSession()
     private val states = CopyOnWriteArrayList<LoopState>()
     private val errors = CopyOnWriteArrayList<String>()
@@ -93,6 +96,7 @@ class VoiceLoopTest {
         tts = speaker,
         scope = scope,
         waiting = waiting,
+        onStoryFinished = { finishedStories += it },
         consentGiven = { consent },
         onState = { states += it },
         onKeyProblem = {},
@@ -236,6 +240,40 @@ class VoiceLoopTest {
         eventually("chime starts") { waiting.calls.contains("start") }
         loop.stop()
         assertEquals("stop", waiting.calls.last())
+    }
+
+    @Test
+    fun `a finished story reaches the callback with its own transcript`() {
+        assertTrue(loop.start())
+        utterance()
+        val story = com.jessvb.tinytalk.core.storybook.FinishedStory(
+            listOf(com.jessvb.tinytalk.core.ConversationTurn(com.jessvb.tinytalk.core.Speaker.CHILD, "a fox")),
+            listOf("fox" to "foxes hear well"),
+        )
+        session.channel.trySend(SessionEvent.StoryFinished(story))
+        eventually("finished story delivered") { finishedStories.isNotEmpty() }
+        assertEquals(listOf(story), finishedStories.toList())
+    }
+
+    @Test
+    fun `concludeStory while Elsie speaks stops her and submits a concluding turn`() {
+        assertTrue(loop.start())
+        utterance()
+        session.channel.trySend(SessionEvent.ResponseText("Once upon a time.", 1))
+        eventually("reply spoken") { speaker.spoken.contains("Once upon a time.") }
+        val stopsBefore = speaker.stops
+        loop.concludeStory()
+        assertTrue(speaker.stops > stopsBefore)
+        assertEquals(listOf(2), session.concludes.toList())
+        assertEquals(LoopState.THINKING, loop.state)
+        eventually("chime starts for the wait") { waiting.calls.count { it == "start" } >= 2 }
+    }
+
+    @Test
+    fun `concludeStory when the loop is not running does nothing`() {
+        loop.concludeStory()
+        assertTrue(session.concludes.isEmpty())
+        assertEquals(LoopState.IDLE, loop.state)
     }
 
     @Test

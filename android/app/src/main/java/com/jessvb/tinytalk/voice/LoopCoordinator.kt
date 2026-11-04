@@ -2,6 +2,7 @@ package com.jessvb.tinytalk.voice
 
 import com.jessvb.tinytalk.core.rethrowIfFatal
 import com.jessvb.tinytalk.core.session.KeyProblemKind
+import com.jessvb.tinytalk.core.storybook.FinishedStory
 import com.jessvb.tinytalk.core.settings.SttMode
 import com.jessvb.tinytalk.core.settings.SttModeStore
 import com.jessvb.tinytalk.core.voice.LoopState
@@ -22,6 +23,8 @@ import kotlinx.coroutines.launch
 interface LoopControl {
     fun start(): Boolean
     fun stop()
+    /** "Finish this story": see [VoiceLoop.concludeStory]. */
+    fun concludeStory()
     /** Closes/opens only the microphone; a turn already in flight carries on to its reply. */
     fun setMuted(muted: Boolean)
     /** True while the loop is running (listening, thinking or speaking). */
@@ -61,10 +64,18 @@ class LoopCoordinator(
     private val listeningAvailability: (SttMode) -> ListeningAvailability,
     private val micPermission: () -> Boolean,
     private val consent: () -> Boolean,
+    /**
+     * Saves a finished story into the library and returns its id (null = not saved). Called on the
+     * thread the finish event arrives on, NOT Main: it may touch disk. A throw is treated as null.
+     */
+    private val storyFinished: (FinishedStory) -> String? = { null },
+    /** Main thread: navigate to The End for this story id. */
+    private val showTheEnd: (String) -> Unit = {},
 ) {
     private sealed interface Command {
         data class Apply(val run: Boolean) : Command
         data class Mute(val muted: Boolean) : Command
+        data object Conclude : Command
         data object NewStory : Command
     }
 
@@ -90,6 +101,8 @@ class LoopCoordinator(
     private var commandedMuted = false
     private var lastScreen: Screen? = null
     private var audioBroken = false
+    private var loopState = LoopState.IDLE
+    private var pendingEnd: String? = null // a finished story waiting for Elsie to stop speaking
 
     init {
         worker.launch {
@@ -135,6 +148,7 @@ class LoopCoordinator(
         when (cmd) {
             is Command.Apply -> if (cmd.run) loop.start() else loop.stop()
             is Command.Mute -> loop.setMuted(cmd.muted)
+            Command.Conclude -> loop.concludeStory()
             Command.NewStory -> {
                 // Stop first so nothing of the old story is still spoken or in flight, then
                 // start a new generation so late callbacks from the old story are dropped.
@@ -142,7 +156,10 @@ class LoopCoordinator(
                 loop.stop()
                 runGen++
                 session.newStory()
-                main.launch { dispatch(StoryInput.NewStory) }
+                main.launch {
+                    pendingEnd = null // a story that began since must not be pulled to an old End
+                    dispatch(StoryInput.NewStory)
+                }
                 if (wasRunning) loop.start()
             }
         }
@@ -154,7 +171,7 @@ class LoopCoordinator(
         val onStory = screen == Screen.STORY
         // Back from Settings resumes the story; "Create a Story" from Landing starts a new one
         // (iOS #64: Home -> Create a Story must not resume the old session).
-        if (onStory && lastScreen == Screen.LANDING) commands.trySend(Command.NewStory)
+        if (onStory && (lastScreen == Screen.LANDING || lastScreen == Screen.LIBRARY)) commands.trySend(Command.NewStory)
         lastScreen = screen
         if (onStory && !conditions.onStoryScreen) {
             // Entering the Story screen is a fresh attempt: clear a previous mic failure / pause.
@@ -195,6 +212,11 @@ class LoopCoordinator(
         _paused.value = paused
         conditions = conditions.copy(paused = paused)
         reconcileMute()
+    }
+
+    /** "Finish this story" (button on the Story screen). */
+    fun concludeStory() {
+        commands.trySend(Command.Conclude)
     }
 
     /** The UI transcript clears only once the consumer has stopped the old story's loop. */
@@ -249,13 +271,40 @@ class LoopCoordinator(
     // ---- Loop callbacks (any thread) ----
 
     fun onLoopState(state: LoopState) {
-        main.launch { dispatch(StoryInput.LoopStateChanged(state)) }
+        main.launch {
+            loopState = state
+            dispatch(StoryInput.LoopStateChanged(state))
+            maybeShowTheEnd()
+        }
     }
 
     fun onTranscript(text: String) = postForThisStory(StoryInput.Transcript(text))
     fun onReply(text: String) = postForThisStory(StoryInput.Reply(text))
     fun onKeyProblem(kind: KeyProblemKind) = postForThisStory(StoryInput.KeyProblem(kind))
     fun onStoryFinished() = postForThisStory(StoryInput.StoryFinished)
+
+    /**
+     * A story ended. It is saved to the library at once (whatever happens next), then The End is
+     * shown as soon as Elsie is no longer speaking, so it never appears over her last words, and
+     * still appears if the child talked over them.
+     */
+    fun onStoryFinished(story: FinishedStory) {
+        val gen = runGen
+        val id = try {
+            storyFinished(story)
+        } catch (t: Throwable) {
+            t.rethrowIfFatal()
+            null
+        }
+        main.launch {
+            if (gen != runGen) return@launch
+            dispatch(StoryInput.StoryFinished)
+            if (id != null) {
+                pendingEnd = id
+                maybeShowTheEnd()
+            }
+        }
+    }
 
     fun onLoopError(message: String) {
         val gen = runGen
@@ -277,6 +326,14 @@ class LoopCoordinator(
     }
 
     // ---- internals (Main) ----
+
+    private fun maybeShowTheEnd() {
+        val id = pendingEnd ?: return
+        if (loopState == LoopState.SPEAKING) return // wait for her last words to finish
+        pendingEnd = null
+        if (!conditions.onStoryScreen) return // the child already left; the story is in the Library
+        showTheEnd(id)
+    }
 
     private fun postForThisStory(input: StoryInput) {
         val gen = runGen

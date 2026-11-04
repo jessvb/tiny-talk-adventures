@@ -30,6 +30,9 @@ class LoopCoordinatorTest {
         var startWhileRunning = 0
         var throwOnStart = false
         var micMuted = false
+        override fun concludeStory() {
+            log += "conclude"
+        }
         override fun setMuted(muted: Boolean) {
             log += "mute=$muted"
             micMuted = muted
@@ -54,6 +57,10 @@ class LoopCoordinatorTest {
     private class Modes(override var mode: SttMode = SttMode.CLOUD) : SttModeStore
 
     private val loop = FakeLoop()
+    private var finishedSinkIds = mutableListOf<String>()
+    private var finishedSinkThrows = false
+    private val shownEnds = mutableListOf<String>()
+    private val story = com.jessvb.tinytalk.core.storybook.FinishedStory(emptyList(), emptyList())
     private val modes = Modes()
     private var permission = true
     private var consent = true
@@ -83,6 +90,11 @@ class LoopCoordinatorTest {
         listeningAvailability = { available },
         micPermission = { permission },
         consent = { consent },
+        storyFinished = {
+            if (finishedSinkThrows) throw IllegalStateException("disk full")
+            "id${finishedSinkIds.size + 1}".also { finishedSinkIds += it }
+        },
+        showTheEnd = { shownEnds += it },
     )
 
     /** Foreground app: Landing, then Create a Story. */
@@ -187,6 +199,130 @@ class LoopCoordinatorTest {
         c.onNav(Screen.STORY)
         advanceUntilIdle()
         assertFalse(loop.micMuted)
+    }
+
+    // ---- finishing a story and The End
+
+    @Test fun finishingAStoryHandsItToTheLibraryOnce() = runTest {
+        val c = coordinator()
+        enterStory(c)
+        c.onStoryFinished(story)
+        advanceUntilIdle()
+        assertEquals(listOf("id1"), finishedSinkIds)
+    }
+
+    @Test fun theEndWaitsForTheFinalReplyToFinishPlaying() = runTest {
+        val c = coordinator()
+        enterStory(c)
+        c.onLoopState(LoopState.SPEAKING)
+        c.onStoryFinished(story)
+        advanceUntilIdle()
+        assertTrue(shownEnds.isEmpty())
+        c.onLoopState(LoopState.LISTENING)
+        advanceUntilIdle()
+        assertEquals(listOf("id1"), shownEnds)
+    }
+
+    @Test fun theEndShowsAtOnceWhenNothingIsSpeaking() = runTest {
+        // e.g. the child barged in on the final reply before the finish event was handled
+        val c = coordinator()
+        enterStory(c)
+        c.onLoopState(LoopState.LISTENING)
+        c.onStoryFinished(story)
+        advanceUntilIdle()
+        assertEquals(listOf("id1"), shownEnds)
+    }
+
+    @Test fun bargingInOnTheFinalReplyStillReachesTheEnd() = runTest {
+        val c = coordinator()
+        enterStory(c)
+        c.onLoopState(LoopState.SPEAKING)
+        c.onStoryFinished(story)
+        c.onLoopState(LoopState.LISTENING) // speech start = barge-in stops her
+        c.onLoopState(LoopState.THINKING) // and their words are submitted
+        advanceUntilIdle()
+        assertEquals(listOf("id1"), shownEnds)
+    }
+
+    @Test fun theEndIsShownOnlyOnce() = runTest {
+        val c = coordinator()
+        enterStory(c)
+        c.onLoopState(LoopState.SPEAKING)
+        c.onStoryFinished(story)
+        c.onLoopState(LoopState.LISTENING)
+        c.onLoopState(LoopState.SPEAKING)
+        c.onLoopState(LoopState.LISTENING)
+        advanceUntilIdle()
+        assertEquals(1, shownEnds.size)
+    }
+
+    @Test fun theEndIsNotShownIfANewStoryBeganMeanwhile() = runTest {
+        val c = coordinator()
+        enterStory(c)
+        c.onLoopState(LoopState.SPEAKING)
+        c.onStoryFinished(story)
+        c.newStory()
+        advanceUntilIdle()
+        c.onLoopState(LoopState.LISTENING)
+        advanceUntilIdle()
+        assertTrue(shownEnds.isEmpty())
+        assertEquals(listOf("id1"), finishedSinkIds) // the finished story is still saved
+    }
+
+    @Test fun theEndIsNotShownAfterLeavingTheStoryScreen() = runTest {
+        val c = coordinator()
+        enterStory(c)
+        c.onLoopState(LoopState.SPEAKING)
+        c.onStoryFinished(story)
+        c.onNav(Screen.LANDING)
+        c.onLoopState(LoopState.LISTENING)
+        advanceUntilIdle()
+        assertTrue(shownEnds.isEmpty())
+        assertEquals(listOf("id1"), finishedSinkIds)
+    }
+
+    @Test fun aLibrarySinkThatThrowsNeitherCrashesNorShowsTheEnd() = runTest {
+        val c = coordinator()
+        enterStory(c)
+        finishedSinkThrows = true
+        c.onLoopState(LoopState.LISTENING)
+        c.onStoryFinished(story)
+        advanceUntilIdle()
+        assertTrue(shownEnds.isEmpty())
+    }
+
+    @Test fun concludeStoryIsAppliedOnTheWorkerInOrder() = runTest {
+        val c = coordinator()
+        enterStory(c)
+        log.clear()
+        c.concludeStory()
+        advanceUntilIdle()
+        assertEquals(listOf("conclude"), log)
+    }
+
+    @Test fun libraryAndReadingStopTheLoopSoTheMicIsOff() = runTest {
+        val c = coordinator()
+        enterStory(c)
+        assertTrue(loop.running)
+        c.onNav(Screen.LIBRARY)
+        advanceUntilIdle()
+        assertFalse(loop.running)
+        c.onNav(Screen.READING)
+        c.onNav(Screen.THE_END)
+        advanceUntilIdle()
+        assertFalse(loop.running)
+    }
+
+    @Test fun newStoryFromTheLibraryStartsAFreshStory() = runTest {
+        val c = coordinator()
+        c.setForeground(true)
+        c.onNav(Screen.LANDING)
+        c.onNav(Screen.LIBRARY)
+        advanceUntilIdle()
+        log.clear()
+        c.onNav(Screen.STORY)
+        advanceUntilIdle()
+        assertTrue(log.contains("newStory"))
     }
 
     @Test fun newStoryWhileStoppedResetsWithoutStarting() = runTest {

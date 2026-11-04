@@ -16,6 +16,12 @@ import com.jessvb.tinytalk.core.keys.KeyStore
 import com.jessvb.tinytalk.core.rethrowIfFatal
 import com.jessvb.tinytalk.core.session.DemoSession
 import com.jessvb.tinytalk.core.settings.SttMode
+import com.jessvb.tinytalk.core.storybook.RewriteStatus
+import com.jessvb.tinytalk.core.storybook.StoryLibrary
+import com.jessvb.tinytalk.core.storybook.StorySummary
+import com.jessvb.tinytalk.core.storybook.StoryStore
+import com.jessvb.tinytalk.core.storybook.StorybookWriter
+import com.jessvb.tinytalk.core.storybook.LocalStory
 import com.jessvb.tinytalk.core.voice.LoopState
 import com.jessvb.tinytalk.keys.AppKeys
 import com.jessvb.tinytalk.keys.KeyStatus
@@ -43,6 +49,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -50,6 +59,11 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.time.Instant
+import java.util.UUID
+
+/** What The End shows: [ready] once that story's storybook is written, [failed] if it could not be. */
+data class TheEndState(val storyId: String, val ready: Boolean, val failed: Boolean)
 
 /** Everything the Settings screen shows. Key values are never exposed, only their status. */
 data class SettingsUiState(
@@ -122,6 +136,8 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
             app.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         },
         consent = { consentStore.accepted },
+        storyFinished = { story -> library.begin(story, prefs.pageCount) },
+        showTheEnd = ::showTheEnd,
     )
 
     private val transcriber: ModeSwitchingTranscriber = ModeSwitchingTranscriber({ coordinator.sttMode }, transcriberFactory)
@@ -135,7 +151,37 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
         ),
         scope = workScope,
         log = ::log,
+        targetTurnsProvider = { prefs.turnCount },
     )
+
+    /** The phone's own library: finished stories are saved and rewritten into storybooks here. */
+    private val library = StoryLibrary(
+        store = StoryStore(File(app.filesDir, "stories")),
+        writer = StorybookWriter(GroqChatClient(apiKey = { groq.current() })),
+        scope = workScope,
+        newId = { UUID.randomUUID().toString().replace("-", "").take(12) },
+        now = { Instant.now().toString() },
+    )
+
+    val libraryStories: StateFlow<List<StorySummary>> get() = library.summaries
+
+    private val theEndStoryId = MutableStateFlow<String?>(null)
+
+    /** Null unless The End is showing; follows that story's rewrite so "Read it now" can enable. */
+    val theEnd: StateFlow<TheEndState?> = combine(theEndStoryId, library.summaries) { id, all ->
+        id?.let { sid ->
+            val status = all.firstOrNull { it.id == sid }?.status
+            TheEndState(sid, ready = status == RewriteStatus.DONE, failed = status == RewriteStatus.FAILED)
+        }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    private val _readingStoryId = MutableStateFlow<String?>(null)
+    val readingStoryId: StateFlow<String?> = _readingStoryId.asStateFlow()
+
+    private val _storyTurnCount = MutableStateFlow(prefs.turnCount)
+    private val _storybookPageCount = MutableStateFlow(prefs.pageCount)
+    val storyTurnCount: StateFlow<Int> = _storyTurnCount.asStateFlow()
+    val storybookPageCount: StateFlow<Int> = _storybookPageCount.asStateFlow()
 
     val story: StateFlow<StoryUiState> get() = coordinator.story
     val listeningPaused: StateFlow<Boolean> get() = coordinator.paused
@@ -152,6 +198,8 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
                 audio.completeExceptionally(e)
             }
         }
+        // A story left "still writing" because the app was killed gets built now.
+        workScope.launch(Dispatchers.IO) { library.requeuePending() }
         // Loaded warm at start, NOT on the first utterance (that would add ~1 s to the first
         // reply). In parallel with the audio build, so neither delays or breaks the other.
         workScope.launch(Dispatchers.IO) {
@@ -215,6 +263,7 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
     private class LoopAdapter(private val loop: VoiceLoop) : LoopControl {
         override fun start() = loop.start()
         override fun stop() = loop.stop()
+        override fun concludeStory() = loop.concludeStory()
         override fun setMuted(muted: Boolean) = loop.setMuted(muted)
         override val isActive: Boolean get() = loop.state != LoopState.IDLE
     }
@@ -227,6 +276,39 @@ class TinyTalkViewModel(app: Application) : AndroidViewModel(app) {
     fun retryMic() = coordinator.retryMic()
     fun setListeningPaused(paused: Boolean) = coordinator.setPaused(paused)
     fun newStory() = coordinator.newStory()
+
+    // ---- storybook (main thread) ----
+
+    /** "Finish this story" on the Story screen. */
+    fun finishStory() = coordinator.concludeStory()
+
+    fun openLibrary() = navigator.goTo(Screen.LIBRARY)
+
+    fun openStory(id: String) {
+        _readingStoryId.value = id
+        navigator.goTo(Screen.READING)
+    }
+
+    fun backHome() = navigator.goTo(Screen.LANDING)
+
+    /** The story's text for the Reading screen (disk read, off the main thread). */
+    suspend fun loadStory(id: String): LocalStory? = withContext(Dispatchers.IO) { library.detail(id) }
+
+    /** Main thread, from the coordinator: show The End in place of the finished story. */
+    private fun showTheEnd(id: String) {
+        theEndStoryId.value = id
+        navigator.goTo(Screen.LANDING) // The End replaces the Story screen; Back goes home
+        navigator.goTo(Screen.THE_END)
+    }
+
+    /** Parent setting; applies to the NEXT story (never retroactive). */
+    fun updateStorySettings(turnCount: Int, pageCount: Int) {
+        prefs.turnCount = turnCount
+        prefs.pageCount = pageCount
+        _storyTurnCount.value = prefs.turnCount
+        _storybookPageCount.value = prefs.pageCount
+        session.applySettings()
+    }
 
     /** Shows the parent banner up front when Elsie has no key to think with. */
     private fun checkChatKey() {

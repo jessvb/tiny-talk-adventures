@@ -36,6 +36,11 @@ fun TinyTalkApp(vm: TinyTalkViewModel) {
                 onSettings = { navigator.goTo(Screen.SETTINGS) },
             )
             Screen.SETTINGS -> SettingsScreen(vm, onBack = { navigator.back() })
+            // Placeholder until the Library / Reading / The End screens land (plan Task 7).
+            Screen.LIBRARY, Screen.READING, Screen.THE_END -> LandingScreen(
+                onCreateStory = { navigator.goTo(Screen.STORY) },
+                onSettings = { navigator.goTo(Screen.SETTINGS) },
+            )
         }
     }
 }

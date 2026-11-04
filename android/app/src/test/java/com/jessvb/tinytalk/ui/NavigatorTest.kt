@@ -186,4 +186,39 @@ class NavigatorTest {
         nav.revokeConsent()
         assertEquals(Screen.ONBOARDING, nav.current)
     }
+
+    // ---- storybook screens
+
+    @Test fun libraryOpensFromLandingAndBackReturnsToLanding() {
+        val nav = Navigator(FakeConsentStore(true))
+        nav.goTo(Screen.LIBRARY)
+        assertEquals(Screen.LIBRARY, nav.current)
+        assertTrue(nav.back())
+        assertEquals(Screen.LANDING, nav.current)
+    }
+
+    @Test fun readingBackReturnsToTheLibrary() {
+        val nav = Navigator(FakeConsentStore(true))
+        nav.goTo(Screen.LIBRARY)
+        nav.goTo(Screen.READING)
+        assertTrue(nav.back())
+        assertEquals(Screen.LIBRARY, nav.current)
+    }
+
+    @Test fun theEndReplacesTheStoryAndBackGoesHome() {
+        val nav = Navigator(FakeConsentStore(true))
+        nav.goTo(Screen.STORY)
+        nav.goTo(Screen.LANDING)
+        nav.goTo(Screen.THE_END)
+        assertEquals(Screen.THE_END, nav.current)
+        assertTrue(nav.back())
+        assertEquals(Screen.LANDING, nav.current)
+    }
+
+    @Test fun noRouteToStorybookScreensWithoutConsent() {
+        val nav = Navigator(FakeConsentStore(false))
+        nav.goTo(Screen.LIBRARY)
+        nav.goTo(Screen.THE_END)
+        assertEquals(Screen.ONBOARDING, nav.current)
+    }
 }
