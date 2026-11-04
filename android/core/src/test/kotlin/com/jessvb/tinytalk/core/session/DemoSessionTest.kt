@@ -27,6 +27,9 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
+import com.jessvb.tinytalk.core.ConversationTurn
+import com.jessvb.tinytalk.core.Speaker
+import com.jessvb.tinytalk.core.storybook.FinishedStory
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 
@@ -72,12 +75,14 @@ class DemoSessionTest {
         resetGate: CompletableDeferred<Unit>? = null,
         fetcher: AnimalFactFetching = FakeFetcher(),
         onReset: () -> Unit = {},
+        turnsProvider: (() -> Int)? = null,
     ): DemoSession {
         val tracker = AnimalFactTracker(fetcher, AnimalFactsCache(File(tmp.root, "c${System.nanoTime()}.json")))
         return DemoSession(
             chat, stt, tracker, backgroundScope, prompt, targetTurns, timeoutMs,
             log = { logs.add(it) },
             resetFacts = { resetGate?.await(); onReset(); resets++; tracker.reset() },
+            targetTurnsProvider = turnsProvider,
         )
     }
 
@@ -294,7 +299,7 @@ class DemoSessionTest {
         val ev = collect(s)
         s.submitUtterance(1, pcm, 16000)
         runCurrent()
-        assertEquals(SessionEvent.StoryFinished, ev.last())
+        assertTrue(ev.last() is SessionEvent.StoryFinished)
         assertEquals(listOf("facts reset failed: java.lang.NoClassDefFoundError"), logs)
         failReset = false
         ev.clear()
@@ -339,7 +344,12 @@ class DemoSessionTest {
                 SessionEvent.TranscriptFinal("hello", 1),
                 SessionEvent.ResponseText("The end.", 1),
                 SessionEvent.TurnEnd(1),
-                SessionEvent.StoryFinished,
+                SessionEvent.StoryFinished(
+                    FinishedStory(
+                        listOf(ConversationTurn(Speaker.CHILD, "hello"), ConversationTurn(Speaker.AGENT, "The end.")),
+                        emptyList(),
+                    ),
+                ),
             ),
             ev,
         )
@@ -360,8 +370,8 @@ class DemoSessionTest {
             s.submitUtterance(i, pcm, 16000)
             runCurrent()
         }
-        assertEquals(SessionEvent.StoryFinished, ev.last())
-        assertEquals(1, ev.count { it == SessionEvent.StoryFinished })
+        assertTrue(ev.last() is SessionEvent.StoryFinished)
+        assertEquals(1, ev.count { it is SessionEvent.StoryFinished })
     }
 
     @Test fun newStoryMidTurnDropsEventsAndResets() = runTest {
@@ -407,8 +417,8 @@ class DemoSessionTest {
         // facts reset is still pending (gated); the child talks over "The end."
         s.bargeIn(2)
         runCurrent()
-        assertEquals(1, ev.count { it == SessionEvent.StoryFinished })
-        assertTrue(ev.indexOf(SessionEvent.TurnEnd(1)) < ev.indexOf(SessionEvent.StoryFinished))
+        assertEquals(1, ev.count { it is SessionEvent.StoryFinished })
+        assertTrue(ev.indexOf(SessionEvent.TurnEnd(1)) < ev.indexOfFirst { it is SessionEvent.StoryFinished })
         s.submitUtterance(3, pcm, 16000)
         runCurrent()
         assertEquals(1, chat.requests.size) // waits for the pending reset
@@ -419,7 +429,7 @@ class DemoSessionTest {
             listOf(ChatMessage("system", "$prompt\n\n$introGuidance\n\n$nudge"), ChatMessage("user", "hello")),
             chat.requests[1],
         )
-        assertEquals(1, ev.count { it == SessionEvent.StoryFinished })
+        assertEquals(1, ev.count { it is SessionEvent.StoryFinished })
     }
 
     @Test fun newStoryDuringPendingFinishResetIsNotClobbered() = runTest {
@@ -438,8 +448,8 @@ class DemoSessionTest {
         runCurrent()
         assertEquals(3, resets) // finish-1, newStory, finish-2 (the latter after turn 2 ran)
         assertEquals(listOf("system", "user"), chat.requests[1].map { it.role })
-        assertEquals(2, ev.count { it == SessionEvent.StoryFinished }) // turn 2 also says "The end."
-        assertEquals(SessionEvent.StoryFinished, ev.last())
+        assertEquals(2, ev.count { it is SessionEvent.StoryFinished }) // turn 2 also says "The end."
+        assertTrue(ev.last() is SessionEvent.StoryFinished)
     }
 
     @Test fun cancellationIgnoringChatReplyIsDroppedAndDoesNotAdvanceArc() = runTest {
@@ -463,7 +473,7 @@ class DemoSessionTest {
         assertEquals(listOf<SessionEvent>(SessionEvent.TranscriptFinal("hello", 1)), ev)
         s.submitUtterance(3, pcm, 16000)
         runCurrent()
-        assertTrue(ev.none { it == SessionEvent.StoryFinished })
+        assertTrue(ev.none { it is SessionEvent.StoryFinished })
         assertTrue(chat.requests[1].none { it.content == "The end." })
         assertEquals(SessionEvent.TurnEnd(3), ev.last())
     }
@@ -502,5 +512,102 @@ class DemoSessionTest {
         runCurrent()
         val got = s.events.take(3).toList()
         assertEquals(SessionEvent.TurnEnd(1), got[2])
+    }
+
+    // ---- storybook: finished-story data, concluding a story, per-story settings
+
+    @Test fun finishedStoryCarriesThatStorysOwnTurnsAndSharedFacts() = runTest {
+        val chat = FakeChat { "The end." }
+        val s = make(chat, FakeStt { "I love an elephant" }, targetTurns = 4)
+        val ev = collect(s)
+        s.submitUtterance(1, pcm, 16000)
+        runCurrent()
+        val first = (ev.last() as SessionEvent.StoryFinished).story
+        assertEquals(
+            listOf(ConversationTurn(Speaker.CHILD, "I love an elephant"), ConversationTurn(Speaker.AGENT, "The end.")),
+            first.turns,
+        )
+        assertEquals(listOf("elephant"), first.sharedFacts.map { it.first })
+        // A new story starts at once: the second finish holds only the second story.
+        s.submitUtterance(2, pcm, 16000)
+        runCurrent()
+        val second = (ev.last() as SessionEvent.StoryFinished).story
+        assertEquals(2, second.turns.size)
+        assertEquals(2, first.turns.size) // the first story's data is not touched by the second
+    }
+
+    @Test fun concludeStoryForcesTheEndingAndFinishesTheStory() = runTest {
+        var n = 0
+        val chat = FakeChat { if (n++ == 0) "Once upon a time." else "They all went home." }
+        val s = make(chat)
+        val ev = collect(s)
+        s.submitUtterance(1, pcm, 16000)
+        runCurrent()
+        ev.clear()
+        s.concludeStory(2)
+        runCurrent()
+        assertEquals(
+            listOf<SessionEvent>(SessionEvent.ResponseText("They all went home.", 2), SessionEvent.TurnEnd(2)),
+            ev.dropLast(1),
+        )
+        val finished = (ev.last() as SessionEvent.StoryFinished).story
+        assertEquals(
+            listOf(
+                ConversationTurn(Speaker.CHILD, "hello"),
+                ConversationTurn(Speaker.AGENT, "Once upon a time."),
+                ConversationTurn(Speaker.AGENT, "They all went home."),
+            ),
+            finished.turns,
+        )
+        assertTrue(chat.requests.last()[0].content.contains("This must be the last reply."))
+        // The next utterance begins a fresh story (intro guidance again).
+        s.submitUtterance(3, pcm, 16000)
+        runCurrent()
+        assertEquals("$prompt\n\n$introGuidance\n\n$nudge", chat.requests.last()[0].content)
+    }
+
+    @Test fun concludeStoryCancelsAnInFlightTurn() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        var n = 0
+        val chat = FakeChat {
+            if (n++ == 0) { withContext(NonCancellable) { gate.await() }; "stale reply" } else "The happy ending."
+        }
+        val s = make(chat)
+        val ev = collect(s)
+        s.submitUtterance(1, pcm, 16000)
+        runCurrent()
+        s.concludeStory(2)
+        runCurrent()
+        gate.complete(Unit)
+        runCurrent()
+        assertTrue(ev.none { it is SessionEvent.ResponseText && it.text == "stale reply" })
+        assertTrue(ev.any { it is SessionEvent.ResponseText && it.turnId == 2 })
+        assertEquals(1, ev.count { it is SessionEvent.StoryFinished })
+    }
+
+    @Test fun concludeStoryWithNothingSaidIsANoOp() = runTest {
+        val chat = FakeChat()
+        val s = make(chat)
+        val ev = collect(s)
+        s.concludeStory(1)
+        runCurrent()
+        assertTrue(ev.isEmpty())
+        assertEquals(0, chat.requests.size)
+    }
+
+    @Test fun storyLengthSettingAppliesToTheNextStoryNotTheOneInProgress() = runTest {
+        var turns = 7
+        val s = make(FakeChat(), turnsProvider = { turns })
+        val ev = collect(s)
+        suspend fun say(n: Int) { s.submitUtterance(n, pcm, 16000); runCurrent() }
+        say(1) // the story has started with 7 target turns
+        turns = 4
+        s.applySettings() // must NOT shorten the story already under way
+        for (i in 2..8) say(i)
+        assertTrue(ev.none { it is SessionEvent.StoryFinished }) // 4 would have forced an end by turn 8
+        s.newStory()
+        runCurrent()
+        for (i in 9..16) say(i)
+        assertEquals(1, ev.count { it is SessionEvent.StoryFinished }) // the new story used 4 turns
     }
 }

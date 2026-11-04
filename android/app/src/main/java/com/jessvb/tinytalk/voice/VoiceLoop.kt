@@ -293,7 +293,7 @@ class VoiceLoop(
                     speakFor(event.turnId, SpokenLines.KEY_PROBLEM)
                 }
             }
-            SessionEvent.StoryFinished -> onStoryFinished()
+            is SessionEvent.StoryFinished -> onStoryFinished()
         }
     }
 

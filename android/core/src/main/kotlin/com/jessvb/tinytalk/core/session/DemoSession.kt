@@ -9,6 +9,7 @@ import com.jessvb.tinytalk.core.chat.GroqException
 import com.jessvb.tinytalk.core.facts.AnimalFactTracker
 import com.jessvb.tinytalk.core.stt.OnDeviceTranscriptionException
 import com.jessvb.tinytalk.core.stt.SpeechTranscribing
+import com.jessvb.tinytalk.core.storybook.FinishedStory
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -45,6 +46,8 @@ class DemoSession(
     private val log: (String) -> Unit = {},
     /** Test seam: how the per-story animal-fact state is cleared. */
     internal val resetFacts: suspend () -> Unit = { facts.reset() },
+    /** Story length for each NEW story (parent setting); null = the fixed [targetTurns]. */
+    private val targetTurnsProvider: (() -> Int)? = null,
 ) : TurnSession {
     private val channel = Channel<SessionEvent>(Channel.UNLIMITED)
 
@@ -57,47 +60,84 @@ class DemoSession(
     private var turnJob: Job? = null
     private var resetJob: Job? = null
     private var conversation = DemoConversation()
-    private var arc = StoryArc(targetTurns)
+    private var arc = StoryArc(turnsForNextStory())
 
     override fun submitUtterance(turnId: Int, pcm16: ShortArray, sampleRate: Int) {
         val job = synchronized(lock) {
             if (closed) return
-            cancelInFlightLocked()
-            val gen = ++generation
-            val conv = conversation
-            val storyArc = arc
-            val pendingReset = resetJob
-            val job = scope.launch(start = CoroutineStart.LAZY) {
-                try {
-                    withTimeout(turnTimeoutMs) {
-                        pendingReset?.join()
-                        runTurn(gen, turnId, pcm16, sampleRate, conv, storyArc)
-                    }
-                } catch (e: TimeoutCancellationException) {
-                    emit(gen, SessionEvent.Error(GENERIC_ERROR, turnId))
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: GroqException.KeyMissing) {
-                    emit(gen, SessionEvent.KeyProblem(KeyProblemKind.MISSING, turnId))
-                } catch (e: GroqException.KeyRejected) {
-                    emit(gen, SessionEvent.KeyProblem(KeyProblemKind.REJECTED, turnId))
-                } catch (e: GroqException.RateLimited) {
-                    emit(gen, SessionEvent.KeyProblem(KeyProblemKind.RATE_LIMITED, turnId))
-                } catch (e: OnDeviceTranscriptionException) {
-                    emit(gen, SessionEvent.Error(ON_DEVICE_LISTENING_ERROR, turnId))
-                } catch (t: Throwable) {
-                    // Throwable, not Exception: an Error such as ExceptionInInitializerError
-                    // (a class that fails to initialize on Android only, #88) must become the
-                    // friendly retry line, never escape and kill the app. Class name only.
-                    t.rethrowIfFatal()
-                    log("turn $turnId failed: ${t.javaClass.name}")
-                    emit(gen, SessionEvent.Error(GENERIC_ERROR, turnId))
-                }
+            launchTurnLocked(turnId) { gen, conv, storyArc ->
+                runTurn(gen, turnId, pcm16, sampleRate, conv, storyArc)
             }
-            turnJob = job
-            job
         }
         job.start() // outside the lock; a job cancelled meanwhile simply never runs
+    }
+
+    /**
+     * "Finish this story": cancels whatever is in flight (like a barge-in), asks for one concluding
+     * reply, marks the story done whatever the reply says, then finishes it exactly like a natural
+     * ending. A story with nothing said yet has nothing to conclude: ignored.
+     */
+    override fun concludeStory(turnId: Int) {
+        val job = synchronized(lock) {
+            if (closed || conversation.fullHistory.isEmpty()) return
+            launchTurnLocked(turnId) { gen, conv, storyArc ->
+                converse(gen, turnId, conv, storyArc, storyArc.forceConcludeGuidance(), forceDone = true)
+            }
+        }
+        job.start()
+    }
+
+    /** Applies the parent's story-length setting to a story that has not started; never retroactive. */
+    fun applySettings() {
+        synchronized(lock) {
+            if (!closed && !arc.hasStarted) arc = StoryArc(turnsForNextStory())
+        }
+    }
+
+    private fun turnsForNextStory(): Int = targetTurnsProvider?.invoke() ?: targetTurns
+
+    /**
+     * Cancels the turn in flight, claims a new generation and captures this story's conversation and
+     * arc. Returns the LAZY job; the caller starts it outside the lock. Must hold [lock].
+     */
+    private fun launchTurnLocked(
+        turnId: Int,
+        body: suspend (gen: Int, conv: DemoConversation, storyArc: StoryArc) -> Unit,
+    ): Job {
+        cancelInFlightLocked()
+        val gen = ++generation
+        val conv = conversation
+        val storyArc = arc
+        val pendingReset = resetJob
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            try {
+                withTimeout(turnTimeoutMs) {
+                    pendingReset?.join()
+                    body(gen, conv, storyArc)
+                }
+            } catch (e: TimeoutCancellationException) {
+                emit(gen, SessionEvent.Error(GENERIC_ERROR, turnId))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: GroqException.KeyMissing) {
+                emit(gen, SessionEvent.KeyProblem(KeyProblemKind.MISSING, turnId))
+            } catch (e: GroqException.KeyRejected) {
+                emit(gen, SessionEvent.KeyProblem(KeyProblemKind.REJECTED, turnId))
+            } catch (e: GroqException.RateLimited) {
+                emit(gen, SessionEvent.KeyProblem(KeyProblemKind.RATE_LIMITED, turnId))
+            } catch (e: OnDeviceTranscriptionException) {
+                emit(gen, SessionEvent.Error(ON_DEVICE_LISTENING_ERROR, turnId))
+            } catch (t: Throwable) {
+                // Throwable, not Exception: an Error such as ExceptionInInitializerError
+                // (a class that fails to initialize on Android only, #88) must become the
+                // friendly retry line, never escape and kill the app. Class name only.
+                t.rethrowIfFatal()
+                log("turn $turnId failed: ${t.javaClass.name}")
+                emit(gen, SessionEvent.Error(GENERIC_ERROR, turnId))
+            }
+        }
+        turnJob = job
+        return job
     }
 
     /** Abandons whatever is in flight; the child is talking again. */
@@ -116,7 +156,7 @@ class DemoSession(
             cancelInFlightLocked()
             generation++
             conversation = DemoConversation()
-            arc = StoryArc(targetTurns)
+            arc = StoryArc(turnsForNextStory())
             newResetJobLocked()
         }
         reset.start()
@@ -168,9 +208,28 @@ class DemoSession(
         if (factGuidance.isNotEmpty()) guidance += "\n\n" + factGuidance
         if (trimmed.isEmpty()) guidance += "\n\n" + STT_FAILURE_GUIDANCE
 
+        converse(gen, turnId, conv, storyArc, guidance, forceDone = false)
+    }
+
+    /**
+     * The shared tail of a turn: ask the model, then decide in ONE critical section (generation
+     * re-check, no suspension) what the child sees. [forceDone] marks the arc done whatever the
+     * reply says ("Finish this story").
+     */
+    private suspend fun converse(
+        gen: Int,
+        turnId: Int,
+        conv: DemoConversation,
+        storyArc: StoryArc,
+        guidance: String,
+        forceDone: Boolean,
+    ) {
         val messages = conv.toMessages(systemPrompt + "\n\n" + guidance)
         val raw = chat.complete(messages).trim()
         val reply = Safety.filterReply(raw)
+        // Read before the critical section (it suspends); the facts reset that follows a finished
+        // story is chained after this turn, so nothing has cleared them yet.
+        val sharedFacts = facts.sharedFacts()
 
         // Everything that decides "the story finished" happens in ONE critical
         // section with the generation re-check and no suspension: ResponseText,
@@ -183,14 +242,16 @@ class DemoSession(
         synchronized(lock) {
             if (closed || gen != generation) return
             storyArc.recordReply(reply)
+            if (forceDone) storyArc.markDone()
             channel.trySend(SessionEvent.ResponseText(reply, turnId))
             conv.addAgent(reply)
             channel.trySend(SessionEvent.TurnEnd(turnId))
             if (storyArc.isDone) {
+                val finished = FinishedStory(conv.fullHistory, sharedFacts)
                 if (conversation === conv) conversation = DemoConversation()
-                if (arc === storyArc) arc = StoryArc(targetTurns)
+                if (arc === storyArc) arc = StoryArc(turnsForNextStory())
                 resetToStart = newResetJobLocked()
-                channel.trySend(SessionEvent.StoryFinished)
+                channel.trySend(SessionEvent.StoryFinished(finished))
             }
         }
         // Not cancelled by a barge-in: it is its own job, joined by later turns.
