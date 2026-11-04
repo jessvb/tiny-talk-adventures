@@ -106,8 +106,9 @@ confirmed on a real phone:
 - **Away-from-home demo mode**: hosted models behind one switch, with
   storybooks and illustrations synced back home
 
-Android (Pixel 3) is a secondary target that hasn't been started. For current
-bugs and follow-ups, see the
+Android (Pixel 3) is a secondary target: a demo-mode voice app is in progress
+on branch `worktree-android-demo-mode` (draft PR #93, see "Android" under
+Setup). For current bugs and follow-ups, see the
 [issue list](https://github.com/jessvb/tiny-talk-adventures/issues).
 
 **Known constraint:** running every model at once is tight on a 16 GB Mac.
@@ -218,9 +219,90 @@ passthrough.)
 
 ### Android (Pixel 3): secondary target
 
-Not yet scoped in detail; deferred until the iOS path is working. Will need
-Android Studio and likely separate VAD/audio tuning given the older hardware
-(see the design spec's non-goals).
+Native Kotlin + Jetpack Compose app in `android/` (issue #88; design spec in
+`docs/superpowers/specs/2026-10-19-android-demo-mode-client-design.md`, plan in
+`docs/superpowers/plans/2026-10-21-android-phase1-voice-loop.md`). It is
+demo mode only: no home server, hosted models, like the iOS away-from-home
+mode. Phase 1 (branch `worktree-android-demo-mode`, draft PR #93) is a spoken
+conversation with Elsie: a consent screen, Landing/Story/Settings screens,
+Groq chat, Elsie's spoken replies, and interrupting her by talking over her.
+Listening runs on the phone (Whisper tiny.en via sherpa-onnx, packaged in the
+APK and loaded in the background a second or two after the app opens), with an
+optional cloud "Better listening" switch (Groq Whisper) in Settings. No
+storybook, Library, or illustrations yet.
+
+Keys: copy `android/local.secrets.properties.example` to the gitignored
+`android/local.secrets.properties` and fill in what you have (all optional;
+a missing key is asked for in Settings). Never commit it. Anything baked into
+an APK can be extracted, so use dedicated, revocable keys with usage limits.
+
+Speech model and library (~250 MB, you run this, it downloads from the
+network). The app build needs them: without them `:app` fails at once with a
+message naming this command (`:core:test` still works). `INCLUDE_OPTIONAL=1`
+is required, because it fetches the static-link sherpa-onnx library the app
+uses:
+
+```bash
+INCLUDE_OPTIONAL=1 ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/android-demo-mode/android/stt-spike/fetch-models.sh
+```
+
+Prerequisites: Android Studio (installs the SDK to `~/Library/Android/sdk`,
+needs platform 37), and USB debugging enabled on the Pixel 3. Check it's
+connected (should say `device`, not `unauthorized`):
+
+```bash
+~/Library/Android/sdk/platform-tools/adb devices
+```
+
+Build and install (substitute your worktree for `<name>`; use
+`/Applications/Android Studio.app`'s bundled JDK, there is no system JDK, and
+create an untracked `android/local.properties` containing
+`sdk.dir=/Users/<you>/Library/Android/sdk` on a fresh checkout):
+
+```bash
+cd ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/<name>/android
+# (after merging to main: cd ~/Development/claude-tests/tiny-talk-adventures/android)
+export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+./gradlew :core:test :app:testDebugUnitTest :app:assembleDebug
+~/Library/Android/sdk/platform-tools/adb install -r app/build/outputs/apk/debug/app-debug.apk
+~/Library/Android/sdk/platform-tools/adb shell am start -n com.jessvb.tinytalk/.MainActivity
+```
+
+Shortcut: `bash ~/Development/claude-tests/tiny-talk-adventures/.claude/worktrees/<name>/android/rebuild-and-install.sh`
+checks the phone, downloads and key, then builds and installs (add `--launch`
+to open the app, `--fresh` to wipe its data first).
+
+`:core:test` and `:app:testDebugUnitTest` run the JVM unit tests; they are
+silent. The tasks are named per module on purpose: a bare `./gradlew test
+assembleDebug` also builds the throwaway `:stt-spike-app` module, which needs
+an AAR downloaded by `android/stt-spike/fetch-models.sh`, so it fails on a fresh
+clone. The Gradle wrapper pins Gradle 9.8.2;
+you don't need a system Gradle. The instrumented `SentenceTtsTest` plays real
+audio, so it is skipped unless run with
+`-Pandroid.testInstrumentationRunnerArguments.audible=true`; don't run it
+without the author's OK (see CLAUDE.md). Never launch the app for a test
+without that OK: tests must make no real sound.
+
+The one silent, always-safe on-phone check is `CoreOnDeviceSmokeTest`, which
+runs the shared `:core` logic on Android's own runtime (the JVM unit tests run on
+desktop Java and can miss Android differences). Run it only with the flag that
+keeps the app installed, otherwise Gradle uninstalls the app afterwards and wipes
+its saved consent, keys and settings:
+
+```bash
+./gradlew :app:connectedDebugAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=com.jessvb.tinytalk.core.CoreOnDeviceSmokeTest \
+  -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true
+```
+
+Any other instrumented class needs the author's OK first.
+
+Known limitations: the debug APK is about 139 MB (arm64 phones only; the
+speech model is most of it) and the model is unpacked once more to app storage
+(about 104 MB) on the first launch after an install; on-device listening has
+only been checked silently from WAV files; the audible acceptance run on the
+Pixel 3 has not happened (see
+`docs/superpowers/specs/2026-10-22-android-phase1-results.md`).
 
 ### Running the server
 

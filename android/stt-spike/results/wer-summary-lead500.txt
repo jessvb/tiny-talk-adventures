@@ -1,0 +1,76 @@
+=== zipformer-20M-t2-lead500  (n=144 warm)
+cold first call: 513 ms (rtf 0.199)
+warm latency ms: median 299  p95 492  max 651
+warm RTF: median 0.161  p95 0.272
+WER overall: 67.7%  (626 errors / 924 ref words)
+  WER Daniel: 64.3%
+  WER Junior: 79.9%
+  WER Karen: 64.3%
+  WER Kathy: 74.7%
+  WER Samantha: 60.4%
+  WER Tessa: 63.0%
+8 worst utterances:
+  u16/Kathy errs=2 wer=200%
+    ref: Okay
+    hyp: U T
+  u24/Junior errs=11 wer=100%
+    ref: The puppy and the kitten had a picnic by the lake
+    hyp: 
+  u24/Kathy errs=11 wer=100%
+    ref: The puppy and the kitten had a picnic by the lake
+    hyp: 
+  u09/Karen errs=8 wer=100%
+    ref: Maybe the owl can fly to the moon
+    hyp: ON
+  u12/Junior errs=8 wer=100%
+    ref: My name is Max and I am six
+    hyp: 
+  u12/Tessa errs=8 wer=100%
+    ref: My name is Max and I am six
+    hyp: 'S
+  u15/Junior errs=8 wer=100%
+    ref: What if the castle was made of cheese
+    hyp: 'S
+  u23/Daniel errs=8 wer=100%
+    ref: I want the monkey to eat twelve bananas
+    hyp: S
+
+=== zipformer-20M-t4-lead500  (n=144 warm)
+cold first call: 782 ms (rtf 0.304)
+warm latency ms: median 650  p95 977  max 1260
+warm RTF: median 0.359  p95 0.614
+WER overall: 67.6%  (625 errors / 924 ref words)
+  WER Daniel: 63.6%
+  WER Junior: 79.9%
+  WER Karen: 64.3%
+  WER Kathy: 74.7%
+  WER Samantha: 60.4%
+  WER Tessa: 63.0%
+8 worst utterances:
+  u16/Kathy errs=2 wer=200%
+    ref: Okay
+    hyp: U T
+  u24/Junior errs=11 wer=100%
+    ref: The puppy and the kitten had a picnic by the lake
+    hyp: 
+  u24/Kathy errs=11 wer=100%
+    ref: The puppy and the kitten had a picnic by the lake
+    hyp: 
+  u09/Karen errs=8 wer=100%
+    ref: Maybe the owl can fly to the moon
+    hyp: ON
+  u12/Junior errs=8 wer=100%
+    ref: My name is Max and I am six
+    hyp: 
+  u12/Tessa errs=8 wer=100%
+    ref: My name is Max and I am six
+    hyp: 'S
+  u15/Junior errs=8 wer=100%
+    ref: What if the castle was made of cheese
+    hyp: 'S
+  u23/Daniel errs=8 wer=100%
+    ref: I want the monkey to eat twelve bananas
+    hyp: S
+
+=== zipformer-20M-t2-lead500 latency after last chunk (+0.5 s silence), n=144: median 60 ms  p95 116 ms  max 142 ms
+=== zipformer-20M-t4-lead500 latency after last chunk (+0.5 s silence), n=144: median 139 ms  p95 219 ms  max 362 ms

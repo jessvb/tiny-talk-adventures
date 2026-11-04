@@ -1,0 +1,8 @@
+device=Google Pixel 3
+sdk=31
+cores=8
+wav_count=144
+zipformer-20M-t2-lead500: threads=2 load_ms=1663 pss_before_mb=5.0 pss_after_load_mb=70.0
+zipformer-20M-t2-lead500: pss_after_run_mb=72.0
+zipformer-20M-t4-lead500: threads=4 load_ms=1569 pss_before_mb=30.2 pss_after_load_mb=70.6
+zipformer-20M-t4-lead500: pss_after_run_mb=72.6
