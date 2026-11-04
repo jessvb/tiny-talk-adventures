@@ -106,6 +106,14 @@ object StoryReducer {
             if (state.banner?.kind == BannerKind.KEY_MISSING) state.copy(banner = null) else state
     }
 
+    /**
+     * Whether "Finish this story" shows: the child has said something, the story is not already
+     * over, and the voice loop is running (concluding is a turn, which needs the loop).
+     */
+    fun canFinishStory(state: StoryUiState): Boolean =
+        !state.storyFinished && state.loopState != LoopState.IDLE &&
+            state.lines.any { it.speaker == LineSpeaker.CHILD }
+
     /** Header/avatar caption (iOS StoryView.stateLabel). */
     fun stateLabel(state: StoryUiState): String = when {
         state.listeningNotice == ListeningNotice.LOADING -> "Elsie is getting ready"

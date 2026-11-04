@@ -208,4 +208,34 @@ class StoryReducerTest {
         assertEquals(kind, b.kind)
         return b
     }
+
+    // ---- "Finish this story" visibility
+
+    @Test fun finishIsHiddenUntilTheChildHasSaidSomething() {
+        val listening = run(StoryInput.LoopStateChanged(LoopState.LISTENING))
+        assertFalse(StoryReducer.canFinishStory(listening))
+        val said = run(StoryInput.Transcript("a fox"), from = listening)
+        assertTrue(StoryReducer.canFinishStory(said))
+    }
+
+    @Test fun finishIsHiddenOnceTheStoryIsOver() {
+        val s = run(
+            StoryInput.LoopStateChanged(LoopState.LISTENING),
+            StoryInput.Transcript("a fox"), StoryInput.Reply("The end."), StoryInput.StoryFinished,
+        )
+        assertFalse(StoryReducer.canFinishStory(s))
+    }
+
+    @Test fun finishIsHiddenWhenTheLoopIsNotRunning() {
+        // IDLE: no permission, mic failure or the listening model not ready; concluding needs the loop.
+        val s = run(StoryInput.Transcript("a fox"))
+        assertEquals(LoopState.IDLE, s.loopState)
+        assertFalse(StoryReducer.canFinishStory(s))
+    }
+
+    @Test fun finishIsAvailableWhileElsieThinksOrSpeaks() {
+        val said = run(StoryInput.LoopStateChanged(LoopState.LISTENING), StoryInput.Transcript("a fox"))
+        assertTrue(StoryReducer.canFinishStory(run(StoryInput.LoopStateChanged(LoopState.THINKING), from = said)))
+        assertTrue(StoryReducer.canFinishStory(run(StoryInput.LoopStateChanged(LoopState.SPEAKING), from = said)))
+    }
 }
