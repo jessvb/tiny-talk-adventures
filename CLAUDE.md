@@ -179,14 +179,16 @@ goes silent after a demo-mode session) got diagnostics only, no fix yet
 new capture-state logging.
 
 **Android demo-mode client** (issue #88, `android/`, Kotlin/Compose) —
-**Phase 1 (voice loop) merged** (PR #93): the child talks to Elsie by voice,
+**Phase 1 (voice loop) merged** (PR #93); **Phase 2 (storybook: save, Library,
+Reading, The End, Finish this story, story-length settings) is built on branch
+`worktree-android-storybook`, awaiting the author's on-device run** (spec/plan
+`docs/superpowers/specs|plans/2026-11-04-android-storybook*`): the child talks to Elsie by voice,
 the voice is recognised ON THE PHONE (Whisper tiny.en via sherpa-onnx), only
 text goes to Groq; consent/Onboarding/Landing/Story/Settings screens, mic
 mute, the waiting chime, and Elsie playing on the media stream (so the phone's
 media volume governs her), all confirmed on the author's Pixel 3. **Still to
-build on Android:** the storybook (save/Library/Reading/The End) and
-page-art illustrations (Cloudflare), matching iOS demo mode; each goes through
-its own spec. Build/install: `android/rebuild-and-install.sh`. See
+build on Android:** page-art illustrations (Cloudflare), matching iOS demo
+mode; it goes through its own spec. Build/install: `android/rebuild-and-install.sh`. See
 `docs/superpowers/specs/2026-10-19-android-demo-mode-client-design.md`,
 `docs/superpowers/plans/2026-10-21-android-phase1-voice-loop.md`, and
 `docs/superpowers/specs/2026-10-22-android-phase1-results.md`.

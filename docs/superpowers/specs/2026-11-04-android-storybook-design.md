@@ -5,6 +5,11 @@ Issue #88 (Android demo-mode client), follow-on to Phase 1 (PR #93). Written
 round; every choice below that the author did not make is marked **(my call)**.
 Illustrations are a separate, later spec (see Non-goals).
 
+> **Status (2026-11-04):** implemented on branch `worktree-android-storybook`; unit,
+> lint and silent on-device smoke tests pass; the 12-step on-device run (below) is the
+> author's, with sound, and has not happened yet. Defaults 7 turns / 5 pages were
+> confirmed from iOS `AppModel.swift` and `server/tinytalk/config.py`.
+
 ## Context
 
 Android Phase 1 gives a child a spoken story with Elsie (on-phone Whisper,
