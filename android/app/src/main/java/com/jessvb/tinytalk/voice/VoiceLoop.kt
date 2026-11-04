@@ -6,6 +6,7 @@ import com.jessvb.tinytalk.core.audio.SpeechEvent
 import com.jessvb.tinytalk.core.session.KeyProblemKind
 import com.jessvb.tinytalk.core.session.SessionEvent
 import com.jessvb.tinytalk.core.session.TurnSession
+import com.jessvb.tinytalk.core.storybook.FinishedStory
 import com.jessvb.tinytalk.core.voice.Action
 import com.jessvb.tinytalk.core.voice.LoopState
 import com.jessvb.tinytalk.core.voice.SpokenLines
@@ -74,7 +75,7 @@ class VoiceLoop(
     private val onError: (String) -> Unit,
     private val onTranscript: (String) -> Unit = {},
     private val onReply: (String) -> Unit = {},
-    private val onStoryFinished: () -> Unit = {},
+    private val onStoryFinished: (FinishedStory) -> Unit = {},
     private val onLog: (String) -> Unit = {},
     private val assembler: UtteranceAssembler = UtteranceAssembler(),
     /** Where a self-halt's cleanup runs (never the capture thread); a test dispatcher in tests. */
@@ -177,6 +178,23 @@ class VoiceLoop(
             onLog("mic start threw ${t.javaClass.name}")
             try { mic.stop() } catch (_: Throwable) {}
             false
+        }
+    }
+
+    /**
+     * "Finish this story": stops whatever Elsie is saying (or cancels a reply being thought up),
+     * then submits a concluding turn as the next turn, so her ending is thought about, spoken and
+     * finished like any reply. Does nothing while the loop is not running.
+     */
+    fun concludeStory() {
+        if (!running) return
+        val interrupted = transition { it.onSpeechStart() }
+        if (interrupted.stopTts) tts.stop()
+        var turn = 0
+        val a = transition { m -> m.onUtterance().also { turn = m.turnId } }
+        if (a.submitUtterance) {
+            onLog("conclude story -> turn $turn")
+            session.concludeStory(turn)
         }
     }
 
@@ -293,7 +311,7 @@ class VoiceLoop(
                     speakFor(event.turnId, SpokenLines.KEY_PROBLEM)
                 }
             }
-            SessionEvent.StoryFinished -> onStoryFinished()
+            is SessionEvent.StoryFinished -> onStoryFinished(event.story)
         }
     }
 

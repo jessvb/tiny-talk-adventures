@@ -124,6 +124,7 @@ fun StoryScreen(vm: TinyTalkViewModel, onBack: () -> Unit, onSettings: () -> Uni
                 label = label,
                 paused = paused,
                 onNewStory = vm::newStory,
+                onFinish = vm::finishStory,
                 onTogglePause = { vm.setListeningPaused(!paused) },
             )
         }
@@ -294,6 +295,7 @@ private fun BottomBar(
     label: String,
     paused: Boolean,
     onNewStory: () -> Unit,
+    onFinish: () -> Unit,
     onTogglePause: () -> Unit,
 ) {
     val micOff = paused || state.micPermissionMissing || state.micUnavailable != null || state.listeningNotice != null
@@ -303,9 +305,16 @@ private fun BottomBar(
         LoopState.THINKING -> ElsieMood.WAITING_FOR_REPLY
         LoopState.SPEAKING -> ElsieMood.SPEAKING
     }
-    Row(
+    Column(
         Modifier.fillMaxWidth().background(TTA.Palette.Paper).navigationBarsPadding()
             .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+    if (StoryReducer.canFinishStory(state)) {
+        ChunkyButton("Finish this story", onFinish, fill = TTA.Palette.Wood, edge = TTA.Palette.WoodDark, fontSize = 15f)
+    }
+    Row(
+        Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -330,6 +339,7 @@ private fun BottomBar(
             val canToggle = !state.micPermissionMissing && state.micUnavailable == null && state.listeningNotice == null
             MicButton(muted = paused, onClick = onTogglePause, enabled = canToggle)
         }
+    }
     }
 }
 

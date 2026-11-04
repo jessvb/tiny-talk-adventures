@@ -106,9 +106,9 @@ confirmed on a real phone:
 - **Away-from-home demo mode**: hosted models behind one switch, with
   storybooks and illustrations synced back home
 
-Android (Pixel 3) is a secondary target: a demo-mode voice app is in progress
-on branch `worktree-android-demo-mode` (draft PR #93, see "Android" under
-Setup). For current bugs and follow-ups, see the
+Android (Pixel 3) is a secondary target: a demo-mode voice app (merged,
+PR #93) with a local storybook (branch `worktree-android-storybook`; see
+"Android" under Setup). For current bugs and follow-ups, see the
 [issue list](https://github.com/jessvb/tiny-talk-adventures/issues).
 
 **Known constraint:** running every model at once is tight on a 16 GB Mac.
@@ -223,13 +223,20 @@ Native Kotlin + Jetpack Compose app in `android/` (issue #88; design spec in
 `docs/superpowers/specs/2026-10-19-android-demo-mode-client-design.md`, plan in
 `docs/superpowers/plans/2026-10-21-android-phase1-voice-loop.md`). It is
 demo mode only: no home server, hosted models, like the iOS away-from-home
-mode. Phase 1 (branch `worktree-android-demo-mode`, draft PR #93) is a spoken
-conversation with Elsie: a consent screen, Landing/Story/Settings screens,
+mode. Phase 1 (PR #93, merged) is a spoken conversation with Elsie: a consent screen, Landing/Story/Settings screens,
 Groq chat, Elsie's spoken replies, and interrupting her by talking over her.
 Listening runs on the phone (Whisper tiny.en via sherpa-onnx, packaged in the
 APK and loaded in the background a second or two after the app opens), with an
-optional cloud "Better listening" switch (Groq Whisper) in Settings. No
-storybook, Library, or illustrations yet.
+optional cloud "Better listening" switch (Groq Whisper) in Settings.
+
+Phase 2 (storybook; spec `docs/superpowers/specs/2026-11-04-android-storybook-design.md`,
+plan `docs/superpowers/plans/2026-11-04-android-storybook.md`): a finished story is
+saved on the phone (`filesDir/stories/*.json`), Elsie rewrites it into a titled,
+paged storybook in the background (the same prompts as iOS), and The End appears once
+she has finished speaking. "Read Stories" opens a Library; Reading swipes between
+pages and reads a page aloud. "Finish this story" ends a story early, and Settings has
+"Turns per story" (4-12) and "Pages in the storybook" (3-10) for the next story.
+Pages are text-only; illustrations are a later phase.
 
 Keys: copy `android/local.secrets.properties.example` to the gitignored
 `android/local.secrets.properties` and fill in what you have (all optional;

@@ -5,7 +5,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-enum class Screen { ONBOARDING, LANDING, STORY, SETTINGS }
+enum class Screen { ONBOARDING, LANDING, STORY, SETTINGS, LIBRARY, READING, THE_END }
 
 /** Persisted parent consent. Nothing (mic, network) may start until [accepted] is true. */
 interface ConsentStore {

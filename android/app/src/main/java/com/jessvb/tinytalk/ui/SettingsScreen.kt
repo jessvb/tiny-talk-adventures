@@ -8,6 +8,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.text.style.TextAlign
+import com.jessvb.tinytalk.core.storybook.StorySettings
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -100,6 +104,18 @@ fun SettingsScreen(vm: TinyTalkViewModel, onBack: () -> Unit) {
                 Help("Optional, for storybook pictures in a later version of the app (stored now, not used yet).")
                 KeyField("CLOUDFLARE ACCOUNT ID", KeyName.CLOUDFLARE_ACCOUNT_ID, s, vm)
                 KeyField("CLOUDFLARE API TOKEN", KeyName.CLOUDFLARE_TOKEN, s, vm)
+            }
+
+            Card("STORY LENGTH") {
+                val turns by vm.storyTurnCount.collectAsState()
+                val pages by vm.storybookPageCount.collectAsState()
+                Stepper("Turns per story", turns, StorySettings.MIN_TURNS..StorySettings.MAX_TURNS) {
+                    vm.updateStorySettings(it, pages)
+                }
+                Stepper("Pages in the storybook", pages, StorySettings.MIN_PAGES..StorySettings.MAX_PAGES) {
+                    vm.updateStorySettings(turns, it)
+                }
+                Help("Changes apply to your next story, not the one you're in now.")
             }
 
             Card("LISTENING") {
@@ -230,6 +246,24 @@ private fun Card(title: String, content: @Composable () -> Unit) {
     ) {
         Text(title, style = TTA.Typography.display(12f).copy(letterSpacing = 1.5.sp), color = TTA.Palette.InkSoft)
         content()
+    }
+}
+
+/** A "− N +" row with two large round tap targets; the buttons stop at the range ends. */
+@Composable
+private fun Stepper(label: String, value: Int, range: IntRange, onChange: (Int) -> Unit) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, style = TTA.Typography.body(16f, FontWeight.SemiBold), color = TTA.Palette.Ink, modifier = Modifier.weight(1f))
+        IconTile({ if (value > range.first) onChange(value - 1) }, modifier = Modifier.alpha(if (value > range.first) 1f else 0.4f)) {
+            Text("−", style = TTA.Typography.display(24f), color = TTA.Palette.Wood,
+                modifier = Modifier.semantics { contentDescription = "Fewer: $label" })
+        }
+        Text("$value", style = TTA.Typography.display(20f), color = TTA.Palette.Ink,
+            modifier = Modifier.widthIn(min = 44.dp), textAlign = TextAlign.Center)
+        IconTile({ if (value < range.last) onChange(value + 1) }, modifier = Modifier.alpha(if (value < range.last) 1f else 0.4f)) {
+            Text("+", style = TTA.Typography.display(24f), color = TTA.Palette.Wood,
+                modifier = Modifier.semantics { contentDescription = "More: $label" })
+        }
     }
 }
 
